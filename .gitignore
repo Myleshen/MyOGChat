@@ -1,0 +1,17 @@
+# Build output
+/myogchat
+/bin/
+*.exe
+
+# Runtime data (SQLite lives outside the repo normally, but ignore just in case)
+*.db
+*.db-wal
+*.db-shm
+
+# Local secrets / real config (see deploy/env.example for the committed template)
+.env
+deploy/env
+
+# Editor / OS cruft
+.DS_Store
+*.swp

@@ -1,0 +1,338 @@
+# MyOGChat — API & Implementation Contract
+
+**This file is the single source of truth for backend and frontend. Follow it exactly.
+If something is ambiguous, prefer the simpler interpretation that keeps this contract stable.**
+
+Base URL: `/api`. All JSON. All times unix **milliseconds**. All money in
+**micro-dollars** (1/1,000,000 of a USD) as integer `cost_micros`.
+
+## 1. Auth
+
+Shared-token login. Cookie-based, stateless.
+
+- `POST /api/login` — body `{"token": "<secret>"}`. Constant-time compare against
+  `MYOGCHAT_AUTH_TOKEN`. On success: `204` + `Set-Cookie`.
+  On failure: `401 {"error":"invalid token"}`.
+- `POST /api/logout` — clears cookie. `204`.
+- `GET /api/me` — `204` if authed, else `401`. (Frontend gates on this.)
+
+Cookie: name `myogchat`, value = `base64url(expiryUnix|hmacSHA256(expiryUnix, sha256(MYOGCHAT_AUTH_TOKEN)))`,
+`HttpOnly`, `SameSite=Lax`, `Path=/`, 30-day expiry. Set `Secure` attribute only
+when `X-Forwarded-Proto: https` or request TLS. Middleware protects every `/api/*`
+route except `/api/login`. Static files (`/`, app assets) are public — the SPA
+itself shows the login screen when `/api/me` returns 401.
+
+## 2. Data model (SQLite)
+
+```sql
+CREATE TABLE IF NOT EXISTS conversations (
+  id         TEXT PRIMARY KEY,          -- UUID v4; also sent as x-opencode-session
+  title      TEXT NOT NULL DEFAULT '',
+  model      TEXT NOT NULL,             -- model id, e.g. "kimi-k2.7-code"
+  effort     TEXT,                      -- NULL, or none|low|medium|high|xhigh|max
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id                TEXT PRIMARY KEY,
+  conversation_id   TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role              TEXT NOT NULL,      -- 'user' | 'assistant'
+  content           TEXT NOT NULL,
+  reasoning         TEXT,               -- chat-dialect reasoning_content (may be NULL)
+  model             TEXT,               -- set on assistant messages
+  prompt_tokens     INTEGER,
+  completion_tokens INTEGER,
+  cached_tokens     INTEGER,
+  cost_micros       INTEGER,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_convos_updated ON conversations(updated_at DESC);
+```
+
+Enable `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON`.
+
+## 3. REST endpoints
+
+### `GET /api/models`
+Returns the **static registry** (§5) as JSON array, sorted by `output_per_m` ascending:
+```json
+[{"id":"kimi-k2.7-code","name":"Kimi K2.7 Code","dialect":"chat","effort":false,
+  "input_per_m":0.95,"output_per_m":4.0,"cache_read_per_m":0.19}]
+```
+(Fields `tier_*` and peak-pricing internals are NOT exposed.)
+
+### `GET /api/conversations`
+`[{"id","title","model","effort","created_at","updated_at"}]`, `updated_at` DESC.
+
+### `POST /api/conversations`
+Body `{"model":"kimi-k2.7-code","effort":"medium"}`. `effort` only allowed for
+responses-dialect models; reject otherwise with `400`. Generates UUIDv4 id.
+Returns the created conversation object. `201`.
+
+### `GET /api/conversations/{id}`
+`{"id","title","model","effort","created_at","updated_at","messages":[...]}`
+with messages ascending by `created_at` (full message rows as in §2, snake_case).
+`404` if unknown.
+
+### `PATCH /api/conversations/{id}`
+Body may contain `title` (string, ≤200 chars), `model` (valid registry id),
+`effort` (valid for the conversation's dialect). Updates `updated_at`. Returns
+updated conversation (without messages).
+
+### `DELETE /api/conversations/{id}` → `204`.
+
+### `POST /api/conversations/{id}/messages` — chat (SSE)
+
+Body: `{"content":"<user text>"}` (non-empty, ≤100 KB).
+
+Server flow:
+1. Validate conversation + content. Insert user message.
+2. Load full history (user/assistant messages, `role`+`content` only).
+3. Call upstream via the dialect adapter for the conversation's model, with headers
+   `Authorization: Bearer $OPENCODE_API_KEY`, `x-opencode-session: <conversation id>`,
+   `User-Agent: myogchat/1.0`. Abort upstream when client disconnects.
+4. Stream normalized SSE to the client as upstream events arrive.
+5. On completion: insert assistant message (content, reasoning, usage, cost_micros),
+   bump conversation `updated_at`.
+6. **Auto-title**: if conversation `title` is still empty after the first assistant
+   reply, make ONE non-streaming chat-dialect call to `longcat-2.5-preview-free`:
+   messages = `[{"role":"user","content":"Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\nUser: <first user msg, truncated to 500 chars>\nAssistant: <first assistant reply, truncated to 500 chars>"}]`,
+   `max_tokens: 20`. Sanitize to one line ≤80 chars. On any failure use the first
+   40 chars of the first user message. Persist title and include it in `done`.
+
+**SSE wire format** (`Content-Type: text/event-stream`, `Cache-Control: no-cache`);
+each event is `event: <type>\ndata: <json>\n\n`, plus `: keepalive\n\n` comment
+every 15 s while waiting on upstream:
+
+| event | data JSON | when |
+|---|---|---|
+| `meta` | `{"message_id":"…","model":"…"}` | first, before any upstream call output |
+| `reasoning` | `{"delta":"…"}` | reasoning tokens (chat dialect only) |
+| `text` | `{"delta":"…"}` | visible assistant text |
+| `usage` | `{"prompt_tokens":N,"completion_tokens":N,"cached_tokens":N,"cost_micros":N}` | after final upstream usage |
+| `done` | `{"message_id":"…","title":"…"}` | successful end; `title` only if newly set |
+| `error` | `{"message":"…"}` | any failure (upstream HTTP status + first 200 chars of body, or local error); stream ends |
+
+## 4. Upstream adapters (internal, `internal/upstream`)
+
+Both adapters emit a common channel of:
+```go
+type Event struct {
+    Kind  string // "reasoning" | "text" | "usage" | "error"
+    Delta string
+    Usage *Usage // prompt_tokens, completion_tokens, cached_tokens
+    Err   error
+}
+```
+
+**chat dialect** → `POST https://opencode.ai/zen/go/v1/chat/completions`:
+`{"model":…, "messages":[{"role","content"}…], "stream":true,
+"stream_options":{"include_usage":true}}`. Parse `chat.completion.chunk` lines:
+`choices[0].delta.reasoning_content` → reasoning; `choices[0].delta.content` →
+text; final chunk with empty `choices` carries `usage` (`prompt_tokens`,
+`completion_tokens`, `prompt_tokens_details.cached_tokens`).
+
+**responses dialect** → `POST https://opencode.ai/zen/go/v1/responses`:
+`{"model":…, "input":[{"role","content"}…], "store":false, "stream":true,
+"max_output_tokens":4096, "reasoning":{"effort":<effort or "medium">,
+"summary":"auto"}}`. Parse SSE events: `response.output_text.delta` (`delta`
+field) → text; `response.reasoning_summary_text.delta` → reasoning (may never
+fire); `response.completed` → `response.usage` mapped as
+`prompt_tokens=input_tokens`, `completion_tokens=output_tokens`,
+`cached_tokens=input_tokens_details.cached_tokens`.
+
+Both: 5-minute overall timeout, non-2xx → `error` event with status + body snippet.
+
+## 5. Model registry (`internal/models`) — static, exactly these
+
+`dialect` is `chat` unless noted. Prices = USD per 1M tokens
+(input / output / cache-read). `tier_threshold`: when `prompt_tokens` exceed it,
+use tier prices (tier_input/tier_output/tier_cache).
+
+| id | name | in | out | cache | tier_threshold | tier in/out/cache |
+|---|---|---|---|---|---|---|
+| longcat-2.5-preview-free | LongCat 2.5 Free | 0 | 0 | 0 | — | — |
+| mimo-v2.6-flash | MiMo V2.6 Flash | 0.14 | 0.28 | 0.0028 | — | — |
+| mimo-v2.5 | MiMo V2.5 | 0.14 | 0.28 | 0.0028 | — | — |
+| hy3 | Hy3 | 0.14 | 0.58 | 0.035 | — | — |
+| glm-5.3-flash | GLM-5.3 Flash | 0.15 | 0.50 | 0.03 | — | — |
+| space-bunny | Space Bunny | 0.15 | 0.60 | 0.03 | — | — |
+| longcat-2.0 | LongCat 2.0 | 0.30 | 1.20 | 0.006 | — | — |
+| mimo-v2.6-pro | MiMo V2.6 Pro | 0.435 | 0.87 | 0.003625 | — | — |
+| mimo-v2.5-pro | MiMo V2.5 Pro | 0.435 | 0.87 | 0.003625 | — | — |
+| deepseek-v4-pro | DeepSeek V4 Pro | 0.66 | 1.98 | 0.022 | peak: 1.32/3.96/0.044 | |
+| deepseek-v4.1-flash | DeepSeek V4.1 Flash | 0.15 | 0.60 | 0.003 | peak: 0.30/1.20/0.006 | |
+| deepseek-v4-flash | DeepSeek V4 Flash | 0.15 | 0.60 | 0.003 | peak: 0.30/1.20/0.006 | |
+| deepseek-v4-flash-vision-exp | DeepSeek V4 Flash Vision | 0.15 | 0.60 | 0.003 | peak: 0.30/1.20/0.006 | |
+| hy4-preview | Hy4 Preview | 0.834 | 2.501 | 0.042 | — | — |
+| kimi-k2.7-code | Kimi K2.7 Code | 0.95 | 4.00 | 0.19 | — | — |
+| kimi-k2.6 | Kimi K2.6 | 0.95 | 4.00 | 0.16 | — | — |
+| glm-5.2 | GLM-5.2 | 1.40 | 4.40 | 0.26 | — | — |
+| glm-5.3 | GLM-5.3 | 1.40 | 4.40 | 0.26 | — | — |
+| kimi-k3 | Kimi K3 | 3.00 | 15.00 | 0.30 | — | — |
+| **gpt-6-luna** | GPT 6 Luna | 0.10 | 0.50 | 0.01 | 272000 → 0.20/0.75/0.02 | responses, effort |
+| **gpt-5.6-luna** | GPT 5.6 Luna | 0.20 | 1.20 | 0.02 | 272000 → 0.40/1.80/0.04 | responses, effort |
+| **grok-4.7** | Grok 4.7 | 2.00 | 6.00 | 0.50 | 200000 → 4.00/12.00/1.00 | responses, effort |
+| **grok-4.6** | Grok 4.6 | 2.00 | 6.00 | 0.50 | 200000 → 4.00/12.00/1.00 | responses, effort |
+
+DeepSeek peak hours: 01:00–04:00 and 06:00–10:00 UTC, **Mon–Fri**; all other
+times use base prices.
+
+**Cost formula** (integer micros, `math.Round`):
+`cost_micros = (prompt−cached)·in_rate + cached·cache_rate + completion·out_rate`
+where rates are `price_per_m / 1e6 · 1e6` applied per token. Tier/peak selection
+happens before applying rates.
+
+## 6. Frontend contract (`static/`, vanilla JS, no build step)
+
+- `index.html`, `app.js`, `style.css`, `manifest.webmanifest`, `sw.js`,
+  `icons/` (icon.svg master; 192/512 PNG generated at integration),
+  `vendor/marked.min.js`, `vendor/highlight.min.js`, `vendor/highlight-theme.css`
+  (vendored from jsdelivr, pinned versions).
+- **Mobile-first**: bottom composer with safe-area padding, sidebar as overlay
+  drawer on narrow screens, min 44px touch targets, dark theme.
+- Login screen → `POST /api/login`; on 401 from any `/api` call, show login.
+- Conversation list (new / rename via prompt / delete via confirm), model picker
+  (grouped: Free / Budget / Mid / Premium by `output_per_m` bands
+  0 / ≤0.6 / ≤2 / >2), effort picker (none..max) **visible only for
+  responses-dialect models**.
+- Send message: `fetch` POST, read body with `ReadableStream`, parse SSE frames
+  manually (EventSource cannot POST). Render `text` deltas as markdown
+  (incremental re-render of the message is fine), `reasoning` into a collapsed
+  `<details>Thinking…</details>` block above the text.
+- After `usage`: show per-message cost as `$X.XXXX` (micros/1e6, 4 decimals;
+  show `<$0.0001` for tiny nonzero, `Free` for 0-cost models).
+- Conversation header shows running total cost (sum of message costs).
+- PWA: `manifest.webmanifest` (name MyOGChat, standalone, theme `#0d1117`),
+  `sw.js` caches only static shell (never `/api/*`), network-first for API.
+- No frameworks, no npm, no build step. Everything must work when served
+  from Go `embed.FS`.
+
+## 7. Ops
+
+- Janitor: on startup and hourly — `DELETE FROM conversations WHERE updated_at < cutoff`.
+- Log lines to stdout (journald captures): startup config (redact secrets),
+  request log (method, path, status, ms), upstream errors, janitor counts.
+- Graceful shutdown on SIGTERM (close db, finish in-flight SSE within 5 s).
+
+## 8. v2 additions — projects, tools, settings
+
+This section extends the contract. Where it conflicts with earlier sections, **this section wins**.
+
+### 8.1 Schema additions
+
+```sql
+CREATE TABLE IF NOT EXISTS projects (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  instructions  TEXT NOT NULL DEFAULT '',
+  default_model TEXT,                 -- nullable registry model id
+  sort_order    INTEGER NOT NULL DEFAULT 0,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+-- conversations gains: project_id TEXT REFERENCES projects(id) ON DELETE SET NULL
+-- messages gains:      reasoning_tokens INTEGER, duration_ms INTEGER
+```
+
+The store must migrate an existing database: `CREATE TABLE IF NOT EXISTS` for
+projects, and `ALTER TABLE … ADD COLUMN` for `conversations.project_id`,
+`messages.reasoning_tokens`, `messages.duration_ms` when
+`PRAGMA table_info(...)` shows them missing. Never drop existing data.
+
+### 8.2 Projects API
+
+- `GET /api/projects` → array sorted by `sort_order` ASC then `created_at` ASC:
+  `{"id","name","instructions","default_model","sort_order","created_at","updated_at","conversation_count"}`
+  (`conversation_count` = chats currently in the project).
+- `POST /api/projects` `{"name" (required, ≤120), "instructions"?, "default_model"?}`
+  → `201` project object (`conversation_count: 0`). `default_model` must be a
+  registry id or absent.
+- `PATCH /api/projects/{id}` `{"name"?, "instructions"?, "default_model"?, "sort_order"?}`
+  → `200` updated project. `instructions` ≤ 8000 chars. `default_model: ""` or
+  `null` clears it.
+- `DELETE /api/projects/{id}` → `204`. Chats are **not** deleted; their
+  `project_id` becomes NULL (explicit `UPDATE` before delete).
+
+### 8.3 Conversations changes
+
+- Conversation JSON gains `project_id` (nullable string).
+- `POST /api/conversations` `{"model"?, "effort"?, "project_id"?}`: if
+  `project_id` is present it must exist; if `model` is omitted the project's
+  `default_model` is used (error if neither). `effort` rules unchanged.
+- `PATCH /api/conversations/{id}` also accepts `project_id` (string to move,
+  `""`/`null` to unfile).
+- `GET /api/conversations` accepts optional `?project_id=<id|none>` filter;
+  otherwise returns all.
+
+### 8.4 Message JSON additions
+
+Assistant messages gain `reasoning_tokens` (int|null) and `duration_ms`
+(int|null — measured from first streamed token to the end of the stream, used
+for tokens/sec).
+
+### 8.5 Regenerate endpoint
+
+`POST /api/conversations/{id}/regenerate` → same SSE wire format as
+`/messages`. It deletes every assistant message after the last user message
+(so the tail is a user message) and streams a fresh assistant reply from the
+remaining history. `400` if the conversation has no user message. Overwrites
+nothing else; `updated_at` is bumped.
+
+### 8.6 Upstream changes
+
+- `Params` gains `Instructions string`.
+  - **chat dialect**: when non-empty, prepend `{"role":"system","content":Instructions}`
+    to the messages array.
+  - **responses dialect**: set top-level `"instructions": Instructions`.
+  - Instructions come from the conversation's project (`projects.instructions`).
+- `Usage` gains `ReasoningTokens`:
+  - chat: `usage.completion_tokens_details.reasoning_tokens`
+  - responses: `usage.output_tokens_details.reasoning_tokens`
+
+### 8.7 Model registry
+
+`Model` gains `thinking bool` (exposed in `/api/models`) — true when the model
+**surfaces visible reasoning text** (chat dialect) or exposes a reasoning-effort
+control (responses dialect). Models that reason internally without surfacing it
+(e.g. Kimi K3, Kimi K2.6, MiMo, Hy) are `false`. The UI shows a "thinking" badge
+for `true` models.
+
+### 8.8 Frontend additions
+
+LocalStorage keys (JSON or plain strings), namespaced `myogchat.`:
+
+| key | values | default |
+|---|---|---|
+| `myogchat.theme` | `system` \| `light` \| `dark` | `system` |
+| `myogchat.thinking` | `expanded` \| `collapsed` \| `hidden` | `collapsed` |
+| `myogchat.showTps` | `0` \| `1` | `1` |
+| `myogchat.enterToSend` | `0` \| `1` | `1` |
+| `myogchat.sidebarCollapsed` | `0` \| `1` | `0` |
+
+Required UI:
+1. **Theme**: `<html data-theme="light|dark">` set from the setting; `system`
+   follows `prefers-color-scheme` and reacts to changes. Ship a light and a dark
+   syntax-highlight stylesheet; toggle the disabled one.
+2. **Settings panel**: opened from a gear button; contains theme, thinking
+   display, token speed, Enter-to-send toggles. Closes on Esc/backdrop.
+3. **Sidebar**: a collapse/expand control on desktop (icon); collapsed state
+   persisted. On mobile it stays an overlay drawer. Sidebar shows a
+   **Projects** section (list, "New project" button, per-project menu:
+   rename / edit instructions / set default model / delete) where each project
+   expands to show its chats, then an **Unfiled**/"Chats" section.
+4. **Project editor**: dialog with name, instructions textarea, default model
+   select. Creating a chat inside a project sends that `project_id`; the model
+   picker defaults to the project's `default_model`.
+5. **Move chat to project**: from the chat's row menu (move to project / unfile).
+6. **Thinking**: when `reasoning` is present, render a collapsible block whose
+   summary shows "Thought for {duration} · {reasoning_tokens} tokens" when
+   available; honours the thinking-display pref. Model picker shows a
+   "thinking" badge for models with `thinking: true`.
+7. **Token speed**: footer shows `{completion_tokens/duration}s → N tok/s` per
+   assistant message when `duration_ms > 0` and `showTps` is on; live estimate
+   while streaming (chars/4 over elapsed).
+8. **Retry**: on the last assistant message, a "Retry" action calls the
+   regenerate endpoint. **Copy**: copy a message's raw text, and copy code
+   blocks (already required).

@@ -1,0 +1,26 @@
+[Unit]
+Description=MyOGChat — personal chat UI for OpenCode Go
+Documentation=https://github.com/yourname/myogchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Secrets live here (chmod 600): OPENCODE_API_KEY, MYOGCHAT_AUTH_TOKEN, ...
+EnvironmentFile=%h/.config/myogchat/env
+ExecStart=%h/.local/bin/myogchat
+Restart=always
+RestartSec=3
+
+# Minimal hardening; the service only reads config and writes its SQLite DB.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/myogchat
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target
