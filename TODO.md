@@ -81,7 +81,7 @@ key when sharing is allowed.
   sharing) → server key → error. Owner/admin manages members.
 - UI: group switcher, member management, "use my key for this group" toggle.
 
-### 2.3 Files & PDF attachments
+### 2.3 Files & PDF attachments — ✅ done (merged, pending deploy)
 
 - Attach files to a message; extract text and fold into the prompt with a token
   budget.
@@ -91,7 +91,7 @@ key when sharing is allowed.
 - Limits: per-file size, total attachment size, and a clear token-budget
   indicator.
 
-### 2.4 Tools: web search (+ extensible tool loop)
+### 2.4 Tools: web search (+ extensible tool loop) — ✅ done (merged, pending deploy)
 
 - Requires an **agentic tool-calling loop**: model requests a tool → we execute
   → feed results back → repeat (bounded iterations). Chat dialect uses `tools`
@@ -116,7 +116,7 @@ key when sharing is allowed.
   default**, ephemeral working dir) so the model can do quick file/text/CLI tasks
   without a full Python env. Shares the 2.4 tool loop; use Docker / `nsjail` / `bwrap`.
 
-### 2.8 URL summarization + Linkwarden integration
+### 2.8 URL summarization + Linkwarden integration — ✅ done (merged, pending deploy)
 - **Summarize a URL**: fetch → extract readable text → summarize (a `fetch_url`
   tool in the 2.4 loop).
 - **Linkwarden**: connect to the owner's instance (URL + token in settings) to
