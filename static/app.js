@@ -91,6 +91,17 @@ const keyRemove = document.getElementById("key-remove");
 const shareKeyRow = document.getElementById("share-key-row");
 const settingShareServerKey = document.getElementById("setting-share-server-key");
 
+/* Integrations (admin only, Phase 2.4 / 2.8). */
+const integrationsSection = document.getElementById("integrations-section");
+const settingToolsEnabled = document.getElementById("setting-tools-enabled");
+const tavilyStatus = document.getElementById("tavily-status");
+const linkwardenForm = document.getElementById("linkwarden-form");
+const linkwardenUrl = document.getElementById("linkwarden-url");
+const linkwardenToken = document.getElementById("linkwarden-token");
+const linkwardenStatus = document.getElementById("linkwarden-status");
+const linkwardenError = document.getElementById("linkwarden-error");
+const linkwardenClear = document.getElementById("linkwarden-clear");
+
 const projectModal = document.getElementById("project-modal");
 const projectForm = document.getElementById("project-form");
 const projectModalTitle = document.getElementById("project-modal-title");
@@ -602,6 +613,7 @@ function openSettings() {
   const isAdmin = !!(state.user && state.user.is_admin);
   usersSection.hidden = !isAdmin;
   shareKeyRow.hidden = !isAdmin;
+  integrationsSection.hidden = !isAdmin;
   openModal(settingsModal);
   loadKeyStatus().catch(() => {});
   if (isAdmin) {
@@ -802,13 +814,101 @@ async function loadSettingsInfo(silent) {
     settingAllowRegistration.checked = !!(s && s.allow_registration);
     if (settingShareServerKey) settingShareServerKey.checked = !!(s && s.share_server_key);
     setPendingCount(s && typeof s.pending_users === "number" ? s.pending_users : 0);
+    applyIntegrationSettings(s);
   } catch (err) {
     if (err instanceof AuthError) return;
     if (isForbidden(err)) {
       usersSection.hidden = true;
+      integrationsSection.hidden = true;
       return;
     }
     if (!silent) toast(err.message);
+  }
+}
+
+/* Populate the admin Integrations section from GET /api/settings. */
+function applyIntegrationSettings(s) {
+  if (!s) return;
+  if (settingToolsEnabled) settingToolsEnabled.checked = s.tools_enabled !== false;
+  if (tavilyStatus) {
+    tavilyStatus.textContent = s.tavily_configured
+      ? "Tavily: configured (TAVILY_API_KEY)."
+      : "Tavily: not configured — set TAVILY_API_KEY in the server environment.";
+  }
+  if (linkwardenUrl) linkwardenUrl.value = s.linkwarden_url || "";
+  if (linkwardenToken) linkwardenToken.value = "";
+  if (linkwardenStatus) {
+    linkwardenStatus.textContent = s.linkwarden_configured
+      ? "Configured" + (s.linkwarden_token_hint ? " (token …" + s.linkwarden_token_hint + ")" : "") + "."
+      : "Not configured.";
+  }
+}
+
+async function saveToolsEnabled() {
+  const value = settingToolsEnabled.checked;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ tools_enabled: value }),
+    });
+    applyIntegrationSettings(s);
+    toast(value ? "Tools enabled" : "Tools disabled");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    settingToolsEnabled.checked = !value;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
+  }
+}
+
+async function saveLinkwarden(e) {
+  if (e) e.preventDefault();
+  setFormError(linkwardenError, "");
+  const url = linkwardenUrl.value.trim();
+  const token = linkwardenToken.value.trim();
+  if (!url) {
+    setFormError(linkwardenError, "Enter the Linkwarden instance URL.");
+    return;
+  }
+  const body = { linkwarden_url: url };
+  // Only send the token when provided so saving the URL keeps the stored one.
+  if (token) body.linkwarden_token = token;
+  const btn = linkwardenForm.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    applyIntegrationSettings(s);
+    toast("Linkwarden saved");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      toast("Admin access required");
+      return;
+    }
+    setFormError(linkwardenError, err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function clearLinkwarden() {
+  if (!confirm("Clear the Linkwarden URL and token?")) return;
+  setFormError(linkwardenError, "");
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ linkwarden_url: "", linkwarden_token: "" }),
+    });
+    applyIntegrationSettings(s);
+    toast("Linkwarden cleared");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
   }
 }
 
@@ -1618,6 +1718,9 @@ function buildAssistantMessage(m, isLast) {
       })
     );
   }
+  if (Array.isArray(m.tools) && m.tools.length > 0) {
+    bubble.appendChild(buildToolsBlock(m.tools));
+  }
   const content = el("div", "msg-content markdown");
   content.innerHTML = renderMarkdown(m.content);
   enhanceMarkdown(content);
@@ -1800,6 +1903,8 @@ function newStreamUI() {
     contentEl: null,
     thinkingEl: null,
     thinkingBody: null,
+    toolsEl: null,
+    tools: [],
     footerEl: null,
     footerMeta: null,
     textBuf: "",
@@ -1829,6 +1934,61 @@ function renderStreamThinking(ui) {
     ui.bubble.insertBefore(ui.thinkingEl, ui.bubble.firstChild);
   }
   ui.thinkingBody.textContent = ui.reasoningBuf;
+}
+
+/* ============================== Tool activity (Phase 2.4) ============================== */
+
+function toolIcon(status) {
+  if (status === "done") return "🔧";
+  if (status === "error") return "⚠️";
+  return "⏳";
+}
+
+function toolLine(t) {
+  const line = el("div", "msg-tool");
+  line.textContent =
+    toolIcon(t.status) + " " + t.name + " · " + t.status + (t.summary ? " · " + t.summary : "");
+  return line;
+}
+
+function buildToolsBlock(tools) {
+  const wrap = el("div", "msg-tools");
+  for (const t of tools) wrap.appendChild(toolLine(t));
+  return wrap;
+}
+
+/* Upsert a tool activity entry from an SSE "tool" event and re-render. */
+function updateToolActivity(ui, payload) {
+  if (!ui.tools) ui.tools = [];
+  const name = payload.name || "tool";
+  const status = payload.status || "running";
+  if (status === "running") {
+    ui.tools.push({ name, status, summary: "" });
+  } else {
+    let updated = false;
+    for (let i = ui.tools.length - 1; i >= 0; i--) {
+      if (ui.tools[i].name === name && ui.tools[i].status === "running") {
+        ui.tools[i].status = status;
+        ui.tools[i].summary = payload.summary || "";
+        updated = true;
+        break;
+      }
+    }
+    if (!updated) ui.tools.push({ name, status, summary: payload.summary || "" });
+  }
+  renderStreamTools(ui);
+}
+
+function renderStreamTools(ui) {
+  if (!ui.tools || ui.tools.length === 0) return;
+  ensureStreamBubble(ui);
+  if (!ui.toolsEl) {
+    ui.toolsEl = el("div", "msg-tools");
+    ui.bubble.insertBefore(ui.toolsEl, ui.bubble.firstChild);
+  }
+  ui.toolsEl.innerHTML = "";
+  for (const t of ui.tools) ui.toolsEl.appendChild(toolLine(t));
+  scrollToBottom();
 }
 
 /* chars/4 tokens over elapsed seconds — approximate, marked with "~". */
@@ -1912,6 +2072,9 @@ function handleStreamEvent(type, data, ui) {
       ui.usage = payload;
       renderStreamFooter(ui);
       break;
+    case "tool":
+      updateToolActivity(ui, payload);
+      break;
     case "done":
       ui.done = true;
       ui.durationMs = ui.firstTokenAt ? Math.round(performance.now() - ui.firstTokenAt) : null;
@@ -1945,6 +2108,8 @@ function finalizeStream(ui) {
     reasoning_tokens:
       typeof usage.reasoning_tokens === "number" ? usage.reasoning_tokens : null,
     duration_ms: ui.durationMs,
+    // Tool activity is session-local (not persisted server-side).
+    tools: ui.tools && ui.tools.length ? ui.tools.slice() : null,
   });
   // Rebuild so Copy/Retry + footers appear, then enrich with server fields.
   renderMessages();
@@ -2331,6 +2496,11 @@ function wireEvents() {
   keyForm.addEventListener("submit", saveKey);
   keyRemove.addEventListener("click", removeKey);
   settingShareServerKey.addEventListener("change", saveShareServerKey);
+
+  /* Integrations: tools toggle + Linkwarden (admin, Phase 2.4 / 2.8). */
+  settingToolsEnabled.addEventListener("change", saveToolsEnabled);
+  linkwardenForm.addEventListener("submit", saveLinkwarden);
+  linkwardenClear.addEventListener("click", clearLinkwarden);
 
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();

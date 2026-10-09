@@ -41,6 +41,7 @@ const encryptionKey = "encryption_key"
 // config is the resolved runtime configuration (DESIGN.md).
 type config struct {
 	apiKey        string
+	tavilyKey     string
 	port          string
 	dbPath        string
 	retentionDays int
@@ -65,6 +66,7 @@ func main() {
 func loadConfig() (config, error) {
 	cfg := config{
 		apiKey:        os.Getenv("OPENCODE_API_KEY"),
+		tavilyKey:     os.Getenv("TAVILY_API_KEY"),
 		port:          envOr("MYOGCHAT_PORT", "8787"),
 		dbPath:        os.Getenv("MYOGCHAT_DB"),
 		retentionDays: 30,
@@ -132,7 +134,7 @@ func run(cfg config, log *slog.Logger) error {
 		return err
 	}
 
-	srv := server.New(st, upstream.NewClient(), auth.New(st, secret), static, log, encKey, cfg.apiKey)
+	srv := server.New(st, upstream.NewClient(), auth.New(st, secret), static, log, encKey, cfg.apiKey, cfg.tavilyKey)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -151,6 +153,7 @@ func run(cfg config, log *slog.Logger) error {
 		"users", users,
 		"needs_setup", users == 0,
 		"server_key", cfg.apiKey != "",
+		"tavily_key", cfg.tavilyKey != "",
 	)
 
 	errc := make(chan error, 1)

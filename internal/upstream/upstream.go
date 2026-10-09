@@ -31,7 +31,57 @@ const (
 	EventText      = "text"
 	EventUsage     = "usage"
 	EventError     = "error"
+	// EventTool reports tool activity during the agentic loop (Phase 2.4).
+	EventTool = "tool"
 )
+
+// Tool statuses surfaced by EventTool.
+const (
+	ToolRunning = "running"
+	ToolDone    = "done"
+	ToolError   = "error"
+)
+
+// maxToolIterations bounds the agentic tool-calling loop so a misbehaving model
+// cannot loop forever.
+const maxToolIterations = 4
+
+// ToolSpec is one function exposed to the model. Function is nested to match
+// the chat-completions wire format; the responses dialect flattens it.
+type ToolSpec struct {
+	Type     string           `json:"type"`
+	Function ToolFunctionSpec `json:"function"`
+}
+
+// ToolFunctionSpec describes a callable function.
+type ToolFunctionSpec struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// ToolActivity is emitted on EventTool to surface tool progress to the client.
+type ToolActivity struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"` // running | done | error
+	Summary string `json:"summary,omitempty"`
+}
+
+// ToolCall is one function call requested by the model. ID is the tool-call id
+// for the chat dialect and the call_id for the responses dialect; ItemID is the
+// responses output-item id (empty for chat).
+type ToolCall struct {
+	ID        string
+	ItemID    string
+	Name      string
+	Arguments string
+}
+
+// ExecuteTool runs one requested tool call. It returns the textual result fed
+// back to the model plus a short summary for the UI. A non-nil error is
+// reported to the client as a failed tool event and the error text is returned
+// to the model so it can recover.
+type ExecuteTool func(ctx context.Context, call ToolCall) (result, summary string, err error)
 
 // Message is a single history entry sent upstream (role + content only).
 type Message struct {
@@ -49,9 +99,10 @@ type Usage struct {
 
 // Event is the normalized unit emitted by both dialect adapters.
 type Event struct {
-	Kind  string // "reasoning" | "text" | "usage" | "error"
+	Kind  string // "reasoning" | "text" | "usage" | "error" | "tool"
 	Delta string
 	Usage *Usage
+	Tool  *ToolActivity
 	Err   error
 }
 
@@ -66,18 +117,22 @@ type Params struct {
 	// Instructions is the project system prompt (§8.6). Chat dialect gets it
 	// as a leading system message; responses dialect as a top-level field.
 	Instructions string
+	// Tools are exposed to the model for the agentic loop (Phase 2.4). Empty
+	// disables tool calling.
+	Tools []ToolSpec
 }
 
 // Client calls the OpenCode Go API. The bearer key is supplied per request
 // (per-user keys, §2.1), so a single Client serves every user.
 type Client struct {
-	hc *http.Client
+	hc      *http.Client
+	baseURL string // defaults to BaseURL; overridable in tests
 }
 
 // NewClient returns a Client. The HTTP client has no overall timeout; every
 // call is bounded by its context.
 func NewClient() *Client {
-	return &Client{hc: &http.Client{}}
+	return &Client{hc: &http.Client{}, baseURL: BaseURL}
 }
 
 // ValidateKey checks an API key with a minimal (free-model) completion. The
@@ -95,7 +150,7 @@ func (c *Client) ValidateKey(ctx context.Context, apiKey string) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, BaseURL+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -195,7 +250,7 @@ func (c *Client) do(ctx context.Context, path, sessionID, apiKey string, payload
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, BaseURL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -222,12 +277,22 @@ type chatChunk struct {
 		Delta struct {
 			ReasoningContent string `json:"reasoning_content"`
 			Content          string `json:"content"`
+			ToolCalls        []struct {
+				Index    *int   `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens            int64 `json:"prompt_tokens"`
-		CompletionTokens        int64 `json:"completion_tokens"`
-		PromptTokensDetails     *struct {
+		PromptTokens        int64 `json:"prompt_tokens"`
+		CompletionTokens    int64 `json:"completion_tokens"`
+		PromptTokensDetails *struct {
 			CachedTokens int64 `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 		CompletionTokensDetails *struct {
@@ -354,9 +419,9 @@ func (c *Client) streamResponses(ctx context.Context, p Params, send func(Event)
 			var d struct {
 				Response struct {
 					Usage *struct {
-						InputTokens         int64 `json:"input_tokens"`
-						OutputTokens        int64 `json:"output_tokens"`
-						InputTokensDetails  *struct {
+						InputTokens        int64 `json:"input_tokens"`
+						OutputTokens       int64 `json:"output_tokens"`
+						InputTokensDetails *struct {
 							CachedTokens int64 `json:"cached_tokens"`
 						} `json:"input_tokens_details"`
 						OutputTokensDetails *struct {

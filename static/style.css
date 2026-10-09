@@ -538,6 +538,19 @@ button { font: inherit; }
   font-size: 0.9rem;
 }
 
+/* Tool activity line (Phase 2.4) */
+.msg-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.msg-tool {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
 /* Reasoning / thinking block */
 .thinking {
   margin-bottom: 8px;

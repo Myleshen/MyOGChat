@@ -230,8 +230,11 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		AllowRegistration *bool `json:"allow_registration"`
-		ShareServerKey    *bool `json:"share_server_key"`
+		AllowRegistration *bool   `json:"allow_registration"`
+		ShareServerKey    *bool   `json:"share_server_key"`
+		ToolsEnabled      *bool   `json:"tools_enabled"`
+		LinkwardenURL     *string `json:"linkwarden_url"`
+		LinkwardenToken   *string `json:"linkwarden_token"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -259,6 +262,26 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.ToolsEnabled != nil {
+		if err := s.setToolsEnabled(r.Context(), *req.ToolsEnabled); err != nil {
+			s.log.Error("set tools_enabled", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.LinkwardenURL != nil || req.LinkwardenToken != nil {
+		rawURL := ""
+		if req.LinkwardenURL != nil {
+			rawURL = *req.LinkwardenURL
+		} else if v, _, err := s.st.GetSetting(r.Context(), settingLinkwardenURL); err == nil {
+			rawURL = v
+		}
+		if err := s.setLinkwarden(r.Context(), rawURL, req.LinkwardenToken); err != nil {
+			s.log.Error("set linkwarden settings", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
 	s.writeSettings(w, r)
 }
 
@@ -280,10 +303,14 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read settings")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"allow_registration": open,
 		"pending_users":      pending,
 		"share_server_key":   share,
 		"server_key_present": s.serverKey != "",
-	})
+	}
+	for k, v := range s.integrationSettings(r.Context()) {
+		out[k] = v
+	}
+	writeJSON(w, http.StatusOK, out)
 }

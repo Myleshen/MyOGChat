@@ -268,6 +268,38 @@
           </label>
         </section>
 
+        <!-- Integrations (admin only, Phase 2.4 / 2.8). Hidden for non-admins. -->
+        <section id="integrations-section" class="settings-integrations" hidden>
+          <hr class="settings-sep">
+          <h3 class="settings-subtitle">Integrations</h3>
+          <p class="settings-subtitle-sm">
+            Tools let the model search the web, read pages, and use Linkwarden.
+          </p>
+          <label class="setting-toggle">
+            <span>Enable tools</span>
+            <input type="checkbox" id="setting-tools-enabled">
+          </label>
+          <p id="tavily-status" class="settings-subtitle-sm">Tavily: loading…</p>
+          <form id="linkwarden-form" class="add-user-form" autocomplete="off">
+            <p class="settings-subtitle settings-subtitle-sm">Linkwarden</p>
+            <label class="field">
+              <span class="field-label">Instance URL</span>
+              <input id="linkwarden-url" type="url" autocomplete="off"
+                     placeholder="https://links.example.com">
+            </label>
+            <label class="field">
+              <span class="field-label">API token</span>
+              <input id="linkwarden-token" type="password" autocomplete="off" placeholder="Token">
+            </label>
+            <p id="linkwarden-status" class="settings-subtitle-sm">Not configured.</p>
+            <p id="linkwarden-error" class="login-error" role="alert" hidden></p>
+            <div class="key-actions">
+              <button type="submit" class="btn btn-primary">Save</button>
+              <button type="button" id="linkwarden-clear" class="btn btn-ghost">Clear</button>
+            </div>
+          </form>
+        </section>
+
         <!-- Admin only (contract §9.6). Hidden for non-admins. -->
         <section id="users-section" class="settings-users" hidden>
           <hr class="settings-sep">
