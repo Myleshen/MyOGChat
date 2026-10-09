@@ -73,7 +73,7 @@ key when sharing is allowed.
 - UI: Settings → **OpenCode Go key** (status, add/replace/remove, which key is
   in use); admin toggle "share the server key with users".
 
-### 2.2 Groups & shared keys
+### 2.2 Groups & shared keys — ✅ done (merged, pending deploy)
 
 - `groups(id, name, owner_id, share_key, created_at)` +
   `group_members(group_id, user_id, role)`.

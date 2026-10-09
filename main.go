@@ -9,6 +9,8 @@ import (
 	"embed"
 	"encoding/base64"
 	"errors"
+	"flag"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -49,6 +51,16 @@ type config struct {
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// `myogchat user <add|rm|list>` manages accounts directly in the database,
+	// so no admin credentials are needed (handy for test accounts).
+	if len(os.Args) > 1 && os.Args[1] == "user" {
+		if err := runUserCmd(os.Args[2:]); err != nil {
+			log.Error("user command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Error("configuration error", "error", err)
@@ -61,6 +73,108 @@ func main() {
 	}
 }
 
+// resolveDBPath returns MYOGCHAT_DB or the default database path.
+func resolveDBPath() (string, error) {
+	if v := os.Getenv("MYOGCHAT_DB"); v != "" {
+		return v, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "share", "myogchat", "chat.db"), nil
+}
+
+// runUserCmd implements `myogchat user <add|rm|list>` against the database.
+func runUserCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: myogchat user <add|rm|list>")
+	}
+	path, err := resolveDBPath()
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(path)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	switch args[0] {
+	case "list":
+		users, err := st.ListUsers(ctx)
+		if err != nil {
+			return err
+		}
+		for _, u := range users {
+			fmt.Printf("%-16s %-28s admin=%-5v status=%s\n", u.Username, u.Email, u.IsAdmin, u.Status)
+		}
+		return nil
+
+	case "add":
+		fs := flag.NewFlagSet("add", flag.ContinueOnError)
+		username := fs.String("username", "", "username")
+		email := fs.String("email", "", "email")
+		password := fs.String("password", "", "password")
+		admin := fs.Bool("admin", false, "grant admin")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *username == "" || *email == "" || *password == "" {
+			return errors.New("--username, --email and --password are required")
+		}
+		if msg, ok := auth.ValidateCredentials(*username, *email, *password); !ok {
+			return errors.New(msg)
+		}
+		hash, err := auth.HashPassword(*password)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UnixMilli()
+		u := store.User{
+			ID: uuid(), Username: *username, Email: *email, PasswordHash: hash,
+			IsAdmin: *admin, Status: "active", CreatedAt: now, UpdatedAt: now,
+		}
+		if err := st.InsertUser(ctx, &u); err != nil {
+			return err
+		}
+		fmt.Printf("created user %s (%s) admin=%v\n", u.Username, u.Email, u.IsAdmin)
+		return nil
+
+	case "rm", "remove":
+		fs := flag.NewFlagSet("rm", flag.ContinueOnError)
+		identifier := fs.String("username", "", "username or email")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *identifier == "" {
+			return errors.New("--username <username|email> is required")
+		}
+		u, err := st.GetUserByIdentifier(ctx, *identifier)
+		if err != nil {
+			return err
+		}
+		if err := st.DeleteUser(ctx, u.ID); err != nil {
+			return err
+		}
+		fmt.Printf("removed user %s\n", u.Username)
+		return nil
+	}
+	return fmt.Errorf("unknown user subcommand %q", args[0])
+}
+
+// uuid returns a random RFC 4122 v4 UUID (for CLI-created rows).
+func uuid() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 // loadConfig reads and validates environment variables.
 func loadConfig() (config, error) {
 	cfg := config{
@@ -70,11 +184,11 @@ func loadConfig() (config, error) {
 		retentionDays: 30,
 	}
 	if cfg.dbPath == "" {
-		home, err := os.UserHomeDir()
+		p, err := resolveDBPath()
 		if err != nil {
 			return config{}, err
 		}
-		cfg.dbPath = filepath.Join(home, ".local", "share", "myogchat", "chat.db")
+		cfg.dbPath = p
 	}
 	if v := os.Getenv("MYOGCHAT_RETENTION_DAYS"); v != "" {
 		n, err := strconv.Atoi(v)
