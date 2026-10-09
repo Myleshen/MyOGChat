@@ -48,7 +48,7 @@
 
 * { box-sizing: border-box; }
 
-html, body { height: 100%; }
+html, body { height: 100%; overflow: hidden; }
 
 body {
   margin: 0;
@@ -128,11 +128,15 @@ button { font: inherit; }
 .login-view {
   min-height: 100vh;
   min-height: 100dvh;
-  display: grid;
-  place-items: center;
+  min-height: var(--app-h, 100dvh);
+  display: flex;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
 }
 .login-card {
+  margin: auto;
   width: 100%;
   max-width: 360px;
   display: flex;
@@ -185,9 +189,14 @@ button { font: inherit; }
 /* ---------- App layout ---------- */
 
 .app {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--app-top, 0px);
   display: flex;
   height: 100vh;
   height: 100dvh;
+  height: var(--app-h, 100dvh);
   overflow: hidden;
 }
 
@@ -453,6 +462,8 @@ button { font: inherit; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 16px 12px;
   display: flex;
   flex-direction: column;
@@ -705,7 +716,10 @@ button { font: inherit; }
 
 .modal {
   position: fixed;
-  inset: 0;
+  left: 0;
+  right: 0;
+  top: var(--app-top, 0px);
+  height: var(--app-h, 100dvh);
   z-index: 200;
   display: flex;
   align-items: center;

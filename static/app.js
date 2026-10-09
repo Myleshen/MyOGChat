@@ -2343,6 +2343,35 @@ function registerSW() {
   }
 }
 
+/* ============================== Visual viewport (mobile keyboard) ============================== */
+
+// Pin the app to the *visual* viewport so the composer stays above the
+// on-screen keyboard. Android Chrome honours
+// interactive-widget=resizes-content (the layout viewport shrinks); this also
+// covers iOS Safari, which does not support that hint.
+function syncViewport() {
+  const root = document.documentElement;
+  const vv = window.visualViewport;
+  if (!vv) {
+    root.style.removeProperty("--app-h");
+    root.style.removeProperty("--app-top");
+    return;
+  }
+  root.style.setProperty("--app-h", vv.height + "px");
+  root.style.setProperty("--app-top", vv.offsetTop + "px");
+}
+
+function wireViewport() {
+  syncViewport();
+  const vv = window.visualViewport;
+  if (vv) {
+    vv.addEventListener("resize", syncViewport);
+    vv.addEventListener("scroll", syncViewport);
+  }
+  window.addEventListener("resize", syncViewport);
+  window.addEventListener("orientationchange", () => setTimeout(syncViewport, 200));
+}
+
 /* ============================== Init ============================== */
 
 loadSettings();
@@ -2352,6 +2381,7 @@ applyEnterHint();
 applySettingsToUI();
 configureMarked();
 wireEvents();
+wireViewport();
 registerSW();
 updateSendBtn();
 updateNewChatLabel();
