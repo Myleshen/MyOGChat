@@ -111,24 +111,40 @@ key when sharing is allowed.
   CPU/mem limits, no network by default, ephemeral FS. Heaviest item — needs a
   resource and security design; keep last.
 
+### 2.7 Bash sandbox (lightweight tool runtime)
+- Run small shell commands in a sandbox (resource-limited, **no network by
+  default**, ephemeral working dir) so the model can do quick file/text/CLI tasks
+  without a full Python env. Shares the 2.4 tool loop; use Docker / `nsjail` / `bwrap`.
+
+### 2.8 URL summarization + Linkwarden integration
+- **Summarize a URL**: fetch → extract readable text → summarize (a `fetch_url`
+  tool in the 2.4 loop).
+- **Linkwarden**: connect to the owner's instance (URL + token in settings) to
+  search saved links and save new ones directly from a chat.
+
+### 2.9 Full settings page (not a popup)
+- Promote settings from the modal to a dedicated, mobile-first **page** (e.g.
+  `#/settings`) with sections: Account, API key, Users (admin), Integrations
+  (Linkwarden), Tools, About. Keep it PWA-fast — the PWA remains the main goal.
+
 ### Cross-cutting decisions to settle
 
 - **Dependency policy:** 2.3 (PDF) and 2.5 (OCR) likely need either a new Go
   dependency or an external binary on the Pi — decide per item.
 - **Usage accounting:** per-user token/cost tracking would help quota fairness
   once keys are shared (natural follow-on to 2.1/2.2).
-- **Secrets at rest:** 2.1 introduces encrypted key storage — establish the
-  pattern once and reuse it.
+- **Secrets at rest:** 2.1 introduces encrypted key storage — reuse that pattern
+  for Linkwarden tokens etc.
 
-### New ideas for phase 2 itself
+## Parallelization plan (git worktrees)
 
-- Having a summarize feature for url's and a connectivity to my linkwarden
-  instance for getting urls, and saving stuff directly from here.
-- A probably good settings page rather than a simple popup, i know by adding a
-  lot of features, we are starting to move to a full fledged web app, but keep
-  it as good as a PWA, as that is the main goal.
-- bash sandbox as well, as most things might not need a full on python env, just
-  a few small bash calls woudl do the trick
+Each workstream develops on its own **git worktree + branch off `main`**; the owner
+merges sequentially and resolves the small additive conflicts in shared files
+(`internal/server/server.go` routes, `internal/store/store.go` schema,
+`static/app.js`).
+
+- **Batch 1 (parallel):** 2.2 Groups · 2.3 Files/PDF · 2.4+2.8 Tools & web/URL/Linkwarden
+- **Batch 2 (after 2.4):** 2.7 Bash sandbox · 2.6 Python sandbox · 2.9 Settings page
 
 ---
 
