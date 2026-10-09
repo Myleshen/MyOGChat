@@ -268,6 +268,28 @@
           </label>
         </section>
 
+        <!-- Groups & shared keys (contract §2.2) -->
+        <section id="groups-section" class="settings-groups">
+          <hr class="settings-sep">
+          <h3 class="settings-subtitle">Groups</h3>
+          <p class="settings-subtitle-sm">Share your OpenCode Go key with people you trust.</p>
+          <ul id="groups-list" class="groups-list"></ul>
+          <p id="groups-empty" class="nav-empty" hidden>You're not in any groups yet.</p>
+          <form id="group-form" class="add-user-form" autocomplete="off">
+            <p class="settings-subtitle settings-subtitle-sm">Create a group</p>
+            <label class="field">
+              <span class="field-label">Name</span>
+              <input id="group-name" type="text" required maxlength="120" placeholder="Group name">
+            </label>
+            <label class="setting-toggle">
+              <span>Share my key with this group</span>
+              <input type="checkbox" id="group-share-key" checked>
+            </label>
+            <p id="group-error" class="login-error" role="alert" hidden></p>
+            <button type="submit" class="btn btn-primary">Create group</button>
+          </form>
+        </section>
+
         <!-- Admin only (contract §9.6). Hidden for non-admins. -->
         <section id="users-section" class="settings-users" hidden>
           <hr class="settings-sep">

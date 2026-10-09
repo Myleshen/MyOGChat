@@ -91,6 +91,13 @@ const keyRemove = document.getElementById("key-remove");
 const shareKeyRow = document.getElementById("share-key-row");
 const settingShareServerKey = document.getElementById("setting-share-server-key");
 
+const groupsList = document.getElementById("groups-list");
+const groupsEmpty = document.getElementById("groups-empty");
+const groupForm = document.getElementById("group-form");
+const groupName = document.getElementById("group-name");
+const groupShareKey = document.getElementById("group-share-key");
+const groupError = document.getElementById("group-error");
+
 const projectModal = document.getElementById("project-modal");
 const projectForm = document.getElementById("project-form");
 const projectModalTitle = document.getElementById("project-modal-title");
@@ -109,6 +116,7 @@ const state = {
   models: [],              // GET /api/models registry
   conversations: [],       // GET /api/conversations (server order)
   projects: [],            // GET /api/projects
+  groups: [],              // GET /api/groups
   expandedProjects: new Set(), // project ids whose chats are shown inline
   activeProjectId: null,   // project new chats are filed into
   current: null,           // open conversation object (with messages)
@@ -386,6 +394,7 @@ function handleUnauthorized() {
   state.currentMessages = [];
   state.conversations = [];
   state.projects = [];
+  state.groups = [];
   appEl.hidden = true;
   showLogin();
 }
@@ -604,6 +613,7 @@ function openSettings() {
   shareKeyRow.hidden = !isAdmin;
   openModal(settingsModal);
   loadKeyStatus().catch(() => {});
+  loadGroups().catch(() => {});
   if (isAdmin) {
     loadUsers().catch(() => {});
     loadSettingsInfo(false).catch(() => {});
@@ -850,6 +860,9 @@ async function loadKeyStatus() {
     keyRemove.hidden = !(k && k.has_key);
     if (k && k.has_key) {
       keyStatus.textContent = "Using your own key" + (k.key_hint ? " (…" + k.key_hint + ")" : "");
+    } else if (k && k.using_group_key) {
+      const who = k.group_name ? k.group_name + "'s" : "your group's";
+      keyStatus.textContent = "Using " + who + " shared key.";
     } else if (k && k.using_shared_key) {
       keyStatus.textContent = "Using the shared server key.";
     } else if (k && k.server_key_present && !k.shared_key_available) {
@@ -929,6 +942,213 @@ async function saveShareServerKey() {
     settingShareServerKey.checked = !value;
     toast(isForbidden(err) ? "Admin access required" : err.message);
   }
+}
+
+/* ============================== Groups & shared keys (§2.2) ============================== */
+
+function groupById(id) {
+  return state.groups.find((g) => g.id === id) || null;
+}
+
+async function loadGroups() {
+  try {
+    const groups = await api("/api/groups");
+    state.groups = Array.isArray(groups) ? groups : [];
+    renderGroups();
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(err.message);
+  }
+}
+
+function renderGroups() {
+  groupsList.innerHTML = "";
+  groupsEmpty.hidden = state.groups.length !== 0;
+  for (const g of state.groups) groupsList.appendChild(buildGroupCard(g));
+}
+
+function buildGroupCard(g) {
+  const isAdmin = !!(state.user && state.user.is_admin);
+  const li = el("li", "group-item");
+
+  const head = el("div", "group-head");
+  const name = el("span", "group-name");
+  name.textContent = g.name;
+  head.appendChild(name);
+  if (g.is_owner) {
+    const ownerBadge = el("span", "badge");
+    ownerBadge.textContent = "owner";
+    head.appendChild(ownerBadge);
+  }
+  const shareBadge = el("span", "badge" + (g.share_key ? "" : " group-share-off"));
+  shareBadge.textContent = g.share_key ? "sharing key" : "not sharing";
+  head.appendChild(shareBadge);
+  li.appendChild(head);
+
+  const members = el("ul", "group-members");
+  const list = g.members || [];
+  for (const m of list) {
+    const row = el("li", "group-member");
+    const info = el("span", "group-member-info");
+    info.textContent = m.username + (m.role && m.role !== "member" ? " (" + m.role + ")" : "");
+    info.title = m.email || "";
+    row.appendChild(info);
+    if (g.is_owner || isAdmin) {
+      const rm = el("button", "icon-btn group-member-remove");
+      rm.type = "button";
+      rm.innerHTML = ICONS.trash;
+      rm.setAttribute("aria-label", "Remove " + m.username + " from " + g.name);
+      rm.addEventListener("click", () => removeGroupMember(g, m));
+      row.appendChild(rm);
+    }
+    members.appendChild(row);
+  }
+  if (list.length === 0) {
+    const none = el("li", "group-member group-member-empty");
+    none.textContent = "No members yet.";
+    members.appendChild(none);
+  }
+  li.appendChild(members);
+
+  if (g.is_owner) {
+    const controls = el("div", "group-controls");
+
+    const shareToggle = el("label", "setting-toggle group-share-toggle");
+    const shareLabel = el("span");
+    shareLabel.textContent = "Share my key with this group";
+    const shareBox = document.createElement("input");
+    shareBox.type = "checkbox";
+    shareBox.checked = !!g.share_key;
+    shareBox.addEventListener("change", () => patchGroup(g.id, { share_key: shareBox.checked }));
+    shareToggle.append(shareLabel, shareBox);
+    controls.appendChild(shareToggle);
+
+    const addForm = el("form", "group-add-form");
+    addForm.autocomplete = "off";
+    const addInput = el("input", "group-add-input");
+    addInput.type = "text";
+    addInput.placeholder = "username or email";
+    addInput.setAttribute("aria-label", "Add member to " + g.name);
+    const addBtn = el("button", "btn btn-ghost");
+    addBtn.type = "submit";
+    addBtn.textContent = "Add";
+    addForm.append(addInput, addBtn);
+    addForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      addGroupMember(g.id, addInput.value.trim());
+    });
+    controls.appendChild(addForm);
+
+    const actions = el("div", "user-actions");
+    actions.appendChild(userActionButton("Rename", () => renameGroup(g.id)));
+    actions.appendChild(userActionButton("Delete", () => deleteGroup(g.id), true));
+    controls.appendChild(actions);
+    li.appendChild(controls);
+  }
+  return li;
+}
+
+function replaceGroup(updated) {
+  if (!updated || !updated.id) return;
+  const idx = state.groups.findIndex((g) => g.id === updated.id);
+  if (idx !== -1) state.groups[idx] = updated;
+  renderGroups();
+}
+
+async function createGroup(e) {
+  if (e) e.preventDefault();
+  setFormError(groupError, "");
+  const name = groupName.value.trim();
+  if (!name) {
+    setFormError(groupError, "Enter a group name.");
+    return;
+  }
+  try {
+    const created = await api("/api/groups", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name: name.slice(0, 120), share_key: groupShareKey.checked }),
+    });
+    groupForm.reset();
+    groupShareKey.checked = true;
+    if (created && created.id) state.groups.push(created);
+    renderGroups();
+    await loadKeyStatus();
+    toast("Group created");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    setFormError(groupError, err.message);
+  }
+}
+
+async function patchGroup(id, body) {
+  try {
+    const updated = await api("/api/groups/" + enc(id), {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    replaceGroup(updated);
+    await loadKeyStatus();
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(err.message);
+    await loadGroups();
+  }
+}
+
+async function renameGroup(id) {
+  const g = groupById(id);
+  if (!g) return;
+  const name = window.prompt("Rename group", g.name || "");
+  if (name === null || !name.trim()) return;
+  await patchGroup(id, { name: name.trim().slice(0, 120) });
+}
+
+async function deleteGroup(id) {
+  const g = groupById(id);
+  if (!g) return;
+  if (!window.confirm('Delete group "' + g.name + '"? Members will stop sharing keys.')) return;
+  try {
+    await api("/api/groups/" + enc(id), { method: "DELETE" });
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message);
+    return;
+  }
+  state.groups = state.groups.filter((x) => x.id !== id);
+  renderGroups();
+  await loadKeyStatus();
+  toast("Group deleted");
+}
+
+async function addGroupMember(id, identifier) {
+  if (!identifier) return;
+  try {
+    const updated = await api("/api/groups/" + enc(id) + "/members", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ identifier }),
+    });
+    replaceGroup(updated);
+    toast("Member added");
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message);
+  }
+}
+
+async function removeGroupMember(group, member) {
+  if (!window.confirm('Remove "' + member.username + '" from ' + group.name + "?")) return;
+  try {
+    await api("/api/groups/" + enc(group.id) + "/members/" + enc(member.user_id), {
+      method: "DELETE",
+    });
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message);
+    return;
+  }
+  await loadGroups();
+  await loadKeyStatus();
+  toast("Member removed");
 }
 
 /* ============================== Popup menus ============================== */
@@ -2331,6 +2551,9 @@ function wireEvents() {
   keyForm.addEventListener("submit", saveKey);
   keyRemove.addEventListener("click", removeKey);
   settingShareServerKey.addEventListener("change", saveShareServerKey);
+
+  /* Groups & shared keys (§2.2). */
+  groupForm.addEventListener("submit", createGroup);
 
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();
