@@ -3,69 +3,74 @@
 <https://github.com/Myleshen/MyOGChat>
 
 A personal, self-hosted ChatGPT-style web app (installable PWA) backed by an
-[OpenCode Go](https://opencode.ai/docs/go/) subscription. Single Go binary, no
-runtime dependencies, SQLite storage, ~3 MB RAM — built to run comfortably on a
+[OpenCode Go](https://opencode.ai/docs/go/) subscription. One static Go binary,
+no runtime dependencies, SQLite storage, ~3 MB RAM — comfortable on a
 Raspberry Pi 4B.
 
 ## Features
 
-- Streaming chat with markdown + syntax highlighting, conversation history
+- Streaming chat with markdown + syntax highlighting and conversation history
 - **Projects** — named containers with a system-instructions prompt and an
-  optional default model; chats live in a project or stay unfiled
-- **Two upstream dialects**: OpenAI-compatible `/chat/completions` (Kimi, GLM,
-  DeepSeek, MiMo, …) and the Responses API `/responses` (GPT 6 Luna, Grok) with
+  optional default model; a chat is filed in a project or left unfiled
+- **Two upstream dialects** — OpenAI-compatible `/chat/completions` (Kimi, GLM,
+  DeepSeek, MiMo, …) and the Responses API `/responses` (GPT 6 Luna, Grok), with
   a reasoning-effort selector
 - Collapsible **thinking** blocks (duration + reasoning-token count) and a
   thinking badge on models that surface reasoning
-- Per-message **cost** and **tokens/sec**, conversation running total
-- **Regenerate** / copy tools, auto-generated chat titles
+- Per-message **cost** and **tokens/sec**, plus a conversation running total
+- **Regenerate** and copy tools; auto-generated chat titles
 - **Light / dark / system** themes and a settings panel
 - Installable **PWA** (mobile-first; add to home screen on Android/iOS)
-- Configurable retention (default 30 days, hard max 60)
-- Shared-token login; designed to sit behind a Cloudflare Tunnel
-
-## Requirements
-
-- An OpenCode Go API key (subscription in the [OpenCode console](https://opencode.ai/console))
-- Go 1.24+ to build (this repo pins Go via `.mise.toml`; `mise exec -- go …` works)
+- Configurable retention (default 30 days, max 60) and shared-token login,
+  designed to sit behind a Cloudflare Tunnel
 
 ## Configuration
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OPENCODE_API_KEY` | — | **required**, your OpenCode Go key |
-| `MYOGCHAT_AUTH_TOKEN` | — | **required**, shared login token (e.g. `openssl rand -base64 24`) |
+| `OPENCODE_API_KEY` | — | **required**; your OpenCode Go key |
+| `MYOGCHAT_AUTH_TOKEN` | — | **required**; shared login token (`openssl rand -base64 24`) |
 | `MYOGCHAT_PORT` | `8787` | listen port |
 | `MYOGCHAT_DB` | `~/.local/share/myogchat/chat.db` | SQLite path |
 | `MYOGCHAT_RETENTION_DAYS` | `30` | clamped to `[1, 60]` |
 
-## Run locally
+## Build & run locally
+
+Requires Go 1.27+ (pinned in `.mise.toml`; `mise exec -- go …` works).
 
 ```sh
-OPENCODE_API_KEY=sk-… MYOGCHAT_AUTH_TOKEN=$(openssl rand -base64 24) go run .
-# open http://localhost:8787
+OPENCODE_API_KEY=… MYOGCHAT_AUTH_TOKEN=$(openssl rand -base64 24) go run .
+# http://localhost:8787
 ```
 
-## Deploy to a Raspberry Pi (aarch64)
+## Deploy
+
+The target host needs **no Go toolchain** — the binary is cross-compiled on the
+workstation and installed as a systemd *user* service.
 
 ```sh
-cp deploy/env.example ~/.config/myogchat/env   # on the Pi, then fill it in
+cp deploy/env.example ~/.config/myogchat/env   # on the target; then fill it in
 chmod 600 ~/.config/myogchat/env
-deploy/deploy.sh pi@raspberrypi.local        # builds arm64 + installs the user service
+deploy/deploy.sh pi@raspberrypi.local        # cross-compile arm64 + install
 ```
 
-Then enable lingering once so the service survives logout/reboot:
+Enable lingering once (needs sudo **on the target**) so the service starts at
+boot instead of only while you are logged in:
 
 ```sh
 ssh pi@raspberrypi.local sudo loginctl enable-linger pi
 ```
 
-Logs: `journalctl --user -u myogchat -f`. Details in [`DESIGN.md`](DESIGN.md)
-and the exact API in [`API_CONTRACT.md`](API_CONTRACT.md).
+Logs: `journalctl --user -u myogchat -f`.
+
+## Docs
+
+- [`DESIGN.md`](DESIGN.md) — architecture and design
+- [`API_CONTRACT.md`](API_CONTRACT.md) — exact REST/SSE contract
+- [`AGENTS.md`](AGENTS.md) — notes for AI coding agents working on this repo
 
 ## Notes
 
-- Requires a client-side `x-opencode-session` header (per conversation) and a
-  non-generic User-Agent, per OpenCode Go's usage requirements — both are set
-  by the backend.
-- The Muse Spark models are intentionally excluded (they train on your prompts).
+- Requests must carry a per-conversation `x-opencode-session` and a non-generic
+  User-Agent, per OpenCode Go's usage requirements — the backend sets both.
+- Muse Spark models are intentionally excluded (they train on your prompts).
