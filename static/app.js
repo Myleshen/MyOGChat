@@ -61,6 +61,9 @@ const composer = document.getElementById("composer");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send-btn");
 const stopBtn = document.getElementById("stop-btn");
+const attachBtn = document.getElementById("attach-btn");
+const fileInput = document.getElementById("file-input");
+const attachmentsBar = document.getElementById("attachments-bar");
 
 const toastEl = document.getElementById("toast");
 
@@ -115,6 +118,7 @@ const state = {
   currentMessages: [],     // messages of the open conversation
   streaming: false,
   abort: null,             // AbortController while streaming
+  pendingAttachments: [],  // uploaded files awaiting send: {id,name,mime,size,chars,uploading?}
 };
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -386,6 +390,8 @@ function handleUnauthorized() {
   state.currentMessages = [];
   state.conversations = [];
   state.projects = [];
+  state.pendingAttachments = [];
+  renderAttachments();
   appEl.hidden = true;
   showLogin();
 }
@@ -1546,6 +1552,12 @@ function buildUserMessage(m) {
   const wrap = el("div", "msg msg-user");
   const bubble = el("div", "msg-bubble");
   bubble.textContent = m.content;
+  const n = Array.isArray(m.attachments) ? m.attachments.length : 0;
+  if (n > 0) {
+    const note = el("div", "msg-attachments");
+    note.textContent = n + " file" + (n === 1 ? "" : "s") + " attached";
+    bubble.appendChild(note);
+  }
   wrap.appendChild(bubble);
   return wrap;
 }
@@ -1787,11 +1799,12 @@ function setStreaming(on) {
   sendBtn.hidden = on;
   stopBtn.hidden = !on;
   updateSendBtn();
+  updateAttachBtn();
   if (!on) input.focus({ preventScroll: true });
 }
 
 function updateSendBtn() {
-  sendBtn.disabled = state.streaming || input.value.trim() === "";
+  sendBtn.disabled = state.streaming || isUploading() || input.value.trim() === "";
 }
 
 function newStreamUI() {
@@ -2033,16 +2046,33 @@ async function streamAssistant(opts) {
 }
 
 async function sendMessage(conv, text) {
-  const userMsg = { role: "user", content: text, cost_micros: null };
+  const attachments = state.pendingAttachments.filter((a) => a && a.id);
+  const userMsg = {
+    role: "user",
+    content: text,
+    cost_micros: null,
+    attachments: attachments.map((a) => ({ id: a.id, name: a.name, mime: a.mime, size: a.size })),
+  };
   state.currentMessages.push(userMsg);
   messagesEl.appendChild(buildUserMessage(userMsg));
   scrollToBottom();
 
+  const snapshot = state.pendingAttachments.slice();
+  clearPendingAttachments();
+
+  const body = { content: text };
+  if (attachments.length > 0) body.attachment_ids = attachments.map((a) => a.id);
+
   await streamAssistant({
     path: "/api/conversations/" + enc(conv.id) + "/messages",
     convId: conv.id,
-    body: { content: text },
-    onFatal: () => rollbackOptimisticUserMessage(text),
+    body,
+    onFatal: () => {
+      rollbackOptimisticUserMessage(text);
+      // Restore the chips so the user can retry without re-uploading.
+      state.pendingAttachments = snapshot;
+      renderAttachments();
+    },
   });
 }
 
@@ -2068,6 +2098,126 @@ async function regenerate() {
     convId: state.current.id,
     onFatal: () => refreshCurrentConversation(),
   });
+}
+
+/* ============================== Attachments (2.3) ============================== */
+
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENTS = 20;
+
+function fmtBytes(n) {
+  if (typeof n !== "number" || n < 0) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10 * 1024 ? 1 : 0) + " KB";
+  return (n / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function isUploading() {
+  return state.pendingAttachments.some((a) => a && a.uploading);
+}
+
+function updateAttachBtn() {
+  attachBtn.disabled =
+    state.streaming ||
+    isUploading() ||
+    state.pendingAttachments.length >= MAX_ATTACHMENTS;
+}
+
+/* POST multipart/form-data to /api/attachments; returns the stored metadata. */
+async function uploadAttachment(file) {
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  const res = await fetch("/api/attachments", { method: "POST", body: fd });
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new AuthError("unauthorized");
+  }
+  if (!res.ok) {
+    throw new ApiError((await readError(res)) || "Upload failed (" + res.status + ")", res.status);
+  }
+  return res.json();
+}
+
+function renderAttachments() {
+  const atts = state.pendingAttachments;
+  attachmentsBar.innerHTML = "";
+  attachmentsBar.hidden = atts.length === 0;
+  for (const a of atts) {
+    const chip = el("span", "attachment-chip" + (a.uploading ? " uploading" : ""));
+    const name = el("span", "attachment-chip-name");
+    name.textContent = a.name;
+    name.title = a.name;
+    chip.appendChild(name);
+    const meta = el("span", "attachment-chip-size");
+    if (a.uploading) {
+      meta.textContent = "uploading…";
+      chip.appendChild(meta);
+    } else {
+      meta.textContent = fmtBytes(a.size);
+      chip.appendChild(meta);
+      const remove = el("button", "attachment-remove");
+      remove.type = "button";
+      remove.setAttribute("aria-label", "Remove " + a.name);
+      remove.textContent = "✕";
+      remove.addEventListener("click", () => removeAttachment(a));
+      chip.appendChild(remove);
+    }
+    attachmentsBar.appendChild(chip);
+  }
+  updateSendBtn();
+  updateAttachBtn();
+}
+
+/* Removing a pending chip deletes the server copy to free storage. Attachments
+   that were already sent are never removed here. */
+function removeAttachment(a) {
+  const i = state.pendingAttachments.indexOf(a);
+  if (i !== -1) state.pendingAttachments.splice(i, 1);
+  renderAttachments();
+  if (a.id) {
+    fetch("/api/attachments/" + enc(a.id), { method: "DELETE" }).catch(() => {});
+  }
+}
+
+function clearPendingAttachments() {
+  state.pendingAttachments = [];
+  renderAttachments();
+}
+
+async function onFilesSelected() {
+  const files = Array.from(fileInput.files || []);
+  fileInput.value = "";
+  if (files.length === 0 || state.streaming) return;
+
+  const room = MAX_ATTACHMENTS - state.pendingAttachments.length;
+  if (room <= 0) {
+    toast("At most " + MAX_ATTACHMENTS + " files per message");
+    return;
+  }
+  const chosen = files.slice(0, room);
+  if (files.length > chosen.length) {
+    toast("Only the first " + MAX_ATTACHMENTS + " files were added");
+  }
+
+  for (const file of chosen) {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      toast(file.name + " is larger than 10 MB");
+      continue;
+    }
+    const placeholder = { id: null, name: file.name, size: file.size, uploading: true };
+    state.pendingAttachments.push(placeholder);
+    renderAttachments();
+    try {
+      const meta = await uploadAttachment(file);
+      const i = state.pendingAttachments.indexOf(placeholder);
+      if (i !== -1) state.pendingAttachments[i] = meta;
+    } catch (err) {
+      const i = state.pendingAttachments.indexOf(placeholder);
+      if (i !== -1) state.pendingAttachments.splice(i, 1);
+      if (!(err instanceof AuthError)) toast(err.message);
+    }
+    renderAttachments();
+  }
 }
 
 /* ============================== Composer ============================== */
@@ -2403,7 +2553,7 @@ function wireEvents() {
 
   composer.addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (state.streaming) return;
+    if (state.streaming || isUploading()) return;
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
@@ -2434,6 +2584,12 @@ function wireEvents() {
   stopBtn.addEventListener("click", () => {
     if (state.abort) state.abort.abort();
   });
+
+  /* Attachments: paperclip opens the picker, chips render above the composer. */
+  attachBtn.addEventListener("click", () => {
+    if (!attachBtn.disabled) fileInput.click();
+  });
+  fileInput.addEventListener("change", onFilesSelected);
 }
 
 /* ============================== Service worker ============================== */
@@ -2489,6 +2645,7 @@ wireEvents();
 wireViewport();
 registerSW();
 updateSendBtn();
+updateAttachBtn();
 updateNewChatLabel();
 renderUser();
 boot();

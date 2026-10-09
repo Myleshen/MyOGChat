@@ -66,6 +66,9 @@ type Params struct {
 	// Instructions is the project system prompt (§8.6). Chat dialect gets it
 	// as a leading system message; responses dialect as a top-level field.
 	Instructions string
+	// Context is leading attachment text (2.3). Chat dialect prepends it as a
+	// system message; responses dialect as a leading input item.
+	Context string
 }
 
 // Client calls the OpenCode Go API. The bearer key is supplied per request
@@ -243,6 +246,10 @@ func (c *Client) streamChat(ctx context.Context, p Params, send func(Event) bool
 	if p.Instructions != "" {
 		msgs = append([]Message{{Role: "system", Content: p.Instructions}}, msgs...)
 	}
+	// Attachment text leads the request as its own system message (2.3).
+	if p.Context != "" {
+		msgs = append([]Message{{Role: "system", Content: p.Context}}, msgs...)
+	}
 	payload := map[string]any{
 		"model":          p.Model,
 		"messages":       msgs,
@@ -308,6 +315,10 @@ func (c *Client) streamResponses(ctx context.Context, p Params, send func(Event)
 		"stream":            true,
 		"max_output_tokens": 4096,
 		"reasoning":         map[string]any{"effort": effort, "summary": "auto"},
+	}
+	// Attachment text leads the input as a system item (2.3).
+	if p.Context != "" {
+		payload["input"] = append([]Message{{Role: "system", Content: p.Context}}, p.Messages...)
 	}
 	// Project instructions go in the responses API's dedicated field (§8.6).
 	if p.Instructions != "" {

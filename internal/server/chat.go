@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,7 +56,8 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Content string `json:"content"`
+		Content       string   `json:"content"`
+		AttachmentIDs []string `json:"attachment_ids"`
 	}
 	if err := decodeJSON(w, r, &req, 1<<20); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -69,6 +71,16 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "content exceeds 100 KB")
 		return
 	}
+	atts, err := s.loadAttachments(r.Context(), u.ID, req.AttachmentIDs)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusBadRequest, "unknown attachment")
+		return
+	}
+	if err != nil {
+		s.log.Error("load attachments", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load attachments")
+		return
+	}
 	apiKey, err := s.resolveKey(r.Context(), u)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -79,6 +91,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		ConversationID: conv.ID,
 		Role:           "user",
 		Content:        req.Content,
+		Attachments:    attachmentMeta(atts),
 		CreatedAt:      time.Now().UnixMilli(),
 	}
 	if err := s.st.InsertMessage(r.Context(), &userMsg); err != nil {
@@ -86,7 +99,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save message")
 		return
 	}
-	s.streamReply(w, r, conv, u.ID, apiKey)
+	s.streamReply(w, r, conv, u.ID, apiKey, atts)
 }
 
 // handleRegenerate replaces the trailing assistant reply (§8.5).
@@ -119,11 +132,13 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to prepare regenerate")
 		return
 	}
-	s.streamReply(w, r, conv, u.ID, apiKey)
+	// Re-fold any attachments the last user message carried (2.3).
+	atts := s.attachmentsFromLastUser(r.Context(), u.ID, conv.ID)
+	s.streamReply(w, r, conv, u.ID, apiKey, atts)
 }
 
 // streamReply streams one assistant reply for conv over SSE and persists it.
-func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, userID, apiKey string) {
+func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, userID, apiKey string, atts []store.Attachment) {
 	ctx := r.Context()
 	m, ok := models.ByID(conv.Model)
 	if !ok {
@@ -169,6 +184,7 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 		APIKey:       apiKey,
 		Messages:     msgs,
 		Instructions: instructions,
+		Context:      foldAttachments(atts),
 	})
 
 	var content, reasoning strings.Builder
@@ -290,6 +306,44 @@ stream:
 	}
 
 	writeSSE(w, flusher, "done", doneEvent{MessageID: asstID, Title: title})
+}
+
+// attachmentsFromLastUser reloads the attachment texts referenced by the most
+// recent user message so a regenerate folds the same context (2.3). Missing
+// attachments (e.g. deleted after sending) are skipped.
+func (s *Server) attachmentsFromLastUser(ctx context.Context, userID, convID string) []store.Attachment {
+	msgs, err := s.st.ListMessages(ctx, convID)
+	if err != nil {
+		s.log.Warn("load messages for attachments", "error", err)
+		return nil
+	}
+	var ids []string
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			for _, f := range msgs[i].Attachments {
+				ids = append(ids, f.ID)
+			}
+			break
+		}
+	}
+	atts := make([]store.Attachment, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if seen[id] || len(atts) >= maxAttachmentsPerMessage {
+			continue
+		}
+		seen[id] = true
+		a, err := s.st.GetAttachment(ctx, id, userID)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			s.log.Warn("load attachment for regenerate", "id", id, "error", err)
+			continue
+		}
+		atts = append(atts, a)
+	}
+	return atts
 }
 
 // projectInstructions returns the system prompt of a conversation's project, or

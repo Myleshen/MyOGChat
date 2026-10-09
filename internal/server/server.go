@@ -66,6 +66,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/conversations/{id}/messages", s.handlePostMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/regenerate", s.handleRegenerate)
 
+	// Attachments (per-user, 2.3).
+	mux.HandleFunc("POST /api/attachments", s.handleUploadAttachment)
+	mux.HandleFunc("GET /api/attachments/{id}", s.handleGetAttachment)
+	mux.HandleFunc("DELETE /api/attachments/{id}", s.handleDeleteAttachment)
+
 	// Admin: users and settings (§9.4).
 	mux.HandleFunc("GET /api/users", s.handleListUsers)
 	mux.HandleFunc("POST /api/users", s.handleCreateUser)

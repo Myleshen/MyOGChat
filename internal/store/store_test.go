@@ -89,7 +89,7 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	if err != nil {
 		t.Fatalf("columns(messages): %v", err)
 	}
-	for _, col := range []string{"reasoning_tokens", "duration_ms"} {
+	for _, col := range []string{"reasoning_tokens", "duration_ms", "attachments"} {
 		if !msgCols[col] {
 			t.Errorf("migration did not add messages.%s", col)
 		}
@@ -242,6 +242,62 @@ func TestRegenerateHelpers(t *testing.T) {
 	}
 	if len(msgs) != 1 || msgs[0].Role != "user" {
 		t.Errorf("after regenerate prep messages = %+v, want the single user message", msgs)
+	}
+}
+
+func TestAttachmentsScopingAndMessageMetadata(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-alice", "alice", false)
+	bob := seedUser(t, s, "u-bob", "bob", false)
+
+	att := &Attachment{
+		ID: "att-1", UserID: alice.ID, Name: "notes.txt", Mime: "text/plain",
+		Size: 5, Text: "hello", CreatedAt: 1,
+	}
+	if err := s.InsertAttachment(ctx, att); err != nil {
+		t.Fatalf("InsertAttachment: %v", err)
+	}
+	got, err := s.GetAttachment(ctx, "att-1", alice.ID)
+	if err != nil {
+		t.Fatalf("owner cannot read own attachment: %v", err)
+	}
+	if got.Text != "hello" || got.Chars() != 5 {
+		t.Errorf("GetAttachment = %+v, want text hello and 5 chars", got)
+	}
+	if _, err := s.GetAttachment(ctx, "att-1", bob.ID); err != ErrNotFound {
+		t.Errorf("cross-user read = %v, want ErrNotFound", err)
+	}
+	if n, err := s.DeleteAttachment(ctx, "att-1", bob.ID); err != nil || n != 0 {
+		t.Errorf("cross-user delete = %d, %v; want 0, nil", n, err)
+	}
+
+	// A user message persists attachment display metadata as JSON.
+	if err := s.InsertConversation(ctx, &Conversation{
+		ID: "c1", UserID: &alice.ID, Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+	if err := s.InsertMessage(ctx, &Message{
+		ID: "m1", ConversationID: "c1", Role: "user", Content: "see file",
+		Attachments: []AttachedFile{{ID: "att-1", Name: "notes.txt", Mime: "text/plain", Size: 5}},
+		CreatedAt:   1,
+	}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := s.ListMessages(ctx, "c1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 || len(msgs[0].Attachments) != 1 || msgs[0].Attachments[0].Name != "notes.txt" {
+		t.Errorf("message attachments not round-tripped: %+v", msgs)
+	}
+
+	if n, err := s.DeleteAttachment(ctx, "att-1", alice.ID); err != nil || n != 1 {
+		t.Errorf("owner delete = %d, %v; want 1, nil", n, err)
+	}
+	if _, err := s.GetAttachment(ctx, "att-1", alice.ID); err != ErrNotFound {
+		t.Errorf("attachment still present after delete: err=%v", err)
 	}
 }
 
