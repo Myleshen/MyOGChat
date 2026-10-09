@@ -1,7 +1,9 @@
 # MyOGChat — agent notes
 
 Personal ChatGPT-style PWA backed by an OpenCode Go subscription.
-Read `DESIGN.md` and `API_CONTRACT.md` first — the contract is the source of truth.
+
+**New here? Read `HANDOFF.md` first** (live state, status, testing, next steps).
+Then `DESIGN.md` and `API_CONTRACT.md` — the contract is the source of truth.
 
 ## Layout
 
