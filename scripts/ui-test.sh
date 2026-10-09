@@ -95,6 +95,7 @@ assert "attachment chip shown" "document.getElementById('attachments-bar').textC
 shot 06-attachment.png
 
 echo "-- settings (key + groups) --"
+ab press Escape >/dev/null 2>&1; sleep 1
 ab click "#settings-btn" >/dev/null 2>&1; sleep 1
 assert "settings opens" "!document.getElementById('settings-modal').hidden"
 assert "settings fits viewport" "document.querySelector('#settings-modal .modal-card').getBoundingClientRect().height <= window.innerHeight + 1"
@@ -126,11 +127,14 @@ assert "composer visible after send" "document.querySelector('.composer').getBou
 shot 09-sent.png
 
 echo "-- admin pass --"
+ab click "#menu-btn" >/dev/null 2>&1; sleep 1
 ab click "#logout-btn" >/dev/null 2>&1; sleep 1
+ab reload >/dev/null 2>&1; sleep 1   # clean login screen (dismiss any leftover drawer/backdrop)
 assert "logged out" "!document.getElementById('login-view').hidden && !document.getElementById('login-form').hidden"
 login "$ADMIN_USER" "$ADMIN_PASS"
 assert "admin signed in" "!document.getElementById('app').hidden"
 assert "admin badge shown" "!document.getElementById('user-admin-badge').hidden"
+ab press Escape >/dev/null 2>&1; sleep 1
 ab click "#settings-btn" >/dev/null 2>&1; sleep 1
 assert "users section visible for admin" "!document.getElementById('users-section').hidden"
 assert "share-server-key toggle present" "!!document.getElementById('setting-share-server-key')"

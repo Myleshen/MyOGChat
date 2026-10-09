@@ -37,6 +37,10 @@ if [ -z "${OPENCODE_API_KEY:-}" ]; then
 fi
 
 echo "== start isolated server on :$PORT =="
+if ss -tln 2>/dev/null | grep -q ":$PORT "; then
+  echo "port $PORT is busy — free it first (e.g. kill the old test server)" >&2
+  exit 1
+fi
 OPENCODE_API_KEY="$OPENCODE_API_KEY" MYOGCHAT_PORT="$PORT" MYOGCHAT_DB="$DB" \
   "$BIN" >/tmp/opencode/uitest-server.log 2>&1 &
 SRV=$!
