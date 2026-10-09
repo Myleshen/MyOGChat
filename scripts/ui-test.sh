@@ -93,6 +93,17 @@ assert "settings fits the viewport" \
   "document.querySelector('#settings-modal .modal-card').getBoundingClientRect().height <= window.innerHeight + 1"
 assert "OpenCode Go key section present" "!document.getElementById('key-section').hidden"
 shot 05-settings.png
+
+echo "-- groups (2.2) --"
+assert "groups section present" "!!document.getElementById('groups-section')"
+ab fill "#group-name" "UI Test Group" >/dev/null 2>&1
+ab click "#group-form button[type=submit]" >/dev/null 2>&1
+sleep 1
+assert "group created and listed" "document.getElementById('groups-list').textContent.includes('UI Test Group')"
+ab scrollintoview "#groups-section" >/dev/null 2>&1
+shot 05b-groups.png
+# best-effort cleanup of the test group
+ab eval "(function(){fetch('/api/groups').then(function(r){return r.json();}).then(function(gs){var g=gs.filter(function(x){return x.name==='UI Test Group';})[0];if(g)fetch('/api/groups/'+g.id,{method:'DELETE'});});return 'ok';})()" >/dev/null 2>&1
 ab press Escape >/dev/null 2>&1; sleep 1
 
 echo "-- theme --"

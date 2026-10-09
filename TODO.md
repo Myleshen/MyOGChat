@@ -57,7 +57,7 @@
 
 > Ordered by dependency + value. 2.1 is the foundation for 2.2.
 
-### 2.1 Per-user API key (BYOK) + key settings ← starting now
+### 2.1 Per-user API key (BYOK) + key settings — ✅ done (deployed)
 
 **Goal:** each user can add their own OpenCode Go key; fall back to the server
 key when sharing is allowed.
