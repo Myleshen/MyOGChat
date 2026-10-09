@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -65,6 +66,15 @@ CREATE TABLE IF NOT EXISTS messages (
   cost_micros       INTEGER,
   created_at        INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS attachments (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  mime       TEXT,
+  size       INTEGER NOT NULL,
+  text       TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_convos_updated ON conversations(updated_at DESC);
 CREATE TABLE IF NOT EXISTS groups (
@@ -84,6 +94,7 @@ CREATE TABLE IF NOT EXISTS group_members (
 );
 CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(owner_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id);
 `
 
 // User mirrors a row of the users table (§9.1).
@@ -113,20 +124,47 @@ type Conversation struct {
 
 // Message mirrors a row of the messages table.
 type Message struct {
-	ID               string  `json:"id"`
-	ConversationID   string  `json:"conversation_id"`
-	Role             string  `json:"role"`
-	Content          string  `json:"content"`
-	Reasoning        *string `json:"reasoning"`
-	Model            *string `json:"model"`
-	PromptTokens     *int64  `json:"prompt_tokens"`
-	CompletionTokens *int64  `json:"completion_tokens"`
-	CachedTokens     *int64  `json:"cached_tokens"`
-	CostMicros       *int64  `json:"cost_micros"`
-	ReasoningTokens  *int64  `json:"reasoning_tokens"`
-	DurationMs       *int64  `json:"duration_ms"`
-	CreatedAt        int64   `json:"created_at"`
+	ID               string         `json:"id"`
+	ConversationID   string         `json:"conversation_id"`
+	Role             string         `json:"role"`
+	Content          string         `json:"content"`
+	Reasoning        *string        `json:"reasoning"`
+	Model            *string        `json:"model"`
+	PromptTokens     *int64         `json:"prompt_tokens"`
+	CompletionTokens *int64         `json:"completion_tokens"`
+	CachedTokens     *int64         `json:"cached_tokens"`
+	CostMicros       *int64         `json:"cost_micros"`
+	ReasoningTokens  *int64         `json:"reasoning_tokens"`
+	DurationMs       *int64         `json:"duration_ms"`
+	Attachments      []AttachedFile `json:"attachments,omitempty"`
+	CreatedAt        int64          `json:"created_at"`
 }
+
+// AttachedFile is the display metadata of a file attached to a user message.
+// It is persisted as a JSON array on messages.attachments (2.3) so the UI can
+// show "N file(s) attached" after a reload; the extracted text itself lives in
+// the attachments table and is only folded into the request at send time.
+type AttachedFile struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Mime string `json:"mime,omitempty"`
+	Size int64  `json:"size"`
+}
+
+// Attachment mirrors a row of the attachments table (2.3). Text is the
+// extracted plain text folded into the model request.
+type Attachment struct {
+	ID        string `json:"id"`
+	UserID    string `json:"-"`
+	Name      string `json:"name"`
+	Mime      string `json:"mime,omitempty"`
+	Size      int64  `json:"size"`
+	Text      string `json:"-"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// Chars reports the number of characters in the extracted text (rune count).
+func (a Attachment) Chars() int { return len([]rune(a.Text)) }
 
 // Project mirrors a row of the projects table (§8.2).
 type Project struct {
@@ -201,6 +239,7 @@ func (s *Store) migrate() error {
 		{"conversations", "project_id", `ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`},
 		{"messages", "reasoning_tokens", `ALTER TABLE messages ADD COLUMN reasoning_tokens INTEGER`},
 		{"messages", "duration_ms", `ALTER TABLE messages ADD COLUMN duration_ms INTEGER`},
+		{"messages", "attachments", `ALTER TABLE messages ADD COLUMN attachments TEXT`},
 		{"conversations", "user_id", `ALTER TABLE conversations ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE`},
 		{"projects", "user_id", `ALTER TABLE projects ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE`},
 		{"users", "status", `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`},
@@ -572,16 +611,16 @@ func (s *Store) DeleteOlderThan(ctx context.Context, cutoff int64) (int64, error
 
 const messageCols = "id, conversation_id, role, content, reasoning, model, " +
 	"prompt_tokens, completion_tokens, cached_tokens, cost_micros, " +
-	"reasoning_tokens, duration_ms, created_at"
+	"reasoning_tokens, duration_ms, attachments, created_at"
 
 func scanMessage(sc scanner) (Message, error) {
 	var m Message
-	var reasoning, model sql.NullString
+	var reasoning, model, attachments sql.NullString
 	var promptTokens, completionTokens, cachedTokens, costMicros sql.NullInt64
 	var reasoningTokens, durationMs sql.NullInt64
 	err := sc.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content,
 		&reasoning, &model, &promptTokens, &completionTokens, &cachedTokens,
-		&costMicros, &reasoningTokens, &durationMs, &m.CreatedAt)
+		&costMicros, &reasoningTokens, &durationMs, &attachments, &m.CreatedAt)
 	if err != nil {
 		return Message{}, err
 	}
@@ -593,17 +632,29 @@ func scanMessage(sc scanner) (Message, error) {
 	m.CostMicros = optInt(costMicros)
 	m.ReasoningTokens = optInt(reasoningTokens)
 	m.DurationMs = optInt(durationMs)
+	if attachments.Valid && attachments.String != "" {
+		// A malformed value must not fail the whole history load; drop it.
+		_ = json.Unmarshal([]byte(attachments.String), &m.Attachments)
+	}
 	return m, nil
 }
 
 // InsertMessage inserts a new message row.
 func (s *Store) InsertMessage(ctx context.Context, m *Message) error {
+	var attachments any
+	if len(m.Attachments) > 0 {
+		b, err := json.Marshal(m.Attachments)
+		if err != nil {
+			return err
+		}
+		attachments = string(b)
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ConversationID, m.Role, m.Content, nullString(m.Reasoning),
 		nullString(m.Model), nullInt(m.PromptTokens), nullInt(m.CompletionTokens),
 		nullInt(m.CachedTokens), nullInt(m.CostMicros), nullInt(m.ReasoningTokens),
-		nullInt(m.DurationMs), m.CreatedAt)
+		nullInt(m.DurationMs), attachments, m.CreatedAt)
 	return err
 }
 
@@ -950,4 +1001,60 @@ func (s *Store) IsGroupMember(ctx context.Context, groupID, userID string) (bool
 		`SELECT COUNT(1) FROM group_members WHERE group_id = ? AND user_id = ?`,
 		groupID, userID).Scan(&n)
 	return n > 0, err
+}
+
+// ---------- attachments (2.3) ----------
+
+const attachmentCols = "id, user_id, name, mime, size, text, created_at"
+
+func scanAttachment(sc scanner) (Attachment, error) {
+	var a Attachment
+	var mime sql.NullString
+	if err := sc.Scan(&a.ID, &a.UserID, &a.Name, &mime, &a.Size, &a.Text, &a.CreatedAt); err != nil {
+		return Attachment{}, err
+	}
+	a.Mime = ""
+	if mime.Valid {
+		a.Mime = mime.String
+	}
+	return a, nil
+}
+
+// InsertAttachment stores an extracted file for its owner.
+func (s *Store) InsertAttachment(ctx context.Context, a *Attachment) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO attachments (`+attachmentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.UserID, a.Name, nullString(&a.Mime), a.Size, a.Text, a.CreatedAt)
+	return err
+}
+
+// GetAttachment loads one attachment owned by userID, else ErrNotFound. The
+// owner guard makes cross-user access indistinguishable from a missing row.
+func (s *Store) GetAttachment(ctx context.Context, id, userID string) (Attachment, error) {
+	a, err := scanAttachment(s.db.QueryRowContext(ctx,
+		`SELECT `+attachmentCols+` FROM attachments WHERE id = ? AND user_id = ?`, id, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Attachment{}, ErrNotFound
+	}
+	return a, err
+}
+
+// DeleteAttachment removes an owner's attachment. It returns the number of
+// rows removed (0 when not owned by userID).
+func (s *Store) DeleteAttachment(ctx context.Context, id, userID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM attachments WHERE id = ? AND user_id = ?`, id, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteAttachmentsOlderThan purges attachments created before cutoff (unix
+// ms) across all users, for the retention janitor.
+func (s *Store) DeleteAttachmentsOlderThan(ctx context.Context, cutoff int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM attachments WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

@@ -325,6 +325,13 @@ func janitor(ctx context.Context, st *store.Store, retentionDays int, log *slog.
 		if n > 0 {
 			log.Info("retention janitor purged conversations", "count", n, "cutoff", cutoff)
 		}
+		// Attachments share the retention window; a purged attachment is
+		// silently skipped when an old message is regenerated (2.3).
+		if a, err := st.DeleteAttachmentsOlderThan(ctx, cutoff); err != nil {
+			log.Error("retention janitor", "error", err)
+		} else if a > 0 {
+			log.Info("retention janitor purged attachments", "count", a, "cutoff", cutoff)
+		}
 	}
 
 	purge()

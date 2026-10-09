@@ -66,6 +66,9 @@ type Params struct {
 	// Instructions is the project system prompt (§8.6). Chat dialect gets it
 	// as a leading system message; responses dialect as a top-level field.
 	Instructions string
+	// Context is leading attachment text (2.3). Chat dialect prepends it as a
+	// system message; responses dialect as a leading input item.
+	Context string
 }
 
 // Client calls the OpenCode Go API. The bearer key is supplied per request
@@ -225,9 +228,9 @@ type chatChunk struct {
 		} `json:"delta"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens            int64 `json:"prompt_tokens"`
-		CompletionTokens        int64 `json:"completion_tokens"`
-		PromptTokensDetails     *struct {
+		PromptTokens        int64 `json:"prompt_tokens"`
+		CompletionTokens    int64 `json:"completion_tokens"`
+		PromptTokensDetails *struct {
 			CachedTokens int64 `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 		CompletionTokensDetails *struct {
@@ -242,6 +245,10 @@ func (c *Client) streamChat(ctx context.Context, p Params, send func(Event) bool
 	msgs := p.Messages
 	if p.Instructions != "" {
 		msgs = append([]Message{{Role: "system", Content: p.Instructions}}, msgs...)
+	}
+	// Attachment text leads the request as its own system message (2.3).
+	if p.Context != "" {
+		msgs = append([]Message{{Role: "system", Content: p.Context}}, msgs...)
 	}
 	payload := map[string]any{
 		"model":          p.Model,
@@ -309,6 +316,10 @@ func (c *Client) streamResponses(ctx context.Context, p Params, send func(Event)
 		"max_output_tokens": 4096,
 		"reasoning":         map[string]any{"effort": effort, "summary": "auto"},
 	}
+	// Attachment text leads the input as a system item (2.3).
+	if p.Context != "" {
+		payload["input"] = append([]Message{{Role: "system", Content: p.Context}}, p.Messages...)
+	}
 	// Project instructions go in the responses API's dedicated field (§8.6).
 	if p.Instructions != "" {
 		payload["instructions"] = p.Instructions
@@ -354,9 +365,9 @@ func (c *Client) streamResponses(ctx context.Context, p Params, send func(Event)
 			var d struct {
 				Response struct {
 					Usage *struct {
-						InputTokens         int64 `json:"input_tokens"`
-						OutputTokens        int64 `json:"output_tokens"`
-						InputTokensDetails  *struct {
+						InputTokens        int64 `json:"input_tokens"`
+						OutputTokens       int64 `json:"output_tokens"`
+						InputTokensDetails *struct {
 							CachedTokens int64 `json:"cached_tokens"`
 						} `json:"input_tokens_details"`
 						OutputTokensDetails *struct {

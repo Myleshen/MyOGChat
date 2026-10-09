@@ -641,12 +641,75 @@ button { font: inherit; }
 
 .composer {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
+  flex-direction: column;
   padding: 8px 12px;
   padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
   background: var(--bg);
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* Attachment chips above the composer row */
+.attachments-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 4px 8px;
+}
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 6px 4px 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+.attachment-chip.uploading { opacity: 0.65; }
+.attachment-chip.error { border-color: var(--red); color: var(--red); }
+.attachment-chip-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-chip-size { color: var(--text-dim); }
+.attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.attachment-remove:hover { background: var(--bg-overlay); color: var(--text); }
+
+.attach-btn {
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+.attach-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* "N file(s) attached" line inside a user message */
+.msg-attachments {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  opacity: 0.85;
 }
 
 .composer textarea {

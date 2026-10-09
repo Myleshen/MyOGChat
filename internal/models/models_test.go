@@ -48,7 +48,7 @@ func TestCostMicros(t *testing.T) {
 		return m
 	}
 	offPeak := utc(2026, time.October, 8, 12, 0) // Thursday noon
-	peak := utc(2026, time.October, 8, 2, 30)   // Thursday 02:30
+	peak := utc(2026, time.October, 8, 2, 30)    // Thursday 02:30
 
 	cases := []struct {
 		name       string
