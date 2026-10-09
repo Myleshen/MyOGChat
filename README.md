@@ -1,5 +1,7 @@
 # MyOGChat
 
+<https://github.com/Myleshen/MyOGChat>
+
 A personal, self-hosted ChatGPT-style web app (installable PWA) backed by an
 [OpenCode Go](https://opencode.ai/docs/go/) subscription. Single Go binary, no
 runtime dependencies, SQLite storage, ~3 MB RAM — built to run comfortably on a

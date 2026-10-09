@@ -1,6 +1,6 @@
 [Unit]
 Description=MyOGChat — personal chat UI for OpenCode Go
-Documentation=https://github.com/yourname/myogchat
+Documentation=https://github.com/Myleshen/MyOGChat
 After=network-online.target
 Wants=network-online.target
 
