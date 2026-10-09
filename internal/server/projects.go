@@ -15,9 +15,13 @@ const (
 	maxInstructionsRunes = 8000
 )
 
-// handleListProjects returns all projects with conversation counts (§8.2).
+// handleListProjects returns the caller's projects with conversation counts (§8.2).
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	projects, err := s.st.ListProjects(r.Context())
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	projects, err := s.st.ListProjects(r.Context(), u.ID)
 	if err != nil {
 		s.log.Error("list projects", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list projects")
@@ -26,8 +30,12 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projects)
 }
 
-// handleCreateProject creates a project (§8.2).
+// handleCreateProject creates a project owned by the caller (§8.2).
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Name         string  `json:"name"`
 		Instructions string  `json:"instructions"`
@@ -55,8 +63,10 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UnixMilli()
+	userID := u.ID
 	p := store.Project{
 		ID:           newUUID(),
+		UserID:       &userID,
 		Name:         name,
 		Instructions: req.Instructions,
 		DefaultModel: dm,
@@ -71,9 +81,13 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, p)
 }
 
-// handlePatchProject updates a project (§8.2).
+// handlePatchProject updates the caller's project (§8.2).
 func (s *Server) handlePatchProject(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.getProject(w, r)
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	p, ok := s.getProject(w, r, u.ID)
 	if !ok {
 		return
 	}
@@ -125,12 +139,16 @@ func (s *Server) handlePatchProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
-// handleDeleteProject deletes a project; its chats move to Unfiled (§8.2).
+// handleDeleteProject deletes the caller's project; its chats move to Unfiled.
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.getProject(w, r); !ok {
+	u, ok := currentUser(w, r)
+	if !ok {
 		return
 	}
-	if err := s.st.DeleteProject(r.Context(), r.PathValue("id")); err != nil {
+	if _, ok := s.getProject(w, r, u.ID); !ok {
+		return
+	}
+	if err := s.st.DeleteProject(r.Context(), r.PathValue("id"), u.ID); err != nil {
 		s.log.Error("delete project", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to delete project")
 		return
@@ -138,9 +156,9 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// getProject loads the {id} path project, writing 404/500 on failure.
-func (s *Server) getProject(w http.ResponseWriter, r *http.Request) (store.Project, bool) {
-	p, err := s.st.GetProject(r.Context(), r.PathValue("id"))
+// getProject loads the {id} path project owned by userID, writing 404/500.
+func (s *Server) getProject(w http.ResponseWriter, r *http.Request, userID string) (store.Project, bool) {
+	p, err := s.st.GetProject(r.Context(), r.PathValue("id"), userID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "project not found")
 		return store.Project{}, false

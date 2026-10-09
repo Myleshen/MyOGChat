@@ -40,10 +40,13 @@ browser (PWA) ──▶ Go binary :8787 ──▶ https://opencode.ai/zen/go/v1
 | Var | Default | Notes |
 |---|---|---|
 | `OPENCODE_API_KEY` | — | required, OpenCode Go key |
-| `MYOGCHAT_AUTH_TOKEN` | — | required, shared login token |
 | `MYOGCHAT_PORT` | `8787` | listen port |
 | `MYOGCHAT_DB` | `~/.local/share/myogchat/chat.db` | SQLite path |
 | `MYOGCHAT_RETENTION_DAYS` | `30` | clamped to [1, 60] |
+
+Authentication is multi-user (see API_CONTRACT §9): the first run shows a
+*Create admin account* screen; there is no shared-token env var. Sessions are
+signed with a `session_secret` generated into the database on first run.
 
 ## Retention
 

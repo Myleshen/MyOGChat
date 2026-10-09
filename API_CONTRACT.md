@@ -336,3 +336,117 @@ Required UI:
 8. **Retry**: on the last assistant message, a "Retry" action calls the
    regenerate endpoint. **Copy**: copy a message's raw text, and copy code
    blocks (already required).
+
+## 9. Users & authentication (replaces §1)
+
+Multi-user accounts with username/email/password. The shared-token login is
+**removed**; `MYOGCHAT_AUTH_TOKEN` is no longer read.
+
+### 9.1 Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+  id            TEXT PRIMARY KEY,
+  username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  is_admin      INTEGER NOT NULL DEFAULT 0,
+  status        TEXT NOT NULL DEFAULT 'active',  -- active | pending | disabled
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+-- conversations and projects each gain: user_id TEXT REFERENCES users(id) ON DELETE CASCADE
+```
+
+Settings keys (created with defaults on first open):
+- `session_secret` — 32 random bytes, base64; generated once, used to sign cookies.
+- `allow_registration` — `"1"` or `"0"`; default `"1"` (self-registration open).
+
+Migrations are additive (ALTER TABLE ADD COLUMN) per §8.1. **Existing
+conversations/projects with NULL `user_id` are legacy**: the first admin created
+by setup claims them (see §9.3).
+
+### 9.2 Password hashing
+
+PBKDF2-HMAC-SHA256 from the Go **standard library** (`crypto/pbkdf2`) — no new
+dependency. Per-user 16-byte random salt, **600000** iterations, 32-byte key.
+Stored string: `pbkdf2$sha256$600000$<salt-base64>$<hash-base64>` (standard
+base64). Verification uses `subtle.ConstantTimeCompare`. Passwords must be
+**≥ 8 characters**.
+
+### 9.3 Auth endpoints
+
+Public (no session required): `status`, `setup`, `register`, `login`.
+
+- `GET /api/auth/status` → `200 {"needs_setup": bool, "registration_open": bool}`
+  (`needs_setup` = no users exist).
+- `POST /api/auth/setup` `{"username","email","password"}` → `201` + session
+  cookie. **Only allowed while no users exist** (else `403`). Creates the first
+  user as **admin** and claims all legacy rows (`conversations`/`projects`
+  with NULL user_id) for it.
+- `POST /api/auth/register` `{"username","email","password"}` → `202`
+  `{"status":"pending","message":"…"}`. The account is created with
+  `status = "pending"` and **no session cookie is set** — a self-registered user
+  cannot log in until an admin approves them. `403` when `allow_registration` is
+  `"0"`. `409` on duplicate username/email (also for setup).
+- `POST /api/auth/login` `{"identifier","password"}` → `204` + cookie.
+  `identifier` is the username **or** email (case-insensitive). `401` on failure.
+  `403` when the account `status` is `pending` (message: "account pending
+  approval") or `disabled`.
+- `POST /api/auth/logout` → `204`, clears the cookie.
+- `GET /api/auth/me` → `200 {"id","username","email","is_admin"}` or `401`.
+
+Session cookie: name `myogchat`, value = `base64url(userID|expiryUnix|hex(hmacSHA256(secret, userID|expiry)))`,
+`HttpOnly`, `SameSite=Lax`, `Path=/`, 30-day expiry, `Secure` when the request
+is HTTPS / `X-Forwarded-Proto: https`.
+
+Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` and a
+`.`, ≤ 254 chars; all trimmed. Duplicates (case-insensitive) → `409`.
+
+### 9.4 Admin endpoints (admin session required)
+
+- `GET /api/users` → `[{"id","username","email","is_admin","status","created_at"}]`
+  (pending users included so the admin can approve them).
+- `POST /api/users` `{"username","email","password","is_admin"?}` → `201`
+  (created `status = "active"`).
+- `PATCH /api/users/{id}` `{"password"?, "is_admin"?, "status"?}` → `200`
+  (`status` ∈ `active` | `pending` | `disabled`; setting `active` approves a
+  pending registration).
+- `DELETE /api/users/{id}` → `204` (cannot delete yourself → `400`)
+- `GET /api/settings` → `{"allow_registration": bool, "pending_users": N}`
+- `PATCH /api/settings` `{"allow_registration"?: bool}` → `200` (same shape as GET)
+
+Non-admin callers of any of these get `403`.
+
+### 9.5 Data scoping
+
+Every conversation and project belongs to a user (`user_id`). All
+conversation/project queries filter by the session user; fetching or mutating a
+row that is not the caller's returns `404`. New rows set `user_id` to the caller.
+Admins do **not** see other users' chats (only user administration).
+
+### 9.6 Frontend
+
+- **Boot sequence**: `GET /api/auth/status` first.
+  - `needs_setup: true` → show a **Create admin account** screen
+    (username, email, password + confirm) → `POST /api/auth/setup` → enter app.
+  - else `GET /api/auth/me` → `200` enter app, `401` show login screen.
+- **Login screen**: identifier + password → `POST /api/auth/login`. When
+  `registration_open`, show a **Create account** toggle/second form
+  (username, email, password) → `POST /api/auth/register`. Registration returns
+  `202 pending` — show "Your account is awaiting admin approval" and **do not**
+  enter the app or store a session.
+- A `403` from login whose body mentions approval shows the pending-approval
+  message; a `403` for `disabled` shows "account disabled".
+- **Sidebar bottom**: show the signed-in username and a Log out button.
+- **Settings → Users** (admins only): list users (with a **status** badge and a
+  **Pending** section/count), add a user (username, email, password, admin
+  checkbox), **Approve**/**Reject** pending registrations (`PATCH status=active`
+  / `DELETE`), disable/enable users, delete a user, and a **"Allow new
+  registrations"** toggle (`GET`/`PATCH /api/settings`).
+- Any `/api` `401` returns to the login screen; `403` on admin panels shows a
+  toast and is hidden for non-admins.

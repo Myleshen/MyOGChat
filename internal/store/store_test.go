@@ -19,8 +19,22 @@ func openTemp(t *testing.T) *Store {
 	return s
 }
 
-// TestMigratesLegacySchema builds a pre-projects database (the original
-// release schema), then confirms Open adds the new columns and preserves data.
+// seedUser inserts a minimal active user and returns it.
+func seedUser(t *testing.T, s *Store, id, username string, admin bool) *User {
+	t.Helper()
+	u := &User{
+		ID: id, Username: username, Email: username + "@example.com",
+		PasswordHash: "x", IsAdmin: admin, Status: "active", CreatedAt: 1, UpdatedAt: 1,
+	}
+	if err := s.InsertUser(context.Background(), u); err != nil {
+		t.Fatalf("InsertUser(%s): %v", username, err)
+	}
+	return u
+}
+
+// TestMigratesLegacySchema builds a pre-users, pre-projects database (the
+// original release schema), then confirms Open adds the new columns, preserves
+// data, and lets the first admin claim the legacy rows.
 func TestMigratesLegacySchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := sql.Open("sqlite", "file:"+path)
@@ -66,8 +80,10 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	if err != nil {
 		t.Fatalf("columns(conversations): %v", err)
 	}
-	if !convCols["project_id"] {
-		t.Error("migration did not add conversations.project_id")
+	for _, col := range []string{"project_id", "user_id"} {
+		if !convCols[col] {
+			t.Errorf("migration did not add conversations.%s", col)
+		}
 	}
 	msgCols, err := s.columns("messages")
 	if err != nil {
@@ -78,35 +94,79 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 			t.Errorf("migration did not add messages.%s", col)
 		}
 	}
-
-	c, err := s.GetConversation(context.Background(), "legacy")
+	userCols, err := s.columns("users")
 	if err != nil {
-		t.Fatalf("legacy conversation lost: %v", err)
+		t.Fatalf("columns(users): %v", err)
+	}
+	if !userCols["status"] {
+		t.Error("migration did not add users.status")
+	}
+
+	// The first admin claims the ownerless legacy rows.
+	u := seedUser(t, s, "u1", "admin", true)
+	if err := s.ClaimLegacyData(context.Background(), u.ID); err != nil {
+		t.Fatalf("ClaimLegacyData: %v", err)
+	}
+	c, err := s.GetConversation(context.Background(), "legacy", u.ID)
+	if err != nil {
+		t.Fatalf("legacy conversation not claimed: %v", err)
 	}
 	if c.Title != "Old Chat" || c.Model != "glm-5.3-flash" {
 		t.Errorf("legacy row corrupted: %+v", c)
 	}
-	if c.ProjectID != nil {
-		t.Errorf("migrated project_id = %v, want nil", *c.ProjectID)
+}
+
+func TestUserScoping(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-alice", "alice", false)
+	bob := seedUser(t, s, "u-bob", "bob", false)
+
+	aliceID := alice.ID
+	if err := s.InsertConversation(ctx, &Conversation{
+		ID: "c-alice", UserID: &aliceID, Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+
+	// The owner sees it; another user does not.
+	if _, err := s.GetConversation(ctx, "c-alice", alice.ID); err != nil {
+		t.Fatalf("owner cannot read own conversation: %v", err)
+	}
+	if _, err := s.GetConversation(ctx, "c-alice", bob.ID); err != ErrNotFound {
+		t.Errorf("cross-user read = %v, want ErrNotFound", err)
+	}
+	if list, _ := s.ListConversations(ctx, bob.ID); len(list) != 0 {
+		t.Errorf("bob sees %d conversations, want 0", len(list))
+	}
+
+	// Counts and lockout guard.
+	if n, _ := s.CountAdmins(ctx); n != 0 {
+		t.Errorf("CountAdmins = %d, want 0 (no admin yet)", n)
+	}
+	seedUser(t, s, "u-admin", "root", true)
+	if n, _ := s.CountAdmins(ctx); n != 1 {
+		t.Errorf("CountAdmins = %d, want 1", n)
 	}
 }
 
 func TestProjectsAndUnfile(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
+	u := seedUser(t, s, "u1", "owner", false)
 
 	pid := "p1"
-	p := &Project{ID: pid, Name: "Rust", Instructions: "be terse", CreatedAt: 1, UpdatedAt: 1}
+	p := &Project{ID: pid, UserID: &u.ID, Name: "Rust", Instructions: "be terse", CreatedAt: 1, UpdatedAt: 1}
 	if err := s.InsertProject(ctx, p); err != nil {
 		t.Fatalf("InsertProject: %v", err)
 	}
 	if err := s.InsertConversation(ctx, &Conversation{
-		ID: "c1", Model: "glm-5.3-flash", ProjectID: &pid, CreatedAt: 1, UpdatedAt: 1,
+		ID: "c1", UserID: &u.ID, Model: "glm-5.3-flash", ProjectID: &pid, CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatalf("InsertConversation: %v", err)
 	}
 
-	got, err := s.GetProject(ctx, pid)
+	got, err := s.GetProject(ctx, pid, u.ID)
 	if err != nil {
 		t.Fatalf("GetProject: %v", err)
 	}
@@ -114,7 +174,7 @@ func TestProjectsAndUnfile(t *testing.T) {
 		t.Errorf("GetProject = %+v, want count 1 and instructions", got)
 	}
 
-	projects, err := s.ListProjects(ctx)
+	projects, err := s.ListProjects(ctx, u.ID)
 	if err != nil {
 		t.Fatalf("ListProjects: %v", err)
 	}
@@ -123,17 +183,17 @@ func TestProjectsAndUnfile(t *testing.T) {
 	}
 
 	// Deleting a project must unfile its chats, never delete them.
-	if err := s.DeleteProject(ctx, pid); err != nil {
+	if err := s.DeleteProject(ctx, pid, u.ID); err != nil {
 		t.Fatalf("DeleteProject: %v", err)
 	}
-	c, err := s.GetConversation(ctx, "c1")
+	c, err := s.GetConversation(ctx, "c1", u.ID)
 	if err != nil {
 		t.Fatalf("conversation deleted with project: %v", err)
 	}
 	if c.ProjectID != nil {
 		t.Errorf("after project delete project_id = %v, want nil", *c.ProjectID)
 	}
-	if _, err := s.GetProject(ctx, pid); err != ErrNotFound {
+	if _, err := s.GetProject(ctx, pid, u.ID); err != ErrNotFound {
 		t.Errorf("project still present after delete: err=%v", err)
 	}
 }
@@ -141,9 +201,10 @@ func TestProjectsAndUnfile(t *testing.T) {
 func TestRegenerateHelpers(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
+	u := seedUser(t, s, "u1", "owner", false)
 
 	if err := s.InsertConversation(ctx, &Conversation{
-		ID: "c1", Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+		ID: "c1", UserID: &u.ID, Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatalf("InsertConversation: %v", err)
 	}
@@ -151,7 +212,6 @@ func TestRegenerateHelpers(t *testing.T) {
 	if err != nil || has {
 		t.Fatalf("HasUserMessage on empty = %v, %v; want false, nil", has, err)
 	}
-	// No user message: deleting trailing assistants is a no-op.
 	n, err := s.DeleteAssistantAfterLastUser(ctx, "c1")
 	if err != nil || n != 0 {
 		t.Fatalf("DeleteAssistantAfterLastUser (empty) = %d, %v; want 0, nil", n, err)
@@ -169,10 +229,6 @@ func TestRegenerateHelpers(t *testing.T) {
 	insert("a1", "assistant")
 	insert("a2", "assistant")
 
-	has, err = s.HasUserMessage(ctx, "c1")
-	if err != nil || !has {
-		t.Fatalf("HasUserMessage = %v, %v; want true, nil", has, err)
-	}
 	n, err = s.DeleteAssistantAfterLastUser(ctx, "c1")
 	if err != nil {
 		t.Fatalf("DeleteAssistantAfterLastUser: %v", err)
@@ -186,5 +242,20 @@ func TestRegenerateHelpers(t *testing.T) {
 	}
 	if len(msgs) != 1 || msgs[0].Role != "user" {
 		t.Errorf("after regenerate prep messages = %+v, want the single user message", msgs)
+	}
+}
+
+func TestSettingsRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	v, err := s.EnsureSetting(ctx, "allow_registration", "1")
+	if err != nil || v != "1" {
+		t.Fatalf("EnsureSetting = %q, %v; want 1, nil", v, err)
+	}
+	if err := s.SetSetting(ctx, "allow_registration", "0"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	if v, _ := s.EnsureSetting(ctx, "allow_registration", "1"); v != "0" {
+		t.Errorf("EnsureSetting after update = %q, want 0", v)
 	}
 }

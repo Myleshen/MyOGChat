@@ -1,4 +1,4 @@
-// Package server wires the HTTP API (contract §3), auth middleware,
+// Package server wires the HTTP API (contract §3, §8, §9), auth middleware,
 // request logging and static SPA serving from the embedded filesystem.
 package server
 
@@ -37,9 +37,16 @@ func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log
 // Handler returns the root handler: routes + auth + request logging.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/login", s.auth.Login)
-	mux.HandleFunc("POST /api/logout", s.auth.Logout)
-	mux.HandleFunc("GET /api/me", s.auth.Me)
+
+	// Public auth endpoints (§9.3).
+	mux.HandleFunc("GET /api/auth/status", s.auth.Status)
+	mux.HandleFunc("POST /api/auth/setup", s.auth.Setup)
+	mux.HandleFunc("POST /api/auth/register", s.auth.Register)
+	mux.HandleFunc("POST /api/auth/login", s.auth.Login)
+	mux.HandleFunc("POST /api/auth/logout", s.auth.Logout)
+	mux.HandleFunc("GET /api/auth/me", s.auth.Me)
+
+	// Chat data (per-user).
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
@@ -52,8 +59,27 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
 	mux.HandleFunc("POST /api/conversations/{id}/messages", s.handlePostMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/regenerate", s.handleRegenerate)
+
+	// Admin: users and settings (§9.4).
+	mux.HandleFunc("GET /api/users", s.handleListUsers)
+	mux.HandleFunc("POST /api/users", s.handleCreateUser)
+	mux.HandleFunc("PATCH /api/users/{id}", s.handlePatchUser)
+	mux.HandleFunc("DELETE /api/users/{id}", s.handleDeleteUser)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PATCH /api/settings", s.handlePatchSettings)
+
 	mux.Handle("/", s.staticHandler())
 	return s.loggingMiddleware(s.auth.Middleware(mux))
+}
+
+// currentUser returns the authenticated user attached by the middleware.
+func currentUser(w http.ResponseWriter, r *http.Request) (store.User, bool) {
+	u, ok := auth.UserFrom(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return store.User{}, false
+	}
+	return u, true
 }
 
 // handleModels returns the static registry sorted by output_per_m ascending.
@@ -62,7 +88,11 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
-	convs, err := s.st.ListConversations(r.Context())
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	convs, err := s.st.ListConversations(r.Context(), u.ID)
 	if err != nil {
 		s.log.Error("list conversations", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list conversations")
@@ -88,6 +118,10 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request) {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Model     string  `json:"model"`
 		Effort    string  `json:"effort"`
@@ -97,10 +131,11 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// A project id must exist; its default_model can supply a missing model.
+	// A project id must exist and belong to the caller; its default_model can
+	// supply a missing model.
 	var project *store.Project
 	if req.ProjectID != nil && *req.ProjectID != "" {
-		p, err := s.st.GetProject(r.Context(), *req.ProjectID)
+		p, err := s.st.GetProject(r.Context(), *req.ProjectID, u.ID)
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusBadRequest, "unknown project")
 			return
@@ -134,8 +169,10 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 		effort = &req.Effort
 	}
 	now := time.Now().UnixMilli()
+	userID := u.ID
 	conv := store.Conversation{
 		ID:        newUUID(),
+		UserID:    &userID,
 		Title:     "",
 		Model:     m.ID,
 		Effort:    effort,
@@ -155,7 +192,11 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
-	conv, ok := s.getConversation(w, r)
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.getConversation(w, r, u.ID)
 	if !ok {
 		return
 	}
@@ -172,7 +213,11 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request) {
-	conv, ok := s.getConversation(w, r)
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.getConversation(w, r, u.ID)
 	if !ok {
 		return
 	}
@@ -190,7 +235,7 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 		if *req.ProjectID == "" {
 			conv.ProjectID = nil
 		} else {
-			if _, err := s.st.GetProject(r.Context(), *req.ProjectID); errors.Is(err, store.ErrNotFound) {
+			if _, err := s.st.GetProject(r.Context(), *req.ProjectID, u.ID); errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusBadRequest, "unknown project")
 				return
 			} else if err != nil {
@@ -247,17 +292,27 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request) {
-	if err := s.st.DeleteConversation(r.Context(), r.PathValue("id")); err != nil {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	n, err := s.st.DeleteConversation(r.Context(), r.PathValue("id"), u.ID)
+	if err != nil {
 		s.log.Error("delete conversation", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to delete conversation")
+		return
+	}
+	if n == 0 {
+		writeError(w, http.StatusNotFound, "conversation not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// getConversation loads the {id} path conversation, writing 404/500 on failure.
-func (s *Server) getConversation(w http.ResponseWriter, r *http.Request) (store.Conversation, bool) {
-	conv, err := s.st.GetConversation(r.Context(), r.PathValue("id"))
+// getConversation loads the {id} path conversation owned by userID, writing
+// 404/500 on failure.
+func (s *Server) getConversation(w http.ResponseWriter, r *http.Request, userID string) (store.Conversation, bool) {
+	conv, err := s.st.GetConversation(r.Context(), r.PathValue("id"), userID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "conversation not found")
 		return store.Conversation{}, false
@@ -271,7 +326,7 @@ func (s *Server) getConversation(w http.ResponseWriter, r *http.Request) (store.
 }
 
 // staticHandler serves the embedded SPA; unknown paths fall back to
-// index.html. Static files are public (contract §1).
+// index.html. Static files are public (the SPA shows its own login screen).
 func (s *Server) staticHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
@@ -307,12 +362,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) erro
 func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand only fails if the OS CSPRNG is broken; nothing
-		// sensible to fall back to.
 		panic(fmt.Sprintf("crypto/rand: %v", err))
 	}
-	b[6] = (b[6] & 0x0f) | 0x40 // version 4
-	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 

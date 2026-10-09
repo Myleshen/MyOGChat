@@ -169,6 +169,18 @@ button { font: inherit; }
 }
 .login-btn:hover { background: var(--accent-em-hover); }
 .login-btn:disabled { opacity: 0.6; cursor: default; }
+.login-link {
+  min-height: 44px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.login-link:hover { text-decoration: underline; }
+.login-info { margin: 0; color: var(--green); font-size: 0.9rem; }
 
 /* ---------- App layout ---------- */
 
@@ -339,8 +351,27 @@ button { font: inherit; }
   padding: 12px;
   border-top: 1px solid var(--border);
   display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .sidebar-bottom .btn { width: 100%; }
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 4px;
+}
+.user-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.user-row .badge { flex-shrink: 0; }
 
 /* ---------- Header ---------- */
 
@@ -354,7 +385,23 @@ button { font: inherit; }
 }
 
 .collapse-btn { display: none; }
-.settings-btn { margin-left: 4px; }
+.settings-btn { margin-left: 4px; position: relative; }
+.gear-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent-em);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
 
 .picker-group {
   flex: 1;
@@ -776,6 +823,92 @@ button { font: inherit; }
 .field input:focus,
 .field textarea:focus,
 .field select:focus { outline: none; border-color: var(--accent); }
+
+/* ---------- Settings: admin Users panel ---------- */
+
+.settings-users { display: flex; flex-direction: column; gap: 12px; }
+.settings-sep { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+.settings-subtitle { margin: 0; font-size: 0.95rem; }
+.settings-subtitle-sm { font-size: 0.85rem; color: var(--text-dim); }
+
+.users-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.user-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.user-item.user-pending {
+  border-color: var(--accent);
+  background: var(--bg-overlay);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.user-item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.user-item-line { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.user-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.user-item-email {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+.user-status { text-transform: capitalize; }
+.user-status-pending { color: var(--accent); border-color: var(--accent); background: transparent; }
+.user-status-disabled { opacity: 0.75; }
+
+.user-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.user-action {
+  min-height: 32px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.user-action:hover { color: var(--text); border-color: var(--text-dim); }
+.user-action.danger { color: var(--red); }
+.user-action.danger:hover { border-color: var(--red); background: var(--danger-hover-bg); }
+
+.user-delete { flex-shrink: 0; margin-left: auto; }
+.user-delete:hover:not(:disabled) { color: var(--red); }
+.user-delete:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.add-user-form { display: flex; flex-direction: column; gap: 12px; }
 
 body.modal-open { overflow: hidden; }
 

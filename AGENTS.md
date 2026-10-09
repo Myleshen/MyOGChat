@@ -60,3 +60,19 @@ Internet access is via the Cloudflare Tunnel (public hostname → `http://raspbe
   token speed, Enter-to-send, sidebar collapse.
 - Schema changes ship as **additive migrations** in `internal/store.migrate()`
   (safe on existing databases); covered by `store_test.go`.
+
+## v3: users & authentication
+
+- Multi-user accounts: `users` table with username/email, PBKDF2 password hashes
+  (`crypto/pbkdf2`, stdlib — no new dependency), and a `status`
+  (`active` | `pending` | `disabled`).
+- **First run**: no users → the SPA shows a *Create admin account* screen
+  (`POST /api/auth/setup`), which also claims any pre-auth (ownerless) chats.
+- **Self-registration is approval-gated**: `POST /api/auth/register` creates a
+  `pending` account with **no session**; an admin approves it in the Users panel.
+- Only admins manage users (`/api/users`) and settings (`/api/settings`); the
+  last active admin cannot be demoted, disabled, or deleted (lockout guard).
+- Sessions are signed cookies keyed by a DB-backed `session_secret` (generated
+  on first run). `MYOGCHAT_AUTH_TOKEN` is no longer used.
+- All conversations/projects are scoped to their owner (`user_id`); cross-user
+  access returns 404.

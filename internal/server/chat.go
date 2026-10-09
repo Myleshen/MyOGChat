@@ -46,7 +46,11 @@ type errorEvent struct {
 
 // handlePostMessage appends a user message and streams the assistant reply.
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
-	conv, ok := s.getConversation(w, r)
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.getConversation(w, r, u.ID)
 	if !ok {
 		return
 	}
@@ -77,12 +81,16 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save message")
 		return
 	}
-	s.streamReply(w, r, conv)
+	s.streamReply(w, r, conv, u.ID)
 }
 
 // handleRegenerate replaces the trailing assistant reply (§8.5).
 func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
-	conv, ok := s.getConversation(w, r)
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	conv, ok := s.getConversation(w, r, u.ID)
 	if !ok {
 		return
 	}
@@ -101,11 +109,11 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to prepare regenerate")
 		return
 	}
-	s.streamReply(w, r, conv)
+	s.streamReply(w, r, conv, u.ID)
 }
 
 // streamReply streams one assistant reply for conv over SSE and persists it.
-func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation) {
+func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, userID string) {
 	ctx := r.Context()
 	m, ok := models.ByID(conv.Model)
 	if !ok {
@@ -122,7 +130,7 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	for _, hm := range history {
 		msgs = append(msgs, upstream.Message{Role: hm.Role, Content: hm.Content})
 	}
-	instructions := s.projectInstructions(ctx, conv.ProjectID)
+	instructions := s.projectInstructions(ctx, conv.ProjectID, userID)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -275,11 +283,11 @@ stream:
 
 // projectInstructions returns the system prompt of a conversation's project, or
 // "" when the chat is unfiled (§8.6).
-func (s *Server) projectInstructions(ctx context.Context, projectID *string) string {
+func (s *Server) projectInstructions(ctx context.Context, projectID *string, userID string) string {
 	if projectID == nil {
 		return ""
 	}
-	p, err := s.st.GetProject(ctx, *projectID)
+	p, err := s.st.GetProject(ctx, *projectID, userID)
 	if err != nil {
 		// A missing project must not break the chat; log and continue.
 		s.log.Warn("project instructions unavailable", "project", *projectID, "error", err)

@@ -1,10 +1,13 @@
 // Command myogchat serves the MyOGChat single-page app and its API from one
-// binary: embedded frontend, SQLite storage, and an OpenCode Go upstream proxy.
+// binary: embedded frontend, SQLite storage, multi-user auth, and an OpenCode
+// Go upstream proxy.
 package main
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -28,10 +31,12 @@ import (
 //go:embed all:static
 var staticFS embed.FS
 
+// sessionSecretKey is the settings key holding the cookie-signing secret (§9.1).
+const sessionSecretKey = "session_secret"
+
 // config is the resolved runtime configuration (DESIGN.md).
 type config struct {
 	apiKey        string
-	authToken     string
 	port          string
 	dbPath        string
 	retentionDays int
@@ -52,21 +57,16 @@ func main() {
 	}
 }
 
-// loadConfig reads and validates environment variables, failing fast when a
-// required secret is missing.
+// loadConfig reads and validates environment variables.
 func loadConfig() (config, error) {
 	cfg := config{
 		apiKey:        os.Getenv("OPENCODE_API_KEY"),
-		authToken:     os.Getenv("MYOGCHAT_AUTH_TOKEN"),
 		port:          envOr("MYOGCHAT_PORT", "8787"),
 		dbPath:        os.Getenv("MYOGCHAT_DB"),
 		retentionDays: 30,
 	}
 	if cfg.apiKey == "" {
 		return config{}, errors.New("OPENCODE_API_KEY is required")
-	}
-	if cfg.authToken == "" {
-		return config{}, errors.New("MYOGCHAT_AUTH_TOKEN is required")
 	}
 	if cfg.dbPath == "" {
 		home, err := os.UserHomeDir()
@@ -106,15 +106,24 @@ func run(cfg config, log *slog.Logger) error {
 	}
 	defer st.Close()
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	secret, err := ensureSessionSecret(ctx, st, log)
+	if err != nil {
+		return err
+	}
+	// Self-registration defaults to open; the admin can disable it in the UI.
+	if _, err := st.EnsureSetting(ctx, auth.SettingAllowRegistration, "1"); err != nil {
+		return err
+	}
+
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return err
 	}
 
-	srv := server.New(st, upstream.NewClient(cfg.apiKey), auth.New(cfg.authToken), static, log)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	srv := server.New(st, upstream.NewClient(cfg.apiKey), auth.New(st, secret), static, log)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -125,10 +134,13 @@ func run(cfg config, log *slog.Logger) error {
 		// No WriteTimeout: SSE responses are long-lived and streamed.
 	}
 
+	users, _ := st.CountUsers(ctx)
 	log.Info("myogchat starting",
 		"addr", httpSrv.Addr,
 		"db", cfg.dbPath,
 		"retention_days", cfg.retentionDays,
+		"users", users,
+		"needs_setup", users == 0,
 	)
 
 	errc := make(chan error, 1)
@@ -148,6 +160,31 @@ func run(cfg config, log *slog.Logger) error {
 		defer cancel()
 		return httpSrv.Shutdown(shutdownCtx)
 	}
+}
+
+// ensureSessionSecret returns the cookie-signing key, generating and persisting
+// a random one on first run so sessions survive restarts.
+func ensureSessionSecret(ctx context.Context, st *store.Store, log *slog.Logger) ([]byte, error) {
+	v, ok, err := st.GetSetting(ctx, sessionSecretKey)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || v == "" {
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			return nil, err
+		}
+		v = base64.RawURLEncoding.EncodeToString(buf)
+		if err := st.SetSetting(ctx, sessionSecretKey, v); err != nil {
+			return nil, err
+		}
+		log.Info("generated a new session secret")
+	}
+	secret, err := base64.RawURLEncoding.DecodeString(v)
+	if err != nil {
+		return nil, errors.New("session_secret is not valid base64")
+	}
+	return secret, nil
 }
 
 // janitor purges conversations older than the retention window on startup and

@@ -5,9 +5,29 @@
 
 const loginView = document.getElementById("login-view");
 const loginForm = document.getElementById("login-form");
-const loginToken = document.getElementById("login-token");
+const loginIdentifier = document.getElementById("login-identifier");
+const loginPassword = document.getElementById("login-password");
 const loginError = document.getElementById("login-error");
 const loginBtn = document.getElementById("login-btn");
+const showRegisterBtn = document.getElementById("show-register-btn");
+
+const setupForm = document.getElementById("setup-form");
+const setupUsername = document.getElementById("setup-username");
+const setupEmail = document.getElementById("setup-email");
+const setupPassword = document.getElementById("setup-password");
+const setupConfirm = document.getElementById("setup-confirm");
+const setupError = document.getElementById("setup-error");
+const setupBtn = document.getElementById("setup-btn");
+
+const registerForm = document.getElementById("register-form");
+const registerUsername = document.getElementById("register-username");
+const registerEmail = document.getElementById("register-email");
+const registerPassword = document.getElementById("register-password");
+const registerConfirm = document.getElementById("register-confirm");
+const registerPending = document.getElementById("register-pending");
+const registerError = document.getElementById("register-error");
+const registerBtn = document.getElementById("register-btn");
+const showLoginBtn = document.getElementById("show-login-btn");
 
 const appEl = document.getElementById("app");
 const sidebar = document.getElementById("sidebar");
@@ -17,6 +37,8 @@ const collapseBtn = document.getElementById("collapse-btn");
 const newChatBtn = document.getElementById("new-chat-btn");
 const newChatLabel = document.getElementById("new-chat-label");
 const logoutBtn = document.getElementById("logout-btn");
+const userNameEl = document.getElementById("user-name");
+const userAdminBadge = document.getElementById("user-admin-badge");
 const newProjectBtn = document.getElementById("new-project-btn");
 const projectsList = document.getElementById("projects-list");
 const projectsEmpty = document.getElementById("projects-empty");
@@ -29,6 +51,7 @@ const modelThinkingBadge = document.getElementById("model-thinking-badge");
 const effortSelect = document.getElementById("effort-select");
 const totalCostEl = document.getElementById("total-cost");
 const settingsBtn = document.getElementById("settings-btn");
+const settingsPendingBadge = document.getElementById("settings-pending-badge");
 
 const messagesEl = document.getElementById("messages");
 const welcomeEl = document.getElementById("welcome");
@@ -49,6 +72,17 @@ const settingsClose = document.getElementById("settings-close");
 const settingShowTps = document.getElementById("setting-showTps");
 const settingEnterToSend = document.getElementById("setting-enterToSend");
 
+const usersSection = document.getElementById("users-section");
+const usersTitle = document.getElementById("users-title");
+const usersList = document.getElementById("users-list");
+const addUserForm = document.getElementById("add-user-form");
+const addUserUsername = document.getElementById("add-user-username");
+const addUserEmail = document.getElementById("add-user-email");
+const addUserPassword = document.getElementById("add-user-password");
+const addUserAdmin = document.getElementById("add-user-admin");
+const usersError = document.getElementById("users-error");
+const settingAllowRegistration = document.getElementById("setting-allow-registration");
+
 const projectModal = document.getElementById("project-modal");
 const projectForm = document.getElementById("project-form");
 const projectModalTitle = document.getElementById("project-modal-title");
@@ -61,6 +95,9 @@ const projectCancel = document.getElementById("project-cancel");
 /* ============================== State ============================== */
 
 const state = {
+  user: null,              // signed-in user {id, username, email, is_admin, status} from /api/auth/me
+  registrationOpen: false, // GET /api/auth/status registration_open (remembered for login screen)
+  pendingUsers: 0,         // GET /api/settings pending_users (admin badge)
   models: [],              // GET /api/models registry
   conversations: [],       // GET /api/conversations (server order)
   projects: [],            // GET /api/projects
@@ -163,6 +200,15 @@ function applyEnterHint() {
 /* ============================== Helpers ============================== */
 
 class AuthError extends Error {}
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+function isForbidden(err) {
+  return err instanceof ApiError && err.status === 403;
+}
 
 function el(tag, className) {
   const node = document.createElement(tag);
@@ -304,13 +350,30 @@ async function api(path, options) {
     } catch {
       /* keep default message */
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status);
   }
   return res.json();
 }
 
+/* Read an error body's {error} message without throwing. */
+async function readError(res) {
+  try {
+    const j = await res.json();
+    if (j && j.error) return j.error;
+  } catch {
+    /* no JSON body */
+  }
+  return "";
+}
+
 function handleUnauthorized() {
   if (state.abort) state.abort.abort();
+  state.user = null;
+  userNameEl.textContent = "";
+  userAdminBadge.hidden = true;
+  usersSection.hidden = true;
+  settingsPendingBadge.hidden = true;
+  state.pendingUsers = 0;
   state.current = null;
   state.currentMessages = [];
   state.conversations = [];
@@ -321,35 +384,106 @@ function handleUnauthorized() {
 
 /* ============================== Auth ============================== */
 
-function showLogin(message) {
+/* Auth gate shows exactly one of: setup / login / register. */
+function showAuthCard(card) {
   appEl.hidden = true;
   loginView.hidden = false;
+  setupForm.hidden = card !== setupForm;
+  loginForm.hidden = card !== loginForm;
+  registerForm.hidden = card !== registerForm;
+}
+
+function setFormError(node, message) {
   if (message) {
-    loginError.textContent = message;
-    loginError.hidden = false;
+    node.textContent = message;
+    node.hidden = false;
   } else {
-    loginError.hidden = true;
+    node.hidden = true;
   }
-  setTimeout(() => loginToken.focus(), 0);
 }
 
-function showLoginError(message) {
-  loginError.textContent = message;
-  loginError.hidden = false;
+/* First-run: no users exist yet. */
+function showSetup() {
+  showAuthCard(setupForm);
+  setFormError(setupError, "");
+  setTimeout(() => setupUsername.focus(), 0);
 }
 
-async function checkAuth() {
+function showLogin(message) {
+  showAuthCard(loginForm);
+  setFormError(loginError, message || "");
+  // "Create account" is only offered when registrations are open (§9.6).
+  showRegisterBtn.hidden = !state.registrationOpen;
+  setTimeout(() => loginIdentifier.focus(), 0);
+}
+
+function showRegister() {
+  showAuthCard(registerForm);
+  setFormError(registerError, "");
+  setFormError(registerPending, "");
+  setTimeout(() => registerUsername.focus(), 0);
+}
+
+/* §9.6: registration returns 202 pending — no session is created. */
+function showRegisterPending(message) {
+  showAuthCard(registerForm);
+  setFormError(registerError, "");
+  setFormError(registerPending, message || "Your account is awaiting admin approval.");
+  setTimeout(() => showLoginBtn.focus(), 0);
+}
+
+/* GET /api/auth/me → sets state.user; returns true when signed in. */
+async function loadMe() {
+  const res = await fetch("/api/auth/me");
+  if (res.ok) {
+    state.user = await res.json();
+    return true;
+  }
+  if (res.status === 401) {
+    state.user = null;
+    return false;
+  }
+  throw new Error("Unexpected server response (" + res.status + ").");
+}
+
+/* After a successful setup/login/register cookie is set, pull /me and enter. */
+async function afterAuth() {
   try {
-    const res = await fetch("/api/me");
-    if (res.status === 204) {
-      enterApp();
-    } else if (res.status === 401) {
-      showLogin();
-    } else {
-      showLogin("Unexpected server response (" + res.status + ").");
+    if (!(await loadMe())) {
+      showLogin("Session not established. Please sign in again.");
+      return;
     }
+  } catch (err) {
+    showLogin(err.message || "Cannot reach the server.");
+    return;
+  }
+  enterApp();
+}
+
+/* Boot: status first, then me (§9.6). */
+async function boot() {
+  let status;
+  try {
+    const res = await fetch("/api/auth/status");
+    if (!res.ok) {
+      showLogin("Unexpected server response (" + res.status + ").");
+      return;
+    }
+    status = await res.json();
   } catch {
     showLogin("Cannot reach the server. Check your connection and reload.");
+    return;
+  }
+  state.registrationOpen = !!(status && status.registration_open);
+  if (status && status.needs_setup) {
+    showSetup();
+    return;
+  }
+  try {
+    if (await loadMe()) enterApp();
+    else showLogin();
+  } catch (err) {
+    showLogin(err.message || "Cannot reach the server.");
   }
 }
 
@@ -357,11 +491,15 @@ async function checkAuth() {
 
 async function enterApp() {
   loginView.hidden = true;
-  loginError.hidden = true;
   appEl.hidden = false;
   state.current = null;
   state.currentMessages = [];
   state.activeProjectId = null;
+  renderUser();
+  // Admins: prime the pending-users count for the gear badge (silent).
+  if (state.user && state.user.is_admin) {
+    loadSettingsInfo(true).catch(() => {});
+  }
   try {
     await loadModels();
   } catch (err) {
@@ -453,7 +591,13 @@ function closeTopModal() {
 
 function openSettings() {
   applySettingsToUI();
+  const isAdmin = !!(state.user && state.user.is_admin);
+  usersSection.hidden = !isAdmin;
   openModal(settingsModal);
+  if (isAdmin) {
+    loadUsers().catch(() => {});
+    loadSettingsInfo(false).catch(() => {});
+  }
   setTimeout(() => {
     const first = settingsModal.querySelector("input:checked") || settingsClose;
     first.focus();
@@ -469,6 +613,222 @@ function applySettingsToUI() {
   });
   settingShowTps.checked = settings.showTps;
   settingEnterToSend.checked = settings.enterToSend;
+}
+
+/* ============================== Auth: signed-in user ============================== */
+
+/* Sidebar footer + admin-only settings visibility (contract §9.6). */
+function renderUser() {
+  const user = state.user;
+  userNameEl.textContent = user ? user.username : "";
+  const isAdmin = !!(user && user.is_admin);
+  userAdminBadge.hidden = !isAdmin;
+  usersSection.hidden = !isAdmin;
+}
+
+/* ============================== Admin: users panel ============================== */
+
+async function loadUsers() {
+  try {
+    const users = await api("/api/users");
+    renderUsers(Array.isArray(users) ? users : []);
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      usersSection.hidden = true;
+      toast("Admin access required");
+      return;
+    }
+    toast(err.message);
+  }
+}
+
+function userActionButton(label, onClick, danger) {
+  const btn = el("button", "user-action" + (danger ? " danger" : ""));
+  btn.type = "button";
+  btn.textContent = label;
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function renderUsers(users) {
+  usersList.innerHTML = "";
+  if (users.length === 0) {
+    const empty = el("li", "nav-empty");
+    empty.textContent = "No users.";
+    usersList.appendChild(empty);
+    return;
+  }
+  // Pending registrations sort first so they are easy to act on.
+  const rank = (s) => (s === "pending" ? 0 : s === "disabled" ? 2 : 1);
+  const sorted = users.slice().sort((a, b) => rank(a.status) - rank(b.status));
+
+  for (const u of sorted) {
+    const status = u.status || "active";
+    const isSelf = !!(state.user && state.user.id === u.id);
+    const li = el("li", "user-item" + (status === "pending" ? " user-pending" : ""));
+
+    const info = el("div", "user-item-info");
+    const line = el("div", "user-item-line");
+    const name = el("span", "user-item-name");
+    name.textContent = u.username;
+    line.appendChild(name);
+    if (u.is_admin) {
+      const adminBadge = el("span", "badge");
+      adminBadge.textContent = "admin";
+      line.appendChild(adminBadge);
+    }
+    const statusBadge = el("span", "badge user-status user-status-" + status);
+    statusBadge.textContent = status;
+    line.appendChild(statusBadge);
+
+    const email = el("span", "user-item-email");
+    email.textContent = u.email;
+    info.append(line, email);
+
+    const actions = el("div", "user-actions");
+    // Never offer status changes on your own row (contract §9.6).
+    if (!isSelf) {
+      if (status === "pending") {
+        actions.appendChild(userActionButton("Approve", () => patchUserStatus(u, "active")));
+        actions.appendChild(userActionButton("Reject", () => deleteUser(u), true));
+      } else if (status === "disabled") {
+        actions.appendChild(userActionButton("Enable", () => patchUserStatus(u, "active")));
+      } else {
+        actions.appendChild(userActionButton("Disable", () => patchUserStatus(u, "disabled")));
+      }
+    }
+    // Generic delete for non-pending rows (pending uses Reject); disabled on self.
+    if (status !== "pending") {
+      const del = el("button", "icon-btn user-delete");
+      del.type = "button";
+      del.innerHTML = ICONS.trash;
+      del.setAttribute("aria-label", "Delete user " + u.username);
+      if (isSelf) {
+        del.disabled = true;
+        del.title = "You cannot delete your own account";
+      } else {
+        del.addEventListener("click", () => deleteUser(u));
+      }
+      actions.appendChild(del);
+    }
+
+    li.append(info, actions);
+    usersList.appendChild(li);
+  }
+}
+
+async function patchUserStatus(user, status) {
+  const wasPending = user.status === "pending";
+  try {
+    await api("/api/users/" + enc(user.id), {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ status }),
+    });
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
+    return;
+  }
+  await loadUsers();
+  await loadSettingsInfo(true);
+  if (status === "active") toast(wasPending ? "User approved" : "User enabled");
+  else toast("User disabled");
+}
+
+async function deleteUser(user) {
+  if (
+    !window.confirm(
+      'Delete user "' + user.username + '"? Their conversations and projects will be deleted.'
+    )
+  ) {
+    return;
+  }
+  try {
+    await api("/api/users/" + enc(user.id), { method: "DELETE" });
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
+    return;
+  }
+  await loadUsers();
+  await loadSettingsInfo(true);
+  toast("User deleted");
+}
+
+async function addUser() {
+  setFormError(usersError, "");
+  const username = addUserUsername.value.trim();
+  const email = addUserEmail.value.trim();
+  const password = addUserPassword.value;
+  if (password.length < 8) {
+    setFormError(usersError, "Password must be at least 8 characters.");
+    return;
+  }
+  try {
+    await api("/api/users", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ username, email, password, is_admin: addUserAdmin.checked }),
+    });
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      toast("Admin access required");
+      return;
+    }
+    setFormError(usersError, err.message);
+    return;
+  }
+  addUserForm.reset();
+  await loadUsers();
+  toast("User added");
+}
+
+async function loadSettingsInfo(silent) {
+  try {
+    const s = await api("/api/settings");
+    settingAllowRegistration.checked = !!(s && s.allow_registration);
+    setPendingCount(s && typeof s.pending_users === "number" ? s.pending_users : 0);
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      usersSection.hidden = true;
+      return;
+    }
+    if (!silent) toast(err.message);
+  }
+}
+
+/* Users section header "Users (N pending)" + optional gear badge. */
+function setPendingCount(n) {
+  state.pendingUsers = n;
+  const pending = n > 0;
+  if (usersTitle) usersTitle.textContent = pending ? "Users (" + n + " pending)" : "Users";
+  settingsPendingBadge.hidden = !pending;
+  settingsPendingBadge.textContent = String(n);
+  settingsBtn.title = pending ? pending + " user(s) awaiting approval" : "Settings";
+}
+
+async function saveRegistrationSetting() {
+  const value = settingAllowRegistration.checked;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ allow_registration: value }),
+    });
+    const now = !!(s && s.allow_registration);
+    settingAllowRegistration.checked = now;
+    state.registrationOpen = now;
+    setPendingCount(s && typeof s.pending_users === "number" ? s.pending_users : state.pendingUsers);
+    toast(now ? "Registrations open" : "Registrations closed");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    settingAllowRegistration.checked = !value;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
+  }
 }
 
 /* ============================== Popup menus ============================== */
@@ -1651,34 +2011,151 @@ function onNavClick(e) {
 /* ============================== Events ============================== */
 
 function wireEvents() {
+  /* Login: identifier (username or email) + password. */
   loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    loginError.hidden = true;
+    setFormError(loginError, "");
     loginBtn.disabled = true;
     try {
-      const res = await fetch("/api/login", {
+      const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: JSON_HEADERS,
-        body: JSON.stringify({ token: loginToken.value }),
+        body: JSON.stringify({
+          identifier: loginIdentifier.value.trim(),
+          password: loginPassword.value,
+        }),
       });
-      if (res.status === 204) {
-        loginToken.value = "";
-        enterApp();
+      if (res.ok) {
+        loginPassword.value = "";
+        await afterAuth();
+      } else if (res.status === 403) {
+        // §9.3: pending approval or disabled account.
+        const message = await readError(res);
+        if (/approval|pending/i.test(message)) {
+          setFormError(loginError, "Your account is awaiting admin approval.");
+        } else if (/disabled/i.test(message)) {
+          setFormError(loginError, "This account has been disabled.");
+        } else {
+          setFormError(loginError, message || "Access denied (403).");
+        }
       } else if (res.status === 401) {
-        showLoginError("Invalid token.");
+        setFormError(loginError, "Incorrect username/email or password.");
       } else {
-        showLoginError("Login failed (" + res.status + ").");
+        setFormError(loginError, (await readError(res)) || "Login failed (" + res.status + ").");
       }
     } catch {
-      showLoginError("Cannot reach the server.");
+      setFormError(loginError, "Cannot reach the server.");
     } finally {
       loginBtn.disabled = false;
     }
   });
 
+  /* First-run admin creation. */
+  setupForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setFormError(setupError, "");
+    if (setupPassword.value !== setupConfirm.value) {
+      setFormError(setupError, "Passwords do not match.");
+      return;
+    }
+    if (setupPassword.value.length < 8) {
+      setFormError(setupError, "Password must be at least 8 characters.");
+      return;
+    }
+    setupBtn.disabled = true;
+    try {
+      const res = await fetch("/api/auth/setup", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          username: setupUsername.value.trim(),
+          email: setupEmail.value.trim(),
+          password: setupPassword.value,
+        }),
+      });
+      if (res.ok) {
+        setupForm.reset();
+        await afterAuth();
+      } else if (res.status === 409) {
+        setFormError(
+          setupError,
+          (await readError(res)) || "That username or email is already taken."
+        );
+      } else if (res.status === 403) {
+        setFormError(setupError, "Setup is no longer available — an account already exists.");
+      } else {
+        setFormError(setupError, (await readError(res)) || "Setup failed (" + res.status + ").");
+      }
+    } catch {
+      setFormError(setupError, "Cannot reach the server.");
+    } finally {
+      setupBtn.disabled = false;
+    }
+  });
+
+  /* Self-registration. */
+  registerForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setFormError(registerError, "");
+    if (registerPassword.value !== registerConfirm.value) {
+      setFormError(registerError, "Passwords do not match.");
+      return;
+    }
+    if (registerPassword.value.length < 8) {
+      setFormError(registerError, "Password must be at least 8 characters.");
+      return;
+    }
+    registerBtn.disabled = true;
+    try {
+      const res = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          username: registerUsername.value.trim(),
+          email: registerEmail.value.trim(),
+          password: registerPassword.value,
+        }),
+      });
+      if (res.status === 202) {
+        // Self-registration is now pending admin approval; no session is set.
+        let message = "Your account is awaiting admin approval.";
+        try {
+          const j = await res.json();
+          if (j && j.message) message = j.message;
+        } catch {
+          /* keep default */
+        }
+        registerForm.reset();
+        showRegisterPending(message);
+      } else if (res.ok) {
+        registerForm.reset();
+        await afterAuth();
+      } else if (res.status === 403) {
+        setFormError(registerError, "Registration is currently closed.");
+      } else if (res.status === 409) {
+        setFormError(
+          registerError,
+          (await readError(res)) || "That username or email is already taken."
+        );
+      } else {
+        setFormError(
+          registerError,
+          (await readError(res)) || "Registration failed (" + res.status + ")."
+        );
+      }
+    } catch {
+      setFormError(registerError, "Cannot reach the server.");
+    } finally {
+      registerBtn.disabled = false;
+    }
+  });
+
+  showRegisterBtn.addEventListener("click", showRegister);
+  showLoginBtn.addEventListener("click", () => showLogin());
+
   logoutBtn.addEventListener("click", async () => {
     try {
-      await fetch("/api/logout", { method: "POST" });
+      await fetch("/api/auth/logout", { method: "POST" });
     } catch {
       /* clear locally regardless */
     }
@@ -1742,6 +2219,14 @@ function wireEvents() {
     lsSet("myogchat.enterToSend", settings.enterToSend ? "1" : "0");
     applyEnterHint();
   });
+
+  /* Admin: users panel (contract §9.6). */
+  addUserForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    addUser();
+  });
+  settingAllowRegistration.addEventListener("change", saveRegistrationSetting);
+
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();
   });
@@ -1870,4 +2355,5 @@ wireEvents();
 registerSW();
 updateSendBtn();
 updateNewChatLabel();
-checkAuth();
+renderUser();
+boot();

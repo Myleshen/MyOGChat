@@ -31,17 +31,67 @@
 </head>
 <body>
 
-  <!-- Login gate -->
+  <!-- Auth gate: first-run setup, login, or self-registration -->
   <div id="login-view" class="login-view" hidden>
-    <form id="login-form" class="login-card" autocomplete="off">
+
+    <!-- First run: create the admin account (GET /api/auth/status needs_setup) -->
+    <form id="setup-form" class="login-card" autocomplete="off" hidden>
+      <img class="login-logo" src="icons/icon.svg" alt="" width="64" height="64">
+      <h1 class="login-title">Create admin account</h1>
+      <p class="login-sub">Set up the first account to get started.</p>
+      <label class="visually-hidden" for="setup-username">Username</label>
+      <input id="setup-username" name="username" type="text" autocomplete="username"
+             required minlength="3" maxlength="32" placeholder="Username">
+      <label class="visually-hidden" for="setup-email">Email</label>
+      <input id="setup-email" name="email" type="email" autocomplete="email"
+             required placeholder="Email">
+      <label class="visually-hidden" for="setup-password">Password</label>
+      <input id="setup-password" name="password" type="password" autocomplete="new-password"
+             required minlength="8" placeholder="Password (min 8 characters)">
+      <label class="visually-hidden" for="setup-confirm">Confirm password</label>
+      <input id="setup-confirm" name="confirm" type="password" autocomplete="new-password"
+             required placeholder="Confirm password">
+      <p id="setup-error" class="login-error" role="alert" hidden></p>
+      <button type="submit" id="setup-btn" class="login-btn">Create account</button>
+    </form>
+
+    <!-- Session login: identifier is username OR email -->
+    <form id="login-form" class="login-card" autocomplete="off" hidden>
       <img class="login-logo" src="icons/icon.svg" alt="" width="64" height="64">
       <h1 class="login-title">MyOGChat</h1>
-      <p class="login-sub">Enter your access token to continue.</p>
-      <label class="visually-hidden" for="login-token">Access token</label>
-      <input id="login-token" name="token" type="password" autocomplete="current-password"
-             required placeholder="Access token">
+      <p class="login-sub">Sign in to continue.</p>
+      <label class="visually-hidden" for="login-identifier">Username or email</label>
+      <input id="login-identifier" name="username" type="text" autocomplete="username"
+             required placeholder="Username or email">
+      <label class="visually-hidden" for="login-password">Password</label>
+      <input id="login-password" name="password" type="password" autocomplete="current-password"
+             required placeholder="Password">
       <p id="login-error" class="login-error" role="alert" hidden></p>
       <button type="submit" id="login-btn" class="login-btn">Sign in</button>
+      <button type="button" id="show-register-btn" class="login-link" hidden>Create account</button>
+    </form>
+
+    <!-- Self-registration (shown only when registration is open) -->
+    <form id="register-form" class="login-card" autocomplete="off" hidden>
+      <img class="login-logo" src="icons/icon.svg" alt="" width="64" height="64">
+      <h1 class="login-title">Create account</h1>
+      <p class="login-sub">Register a new MyOGChat account.</p>
+      <label class="visually-hidden" for="register-username">Username</label>
+      <input id="register-username" name="username" type="text" autocomplete="username"
+             required minlength="3" maxlength="32" placeholder="Username">
+      <label class="visually-hidden" for="register-email">Email</label>
+      <input id="register-email" name="email" type="email" autocomplete="email"
+             required placeholder="Email">
+      <label class="visually-hidden" for="register-password">Password</label>
+      <input id="register-password" name="password" type="password" autocomplete="new-password"
+             required minlength="8" placeholder="Password (min 8 characters)">
+      <label class="visually-hidden" for="register-confirm">Confirm password</label>
+      <input id="register-confirm" name="confirm" type="password" autocomplete="new-password"
+             required placeholder="Confirm password">
+      <p id="register-pending" class="login-info" role="status" hidden></p>
+      <p id="register-error" class="login-error" role="alert" hidden></p>
+      <button type="submit" id="register-btn" class="login-btn">Create account</button>
+      <button type="button" id="show-login-btn" class="login-link">Back to sign in</button>
     </form>
   </div>
 
@@ -84,6 +134,10 @@
         </div>
       </nav>
       <div class="sidebar-bottom">
+        <div class="user-row">
+          <span id="user-name" class="user-name" title="Signed in"></span>
+          <span id="user-admin-badge" class="badge" hidden>admin</span>
+        </div>
         <button id="logout-btn" class="btn btn-ghost" type="button">Log out</button>
       </div>
     </aside>
@@ -125,6 +179,7 @@
             <circle cx="12" cy="12" r="3.2"/>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
+          <span id="settings-pending-badge" class="gear-badge" hidden></span>
         </button>
       </header>
 
@@ -190,6 +245,40 @@
           <span>Send with Enter</span>
           <input type="checkbox" id="setting-enterToSend">
         </label>
+
+        <!-- Admin only (contract §9.6). Hidden for non-admins. -->
+        <section id="users-section" class="settings-users" hidden>
+          <hr class="settings-sep">
+          <h3 id="users-title" class="settings-subtitle">Users</h3>
+          <label class="setting-toggle">
+            <span>Allow new registrations</span>
+            <input type="checkbox" id="setting-allow-registration">
+          </label>
+          <ul id="users-list" class="users-list"></ul>
+          <form id="add-user-form" class="add-user-form" autocomplete="off">
+            <p class="settings-subtitle settings-subtitle-sm">Add user</p>
+            <label class="field">
+              <span class="field-label">Username</span>
+              <input id="add-user-username" type="text" required minlength="3" maxlength="32"
+                     autocomplete="off" placeholder="Username">
+            </label>
+            <label class="field">
+              <span class="field-label">Email</span>
+              <input id="add-user-email" type="email" required autocomplete="off" placeholder="Email">
+            </label>
+            <label class="field">
+              <span class="field-label">Password</span>
+              <input id="add-user-password" type="password" required minlength="8"
+                     autocomplete="new-password" placeholder="Password (min 8 characters)">
+            </label>
+            <label class="setting-toggle">
+              <span>Administrator</span>
+              <input type="checkbox" id="add-user-admin">
+            </label>
+            <p id="users-error" class="login-error" role="alert" hidden></p>
+            <button type="submit" class="btn btn-primary">Add user</button>
+          </form>
+        </section>
       </div>
     </div>
   </div>
