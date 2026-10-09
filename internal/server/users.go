@@ -231,6 +231,7 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		AllowRegistration *bool `json:"allow_registration"`
+		ShareServerKey    *bool `json:"share_server_key"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -242,6 +243,17 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			v = "1"
 		}
 		if err := s.st.SetSetting(r.Context(), auth.SettingAllowRegistration, v); err != nil {
+			s.log.Error("set setting", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.ShareServerKey != nil {
+		v := "0"
+		if *req.ShareServerKey {
+			v = "1"
+		}
+		if err := s.st.SetSetting(r.Context(), "share_server_key", v); err != nil {
 			s.log.Error("set setting", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
@@ -263,8 +275,15 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read users")
 		return
 	}
+	share, err := s.shareServerKey(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read settings")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"allow_registration": open,
 		"pending_users":      pending,
+		"share_server_key":   share,
+		"server_key_present": s.serverKey != "",
 	})
 }

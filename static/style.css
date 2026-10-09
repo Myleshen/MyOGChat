@@ -923,6 +923,7 @@ button { font: inherit; }
 .user-delete:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .add-user-form { display: flex; flex-direction: column; gap: 12px; }
+.key-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 body.modal-open { overflow: hidden; }
 

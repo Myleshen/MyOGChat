@@ -69,6 +69,11 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "content exceeds 100 KB")
 		return
 	}
+	apiKey, err := s.resolveKey(r.Context(), u)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	userMsg := store.Message{
 		ID:             newUUID(),
 		ConversationID: conv.ID,
@@ -81,7 +86,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save message")
 		return
 	}
-	s.streamReply(w, r, conv, u.ID)
+	s.streamReply(w, r, conv, u.ID, apiKey)
 }
 
 // handleRegenerate replaces the trailing assistant reply (§8.5).
@@ -104,16 +109,21 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "conversation has no user message to regenerate")
 		return
 	}
+	apiKey, err := s.resolveKey(r.Context(), u)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if _, err := s.st.DeleteAssistantAfterLastUser(r.Context(), conv.ID); err != nil {
 		s.log.Error("delete trailing assistant reply", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to prepare regenerate")
 		return
 	}
-	s.streamReply(w, r, conv, u.ID)
+	s.streamReply(w, r, conv, u.ID, apiKey)
 }
 
 // streamReply streams one assistant reply for conv over SSE and persists it.
-func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, userID string) {
+func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, userID, apiKey string) {
 	ctx := r.Context()
 	m, ok := models.ByID(conv.Model)
 	if !ok {
@@ -156,6 +166,7 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 		Model:        conv.Model,
 		Effort:       effort,
 		SessionID:    conv.ID,
+		APIKey:       apiKey,
 		Messages:     msgs,
 		Instructions: instructions,
 	})
@@ -269,7 +280,7 @@ stream:
 				break
 			}
 		}
-		title = s.autoTitle(ctx, conv.ID, firstUser, content.String())
+		title = s.autoTitle(ctx, conv.ID, apiKey, firstUser, content.String())
 		if title != "" {
 			if err := s.st.SetTitle(ctx, conv.ID, title); err != nil {
 				s.log.Error("persist auto-title", "error", err)
@@ -298,13 +309,13 @@ func (s *Server) projectInstructions(ctx context.Context, projectID *string, use
 
 // autoTitle makes one non-streaming call to generate a short title, falling
 // back to the first 40 chars of the first user message on any failure.
-func (s *Server) autoTitle(ctx context.Context, convID, firstUser, firstAssistant string) string {
+func (s *Server) autoTitle(ctx context.Context, convID, apiKey, firstUser, firstAssistant string) string {
 	prompt := "Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\n" +
 		"User: " + truncateRunes(firstUser, 500) + "\n" +
 		"Assistant: " + truncateRunes(firstAssistant, 500)
 	// The free title model is a reasoning model, so the cap must leave room
 	// for reasoning tokens plus the actual title after them.
-	t, err := s.up.ChatOnce(ctx, convID, titleModel,
+	t, err := s.up.ChatOnce(ctx, apiKey, convID, titleModel,
 		[]upstream.Message{{Role: "user", Content: prompt}}, 200)
 	if err != nil {
 		s.log.Warn("auto-title call failed, using fallback", "error", err)

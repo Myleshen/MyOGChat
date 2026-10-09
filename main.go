@@ -34,6 +34,10 @@ var staticFS embed.FS
 // sessionSecretKey is the settings key holding the cookie-signing secret (§9.1).
 const sessionSecretKey = "session_secret"
 
+// encryptionKey is the settings key holding the AES-256 key used to encrypt
+// per-user API keys at rest (§2.1).
+const encryptionKey = "encryption_key"
+
 // config is the resolved runtime configuration (DESIGN.md).
 type config struct {
 	apiKey        string
@@ -64,9 +68,6 @@ func loadConfig() (config, error) {
 		port:          envOr("MYOGCHAT_PORT", "8787"),
 		dbPath:        os.Getenv("MYOGCHAT_DB"),
 		retentionDays: 30,
-	}
-	if cfg.apiKey == "" {
-		return config{}, errors.New("OPENCODE_API_KEY is required")
 	}
 	if cfg.dbPath == "" {
 		home, err := os.UserHomeDir()
@@ -109,12 +110,20 @@ func run(cfg config, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	secret, err := ensureSessionSecret(ctx, st, log)
+	secret, err := ensureSecret(ctx, st, log, sessionSecretKey)
+	if err != nil {
+		return err
+	}
+	encKey, err := ensureSecret(ctx, st, log, encryptionKey)
 	if err != nil {
 		return err
 	}
 	// Self-registration defaults to open; the admin can disable it in the UI.
 	if _, err := st.EnsureSetting(ctx, auth.SettingAllowRegistration, "1"); err != nil {
+		return err
+	}
+	// Sharing the server key with users defaults to on (§2.1).
+	if _, err := st.EnsureSetting(ctx, "share_server_key", "1"); err != nil {
 		return err
 	}
 
@@ -123,7 +132,7 @@ func run(cfg config, log *slog.Logger) error {
 		return err
 	}
 
-	srv := server.New(st, upstream.NewClient(cfg.apiKey), auth.New(st, secret), static, log)
+	srv := server.New(st, upstream.NewClient(), auth.New(st, secret), static, log, encKey, cfg.apiKey)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -141,6 +150,7 @@ func run(cfg config, log *slog.Logger) error {
 		"retention_days", cfg.retentionDays,
 		"users", users,
 		"needs_setup", users == 0,
+		"server_key", cfg.apiKey != "",
 	)
 
 	errc := make(chan error, 1)
@@ -162,10 +172,11 @@ func run(cfg config, log *slog.Logger) error {
 	}
 }
 
-// ensureSessionSecret returns the cookie-signing key, generating and persisting
-// a random one on first run so sessions survive restarts.
-func ensureSessionSecret(ctx context.Context, st *store.Store, log *slog.Logger) ([]byte, error) {
-	v, ok, err := st.GetSetting(ctx, sessionSecretKey)
+// ensureSecret returns the base64-decoded value of a settings key, generating
+// and persisting 32 random bytes on first run. Used for the session-signing
+// secret and the per-user-key encryption key.
+func ensureSecret(ctx context.Context, st *store.Store, log *slog.Logger, name string) ([]byte, error) {
+	v, ok, err := st.GetSetting(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -175,14 +186,14 @@ func ensureSessionSecret(ctx context.Context, st *store.Store, log *slog.Logger)
 			return nil, err
 		}
 		v = base64.RawURLEncoding.EncodeToString(buf)
-		if err := st.SetSetting(ctx, sessionSecretKey, v); err != nil {
+		if err := st.SetSetting(ctx, name, v); err != nil {
 			return nil, err
 		}
-		log.Info("generated a new session secret")
+		log.Info("generated a new secret", "name", name)
 	}
 	secret, err := base64.RawURLEncoding.DecodeString(v)
 	if err != nil {
-		return nil, errors.New("session_secret is not valid base64")
+		return nil, errors.New(name + " is not valid base64")
 	}
 	return secret, nil
 }

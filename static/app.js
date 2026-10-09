@@ -83,6 +83,14 @@ const addUserAdmin = document.getElementById("add-user-admin");
 const usersError = document.getElementById("users-error");
 const settingAllowRegistration = document.getElementById("setting-allow-registration");
 
+const keyStatus = document.getElementById("key-status");
+const keyForm = document.getElementById("key-form");
+const keyInput = document.getElementById("key-input");
+const keyError = document.getElementById("key-error");
+const keyRemove = document.getElementById("key-remove");
+const shareKeyRow = document.getElementById("share-key-row");
+const settingShareServerKey = document.getElementById("setting-share-server-key");
+
 const projectModal = document.getElementById("project-modal");
 const projectForm = document.getElementById("project-form");
 const projectModalTitle = document.getElementById("project-modal-title");
@@ -593,7 +601,9 @@ function openSettings() {
   applySettingsToUI();
   const isAdmin = !!(state.user && state.user.is_admin);
   usersSection.hidden = !isAdmin;
+  shareKeyRow.hidden = !isAdmin;
   openModal(settingsModal);
+  loadKeyStatus().catch(() => {});
   if (isAdmin) {
     loadUsers().catch(() => {});
     loadSettingsInfo(false).catch(() => {});
@@ -790,6 +800,7 @@ async function loadSettingsInfo(silent) {
   try {
     const s = await api("/api/settings");
     settingAllowRegistration.checked = !!(s && s.allow_registration);
+    if (settingShareServerKey) settingShareServerKey.checked = !!(s && s.share_server_key);
     setPendingCount(s && typeof s.pending_users === "number" ? s.pending_users : 0);
   } catch (err) {
     if (err instanceof AuthError) return;
@@ -827,6 +838,95 @@ async function saveRegistrationSetting() {
   } catch (err) {
     if (err instanceof AuthError) return;
     settingAllowRegistration.checked = !value;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
+  }
+}
+
+/* ============================== OpenCode Go key (BYOK, §2.1) ============================== */
+
+async function loadKeyStatus() {
+  try {
+    const k = await api("/api/me/key");
+    keyRemove.hidden = !(k && k.has_key);
+    if (k && k.has_key) {
+      keyStatus.textContent = "Using your own key" + (k.key_hint ? " (…" + k.key_hint + ")" : "");
+    } else if (k && k.using_shared_key) {
+      keyStatus.textContent = "Using the shared server key.";
+    } else if (k && k.server_key_present && !k.shared_key_available) {
+      keyStatus.textContent = "No key set. The server key exists but sharing is off — add your own key.";
+    } else {
+      keyStatus.textContent = "No key set. Add your OpenCode Go key to start chatting.";
+    }
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    keyStatus.textContent = "Could not load key status.";
+  }
+}
+
+function showKeyError(msg) {
+  keyError.textContent = msg;
+  keyError.hidden = false;
+}
+
+async function saveKey(e) {
+  if (e) e.preventDefault();
+  const value = keyInput.value.trim();
+  if (!value) {
+    showKeyError("Enter a key, or use Remove.");
+    return;
+  }
+  keyError.hidden = true;
+  const btn = keyForm.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  try {
+    await api("/api/me/key", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ api_key: value }),
+    });
+    keyInput.value = "";
+    await loadKeyStatus();
+    toast("Key saved");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    showKeyError(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Save key";
+  }
+}
+
+async function removeKey() {
+  if (!confirm("Remove your stored key? Chats will use the shared key if available.")) return;
+  try {
+    await api("/api/me/key", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ api_key: "" }),
+    });
+    await loadKeyStatus();
+    toast("Key removed");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(err.message);
+  }
+}
+
+async function saveShareServerKey() {
+  const value = settingShareServerKey.checked;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ share_server_key: value }),
+    });
+    settingShareServerKey.checked = !!(s && s.share_server_key);
+    await loadKeyStatus();
+    toast(value ? "Server key shared with users" : "Server key not shared");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    settingShareServerKey.checked = !value;
     toast(isForbidden(err) ? "Admin access required" : err.message);
   }
 }
@@ -2226,6 +2326,11 @@ function wireEvents() {
     addUser();
   });
   settingAllowRegistration.addEventListener("change", saveRegistrationSetting);
+
+  /* OpenCode Go key (BYOK, §2.1). */
+  keyForm.addEventListener("submit", saveKey);
+  keyRemove.addEventListener("click", removeKey);
+  settingShareServerKey.addEventListener("change", saveShareServerKey);
 
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();

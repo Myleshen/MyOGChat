@@ -246,6 +246,28 @@
           <input type="checkbox" id="setting-enterToSend">
         </label>
 
+        <!-- OpenCode Go key (all users, contract §2.1) -->
+        <section id="key-section" class="settings-key">
+          <hr class="settings-sep">
+          <h3 class="settings-subtitle">OpenCode Go key</h3>
+          <p id="key-status" class="settings-subtitle-sm">Loading…</p>
+          <form id="key-form" class="add-user-form" autocomplete="off">
+            <label class="field">
+              <span class="field-label">Your API key</span>
+              <input id="key-input" type="password" autocomplete="off" placeholder="sk-…">
+            </label>
+            <p id="key-error" class="login-error" role="alert" hidden></p>
+            <div class="key-actions">
+              <button type="submit" class="btn btn-primary">Save key</button>
+              <button type="button" id="key-remove" class="btn btn-ghost" hidden>Remove my key</button>
+            </div>
+          </form>
+          <label class="setting-toggle" id="share-key-row" hidden>
+            <span>Share the server key with users</span>
+            <input type="checkbox" id="setting-share-server-key">
+          </label>
+        </section>
+
         <!-- Admin only (contract §9.6). Hidden for non-admins. -->
         <section id="users-section" class="settings-users" hidden>
           <hr class="settings-sep">

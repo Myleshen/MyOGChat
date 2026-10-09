@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,22 +61,65 @@ type Params struct {
 	Model     string
 	Effort    string // may be empty; responses dialect defaults to "medium"
 	SessionID string // conversation UUID, sent as x-opencode-session
+	APIKey    string // bearer key for this request (per-user, §2.1)
 	Messages  []Message
 	// Instructions is the project system prompt (§8.6). Chat dialect gets it
 	// as a leading system message; responses dialect as a top-level field.
 	Instructions string
 }
 
-// Client calls the OpenCode Go API.
+// Client calls the OpenCode Go API. The bearer key is supplied per request
+// (per-user keys, §2.1), so a single Client serves every user.
 type Client struct {
-	apiKey string
-	hc     *http.Client
+	hc *http.Client
 }
 
-// NewClient returns a Client using apiKey as the Bearer token. The HTTP
-// client has no overall timeout; every call is bounded by its context.
-func NewClient(apiKey string) *Client {
-	return &Client{apiKey: apiKey, hc: &http.Client{}}
+// NewClient returns a Client. The HTTP client has no overall timeout; every
+// call is bounded by its context.
+func NewClient() *Client {
+	return &Client{hc: &http.Client{}}
+}
+
+// ValidateKey checks an API key with a minimal (free-model) completion. The
+// public /models endpoint does not authenticate, but completions do.
+func (c *Client) ValidateKey(ctx context.Context, apiKey string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	payload := map[string]any{
+		"model":      "longcat-2.5-preview-free",
+		"max_tokens": 1,
+		"stream":     false,
+		"messages":   []Message{{Role: "user", Content: "hi"}},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, BaseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("x-opencode-session", "key-check")
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return errors.New("invalid API key")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("upstream HTTP %d", resp.StatusCode)
+	}
+	// Guard against gateways that return 200 with an error body.
+	if bytes.Contains(snippet, []byte("\"error\"")) && !bytes.Contains(snippet, []byte("\"choices\"")) {
+		return errors.New("invalid API key")
+	}
+	return nil
 }
 
 // Stream starts a streaming call and returns a channel of normalized events.
@@ -110,7 +154,7 @@ func (c *Client) Stream(ctx context.Context, p Params) <-chan Event {
 
 // ChatOnce performs one non-streaming chat-completions call and returns the
 // assistant message content. Used by the auto-title feature (contract §3).
-func (c *Client) ChatOnce(ctx context.Context, sessionID, model string, msgs []Message, maxTokens int) (string, error) {
+func (c *Client) ChatOnce(ctx context.Context, apiKey, sessionID, model string, msgs []Message, maxTokens int) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	payload := map[string]any{
@@ -119,7 +163,7 @@ func (c *Client) ChatOnce(ctx context.Context, sessionID, model string, msgs []M
 		"max_tokens": maxTokens,
 		"stream":     false,
 	}
-	resp, err := c.do(ctx, "/chat/completions", sessionID, payload)
+	resp, err := c.do(ctx, "/chat/completions", sessionID, apiKey, payload)
 	if err != nil {
 		return "", err
 	}
@@ -146,7 +190,7 @@ func (c *Client) ChatOnce(ctx context.Context, sessionID, model string, msgs []M
 
 // do issues one POST with the required headers and returns the response if
 // its status is 2xx. Non-2xx yields an error with status + body snippet.
-func (c *Client) do(ctx context.Context, path, sessionID string, payload any) (*http.Response, error) {
+func (c *Client) do(ctx context.Context, path, sessionID, apiKey string, payload any) (*http.Response, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -157,7 +201,7 @@ func (c *Client) do(ctx context.Context, path, sessionID string, payload any) (*
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("x-opencode-session", sessionID)
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := c.hc.Do(req)
@@ -205,7 +249,7 @@ func (c *Client) streamChat(ctx context.Context, p Params, send func(Event) bool
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
 	}
-	resp, err := c.do(ctx, "/chat/completions", p.SessionID, payload)
+	resp, err := c.do(ctx, "/chat/completions", p.SessionID, p.APIKey, payload)
 	if err != nil {
 		return err
 	}
@@ -269,7 +313,7 @@ func (c *Client) streamResponses(ctx context.Context, p Params, send func(Event)
 	if p.Instructions != "" {
 		payload["instructions"] = p.Instructions
 	}
-	resp, err := c.do(ctx, "/responses", p.SessionID, payload)
+	resp, err := c.do(ctx, "/responses", p.SessionID, p.APIKey, payload)
 	if err != nil {
 		return err
 	}

@@ -27,11 +27,15 @@ type Server struct {
 	auth   *auth.Auth
 	static fs.FS
 	log    *slog.Logger
+
+	encKey    []byte // AES-256 key for per-user API keys (§2.1)
+	serverKey string // optional shared OpenCode Go key (may be empty)
 }
 
-// New builds a Server.
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger) *Server {
-	return &Server{st: st, up: up, auth: a, static: staticFS, log: log}
+// New builds a Server. encKey encrypts per-user API keys; serverKey is the
+// optional shared key (empty when the deployment is pure BYOK).
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string) *Server {
+	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey}
 }
 
 // Handler returns the root handler: routes + auth + request logging.
@@ -48,6 +52,8 @@ func (s *Server) Handler() http.Handler {
 
 	// Chat data (per-user).
 	mux.HandleFunc("GET /api/models", s.handleModels)
+	mux.HandleFunc("GET /api/me/key", s.handleGetMyKey)
+	mux.HandleFunc("PUT /api/me/key", s.handlePutMyKey)
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("PATCH /api/projects/{id}", s.handlePatchProject)
