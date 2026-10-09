@@ -54,6 +54,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/me/key", s.handleGetMyKey)
 	mux.HandleFunc("PUT /api/me/key", s.handlePutMyKey)
+	// Groups & shared keys (§2.2).
+	mux.HandleFunc("GET /api/groups", s.handleListGroups)
+	mux.HandleFunc("POST /api/groups", s.handleCreateGroup)
+	mux.HandleFunc("PATCH /api/groups/{id}", s.handlePatchGroup)
+	mux.HandleFunc("DELETE /api/groups/{id}", s.handleDeleteGroup)
+	mux.HandleFunc("POST /api/groups/{id}/members", s.handleAddGroupMember)
+	mux.HandleFunc("DELETE /api/groups/{id}/members/{userId}", s.handleRemoveGroupMember)
+
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("PATCH /api/projects/{id}", s.handlePatchProject)

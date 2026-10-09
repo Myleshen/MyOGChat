@@ -245,6 +245,106 @@ func TestRegenerateHelpers(t *testing.T) {
 	}
 }
 
+func TestGroupsAndMembership(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	owner := seedUser(t, s, "u-owner", "owner", false)
+	member := seedUser(t, s, "u-member", "member", false)
+	other := seedUser(t, s, "u-other", "other", false)
+
+	g := &Group{ID: "g1", Name: "Team", OwnerID: owner.ID, ShareKey: true, CreatedAt: 10, UpdatedAt: 10}
+	if err := s.InsertGroup(ctx, g); err != nil {
+		t.Fatalf("InsertGroup: %v", err)
+	}
+	got, err := s.GetGroup(ctx, "g1")
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	if got.Name != "Team" || !got.ShareKey || got.OwnerID != owner.ID || len(got.Members) != 0 {
+		t.Fatalf("GetGroup = %+v", got)
+	}
+
+	// Owner sees it (is_owner); the member does not until added.
+	owned, err := s.ListGroupsForUser(ctx, owner.ID)
+	if err != nil || len(owned) != 1 || !owned[0].IsOwner {
+		t.Fatalf("ListGroupsForUser(owner) = %+v, %v", owned, err)
+	}
+	if list, _ := s.ListGroupsForUser(ctx, member.ID); len(list) != 0 {
+		t.Fatalf("member sees groups before joining: %+v", list)
+	}
+
+	// Add member; the member now sees the group and its members list.
+	if err := s.AddGroupMember(ctx, "g1", member.ID, "member", 11); err != nil {
+		t.Fatalf("AddGroupMember: %v", err)
+	}
+	if ok, err := s.IsGroupMember(ctx, "g1", member.ID); err != nil || !ok {
+		t.Fatalf("IsGroupMember = %v, %v; want true, nil", ok, err)
+	}
+	memberGroups, err := s.ListGroupsForUser(ctx, member.ID)
+	if err != nil || len(memberGroups) != 1 {
+		t.Fatalf("ListGroupsForUser(member) = %+v, %v", memberGroups, err)
+	}
+	if memberGroups[0].IsOwner {
+		t.Error("member marked as owner")
+	}
+	if len(memberGroups[0].Members) != 1 || memberGroups[0].Members[0].Username != "member" {
+		t.Fatalf("members = %+v", memberGroups[0].Members)
+	}
+
+	// Key-sharing groups: the member qualifies (share on); the owner does not
+	// (ownership is not membership).
+	keyGroups, err := s.ListKeyGroupsForUser(ctx, member.ID)
+	if err != nil || len(keyGroups) != 1 || keyGroups[0].ID != "g1" {
+		t.Fatalf("ListKeyGroupsForUser(member) = %+v, %v", keyGroups, err)
+	}
+	if list, _ := s.ListKeyGroupsForUser(ctx, owner.ID); len(list) != 0 {
+		t.Fatalf("owner has key groups: %+v", list)
+	}
+
+	// Several applicable groups are returned oldest-first.
+	g2 := &Group{ID: "g0", Name: "Older", OwnerID: owner.ID, ShareKey: true, CreatedAt: 5, UpdatedAt: 5}
+	if err := s.InsertGroup(ctx, g2); err != nil {
+		t.Fatalf("InsertGroup(g0): %v", err)
+	}
+	if err := s.AddGroupMember(ctx, "g0", member.ID, "member", 11); err != nil {
+		t.Fatalf("AddGroupMember(g0): %v", err)
+	}
+	keyGroups, err = s.ListKeyGroupsForUser(ctx, member.ID)
+	if err != nil || len(keyGroups) != 2 || keyGroups[0].ID != "g0" {
+		t.Fatalf("key groups order = %+v, %v; want g0 first", keyGroups, err)
+	}
+
+	// Turning sharing off removes it from the key list.
+	g2.ShareKey = false
+	g2.UpdatedAt = 12
+	if err := s.UpdateGroup(ctx, g2); err != nil {
+		t.Fatalf("UpdateGroup: %v", err)
+	}
+	keyGroups, err = s.ListKeyGroupsForUser(ctx, member.ID)
+	if err != nil || len(keyGroups) != 1 || keyGroups[0].ID != "g1" {
+		t.Fatalf("key groups after share off = %+v, %v", keyGroups, err)
+	}
+
+	// Only the owner may update or delete (guarded by owner_id).
+	if err := s.UpdateGroup(ctx, &Group{ID: "g1", Name: "Hax", OwnerID: other.ID, UpdatedAt: 13}); err != ErrNotFound {
+		t.Errorf("non-owner UpdateGroup = %v, want ErrNotFound", err)
+	}
+	if n, err := s.DeleteGroup(ctx, "g1", other.ID); err != nil || n != 0 {
+		t.Errorf("non-owner DeleteGroup = %d, %v; want 0, nil", n, err)
+	}
+
+	// Remove the member, then delete the group; memberships cascade.
+	if n, err := s.RemoveGroupMember(ctx, "g1", member.ID); err != nil || n != 1 {
+		t.Fatalf("RemoveGroupMember = %d, %v; want 1, nil", n, err)
+	}
+	if n, err := s.DeleteGroup(ctx, "g1", owner.ID); err != nil || n != 1 {
+		t.Fatalf("DeleteGroup = %d, %v; want 1, nil", n, err)
+	}
+	if _, err := s.GetGroup(ctx, "g1"); err != ErrNotFound {
+		t.Errorf("GetGroup after delete = %v, want ErrNotFound", err)
+	}
+}
+
 func TestSettingsRoundTrip(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()

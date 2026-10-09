@@ -67,6 +67,23 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_convos_updated ON conversations(updated_at DESC);
+CREATE TABLE IF NOT EXISTS groups (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  owner_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  share_key  INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_members (
+  group_id   TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role       TEXT NOT NULL DEFAULT 'member',
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(owner_id);
 `
 
 // User mirrors a row of the users table (§9.1).
@@ -122,6 +139,27 @@ type Project struct {
 	CreatedAt         int64   `json:"created_at"`
 	UpdatedAt         int64   `json:"updated_at"`
 	ConversationCount int64   `json:"conversation_count"`
+}
+
+// Group mirrors a row of the groups table (§2.2). IsOwner and Members are
+// filled by the read helpers relative to the requesting user.
+type Group struct {
+	ID        string        `json:"id"`
+	Name      string        `json:"name"`
+	OwnerID   string        `json:"owner_id"`
+	ShareKey  bool          `json:"share_key"`
+	CreatedAt int64         `json:"created_at"`
+	UpdatedAt int64         `json:"updated_at"`
+	IsOwner   bool          `json:"is_owner"`
+	Members   []GroupMember `json:"members"`
+}
+
+// GroupMember is a group_members row joined with the user's display fields.
+type GroupMember struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Role     string `json:"role"`
 }
 
 // Store wraps the SQLite handle.
@@ -729,4 +767,187 @@ func (s *Store) projectCounts(ctx context.Context, userID string) (map[string]in
 		counts[id] = n
 	}
 	return counts, rows.Err()
+}
+
+// ---------- groups (§2.2) ----------
+
+const groupCols = "id, name, owner_id, share_key, created_at, updated_at"
+
+func scanGroup(sc scanner) (Group, error) {
+	var g Group
+	var share int
+	if err := sc.Scan(&g.ID, &g.Name, &g.OwnerID, &share, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		return Group{}, err
+	}
+	g.ShareKey = share != 0
+	return g, nil
+}
+
+// InsertGroup inserts a new group; OwnerID is the creator.
+func (s *Store) InsertGroup(ctx context.Context, g *Group) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO groups (`+groupCols+`) VALUES (?, ?, ?, ?, ?, ?)`,
+		g.ID, g.Name, g.OwnerID, boolToInt(g.ShareKey), g.CreatedAt, g.UpdatedAt)
+	return err
+}
+
+// GetGroup loads one group by id (with members), else ErrNotFound.
+func (s *Store) GetGroup(ctx context.Context, id string) (Group, error) {
+	g, err := scanGroup(s.db.QueryRowContext(ctx,
+		`SELECT `+groupCols+` FROM groups WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Group{}, ErrNotFound
+	}
+	if err != nil {
+		return Group{}, err
+	}
+	members, err := s.ListGroupMembers(ctx, id)
+	if err != nil {
+		return Group{}, err
+	}
+	g.Members = members
+	return g, nil
+}
+
+// ListGroupsForUser returns the groups the user owns or belongs to, oldest
+// first. IsOwner and Members are set relative to userID.
+func (s *Store) ListGroupsForUser(ctx context.Context, userID string) ([]Group, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+groupCols+` FROM groups
+		 WHERE owner_id = ?
+		    OR id IN (SELECT group_id FROM group_members WHERE user_id = ?)
+		 ORDER BY created_at ASC`, userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	groups := make([]Group, 0)
+	for rows.Next() {
+		g, err := scanGroup(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// Close before the per-group member queries: the pool is a single
+	// connection, so an open result set would deadlock the next query.
+	rows.Close()
+	for i := range groups {
+		members, err := s.ListGroupMembers(ctx, groups[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		groups[i].Members = members
+		groups[i].IsOwner = groups[i].OwnerID == userID
+	}
+	return groups, nil
+}
+
+// ListKeyGroupsForUser returns the groups whose owner may share their key with
+// userID (membership only, sharing on), oldest first. The caller resolves each
+// owner's stored key in order (§2.2).
+func (s *Store) ListKeyGroupsForUser(ctx context.Context, userID string) ([]Group, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT g.id, g.name, g.owner_id, g.share_key, g.created_at, g.updated_at
+		   FROM groups g JOIN group_members m ON m.group_id = g.id
+		  WHERE m.user_id = ? AND g.share_key = 1
+		  ORDER BY g.created_at ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	groups := make([]Group, 0)
+	for rows.Next() {
+		g, err := scanGroup(rows)
+		if err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, rows.Err()
+}
+
+// UpdateGroup updates a group's name and sharing flag (owner-guarded). It
+// returns ErrNotFound when the group is missing or not owned by OwnerID.
+func (s *Store) UpdateGroup(ctx context.Context, g *Group) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE groups SET name = ?, share_key = ?, updated_at = ?
+		  WHERE id = ? AND owner_id = ?`,
+		g.Name, boolToInt(g.ShareKey), g.UpdatedAt, g.ID, g.OwnerID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteGroup deletes an owner's group; memberships cascade. It returns the
+// number of rows removed.
+func (s *Store) DeleteGroup(ctx context.Context, id, ownerID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM groups WHERE id = ? AND owner_id = ?`, id, ownerID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// AddGroupMember inserts a membership row (duplicates surface as a driver
+// error, mapped to 409 by the caller).
+func (s *Store) AddGroupMember(ctx context.Context, groupID, userID, role string, now int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO group_members (group_id, user_id, role, created_at) VALUES (?, ?, ?, ?)`,
+		groupID, userID, role, now)
+	return err
+}
+
+// RemoveGroupMember deletes a membership row; returns rows removed.
+func (s *Store) RemoveGroupMember(ctx context.Context, groupID, userID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM group_members WHERE group_id = ? AND user_id = ?`, groupID, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ListGroupMembers returns a group's members joined with user display fields.
+func (s *Store) ListGroupMembers(ctx context.Context, groupID string) ([]GroupMember, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT u.id, u.username, u.email, m.role
+		   FROM group_members m JOIN users u ON u.id = m.user_id
+		  WHERE m.group_id = ?
+		  ORDER BY m.created_at ASC, u.username ASC`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	members := make([]GroupMember, 0)
+	for rows.Next() {
+		var m GroupMember
+		if err := rows.Scan(&m.UserID, &m.Username, &m.Email, &m.Role); err != nil {
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	return members, rows.Err()
+}
+
+// IsGroupMember reports whether userID belongs to groupID.
+func (s *Store) IsGroupMember(ctx context.Context, groupID, userID string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM group_members WHERE group_id = ? AND user_id = ?`,
+		groupID, userID).Scan(&n)
+	return n > 0, err
 }
