@@ -34,11 +34,21 @@ assert() {
   else echo "  FAIL  $name  (got: ${out:-<empty>})"; FAILS=$((FAILS+1)); fi
 }
 shot() { ab screenshot "$SHOTS/$1" >/dev/null 2>&1; }
+# wait_for <js-expr> [timeout-seconds] — poll until the expression is true.
+wait_for() {
+  local expr="$1" t="${2:-8}" i=0 out
+  while [ "$i" -lt $((t*2)) ]; do
+    out=$(ab eval "String(($expr))" | tail -1 | tr -d '\r' | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+    [ "$out" = "true" ] && return 0
+    sleep 0.5; i=$((i+1))
+  done
+  return 1
+}
 login() {
   ab fill "#login-identifier" "$1" >/dev/null 2>&1
   ab fill "#login-password" "$2" >/dev/null 2>&1
   ab click "#login-form button[type=submit]" >/dev/null 2>&1
-  sleep 1
+  wait_for "!document.getElementById('app').hidden" 10
 }
 # Best-effort cleanup helpers (fire-and-forget DELETE by name).
 cleanup() { ab eval "(function(){fetch('$1').then(function(r){return r.json();}).then(function(xs){var x=xs.filter(function(o){return o.name==='$2';})[0];if(x)fetch('$1/'+x.id,{method:'DELETE'});});return 'ok';})()" >/dev/null 2>&1; }
@@ -126,6 +136,7 @@ assert "user message shows attachment" "document.querySelector('.messages').text
 assert "composer visible after send" "document.querySelector('.composer').getBoundingClientRect().bottom <= window.innerHeight + 1"
 shot 09-sent.png
 
+if [ "${SKIP_ADMIN:-0}" != "1" ]; then
 echo "-- admin pass --"
 ab click "#menu-btn" >/dev/null 2>&1; sleep 1
 ab click "#logout-btn" >/dev/null 2>&1; sleep 1
@@ -142,6 +153,7 @@ assert "integrations section visible for admin" "!document.getElementById('integ
 ab scrollintoview "#users-section" >/dev/null 2>&1
 shot 10-admin.png
 ab press Escape >/dev/null 2>&1; sleep 1
+fi
 
 echo "-- result --"
 echo "  passed=$PASSES failed=$FAILS"
