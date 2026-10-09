@@ -45,6 +45,13 @@ type errorEvent struct {
 	Message string `json:"message"`
 }
 
+// toolEvent surfaces tool activity to the client (Phase 2.4).
+type toolEvent struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"` // running | done | error
+	Summary string `json:"summary,omitempty"`
+}
+
 // handlePostMessage appends a user message and streams the assistant reply.
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	u, ok := currentUser(w, r)
@@ -176,7 +183,10 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	if conv.Effort != nil {
 		effort = *conv.Effort
 	}
-	events := s.up.Stream(ctx, upstream.Params{
+	// Build the per-request tool set (Phase 2.4). An empty registry disables
+	// tool calling but still runs the same agentic code path.
+	reg := s.toolRegistry(ctx)
+	events := s.up.StreamAgent(ctx, upstream.Params{
 		Dialect:      m.Dialect,
 		Model:        conv.Model,
 		Effort:       effort,
@@ -185,7 +195,8 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 		Messages:     msgs,
 		Instructions: instructions,
 		Context:      foldAttachments(atts),
-	})
+		Tools:        upstreamToolSpecs(reg.Specs()),
+	}, s.toolExecutor(reg))
 
 	var content, reasoning strings.Builder
 	var usage *upstream.Usage
@@ -248,6 +259,14 @@ stream:
 				s.log.Error("upstream stream failed", "model", conv.Model, "error", msg)
 				writeSSE(w, flusher, "error", errorEvent{Message: msg})
 				return
+			case upstream.EventTool:
+				if ev.Tool != nil {
+					writeSSE(w, flusher, "tool", toolEvent{
+						Name:    ev.Tool.Name,
+						Status:  ev.Tool.Status,
+						Summary: ev.Tool.Summary,
+					})
+				}
 			}
 		case <-ticker.C:
 			if _, err := io.WriteString(w, ": keepalive\n\n"); err == nil {
