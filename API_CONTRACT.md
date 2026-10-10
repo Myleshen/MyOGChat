@@ -285,8 +285,10 @@ empty:
   files attached (the extracted text lives in the `attachments` table).
   Supported extraction: UTF-8 text/code/CSV, PDF, images (OCR), and — Phase 4.5 —
   OOXML (`.docx`/`.xlsx`/`.pptx`), Open Document (`.odt`/`.ods`/`.odp`), EPUB, and
-  RTF, all parsed with the standard library (no new dependencies). Legacy
-  `.doc`/`.xls`/`.ppt`, `.msg`, and audio/video are reported as unsupported.
+  RTF, all parsed with the standard library (no new dependencies). Audio/video
+  (`.mp3`, `.wav`, `.m4a`, `.ogg`, `.opus`, `.flac`, and `.mp4`, `.mov`, `.webm`,
+  `.mkv`, …) are transcribed via the configured speech-to-text service (4.5).
+  Legacy `.doc`/`.xls`/`.ppt` and `.msg` are reported as unsupported.
 - `tools` — assistant messages: `[{name,status,summary,args,output,error,duration_ms,truncated}]`
   tool activity (`status` ∈ `running` | `done` | `error`), so the inline tool block
   survives a reload. The server collects `event: tool` frames during a reply and

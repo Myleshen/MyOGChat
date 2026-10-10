@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"myogchat/internal/extract"
+	"myogchat/internal/speech"
 	"myogchat/internal/store"
 )
 
@@ -77,8 +78,13 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		name = "file"
 	}
 	mimeType := header.Header.Get("Content-Type")
-	// Images are OCR'd when enabled (features 2.5/2.13); other types are unchanged.
-	text, err := extract.ExtractWith(name, mimeType, data, s.ocrFunc(r.Context(), u))
+	// Images are OCR'd when enabled (features 2.5/2.13); audio/video are
+	// transcribed via speech-to-text (4.5); other types are unchanged.
+	opts := extract.Options{OCR: s.ocrFunc(r.Context(), u)}
+	if tr := s.sttTranscriber(r.Context(), ""); tr != nil {
+		opts.Transcribe = speech.STT(r.Context(), tr)
+	}
+	text, err := extract.ExtractOpts(name, mimeType, data, opts)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, extractMessage(err))
 		return
@@ -161,6 +167,8 @@ func extractMessage(err error) string {
 		return "no text could be extracted from the file"
 	case errors.Is(err, extract.ErrOCR):
 		return "could not read text from the image: " + err.Error()
+	case errors.Is(err, extract.ErrTranscribe):
+		return "could not transcribe the audio/video: " + err.Error()
 	case errors.Is(err, extract.ErrUnsupported):
 		return err.Error()
 	default:

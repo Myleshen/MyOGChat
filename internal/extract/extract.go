@@ -40,6 +40,8 @@ var (
 	ErrEmpty = errors.New("no text could be extracted")
 	// ErrOCR marks images whose OCR run failed (engine error, timeout, ...).
 	ErrOCR = errors.New("OCR failed")
+	// ErrTranscribe marks audio/video whose speech-to-text run failed.
+	ErrTranscribe = errors.New("transcription failed")
 )
 
 // textExtensions are filename extensions treated as UTF-8 text even when the
@@ -70,6 +72,24 @@ var imageExtensions = map[string]bool{
 	".ppm": true, ".pnm": true,
 }
 
+// mediaExtensions are audio/video extensions transcribed via speech-to-text
+// (Phase 4.5) even when the browser reports a generic or empty MIME type.
+var mediaExtensions = map[string]bool{
+	".mp3": true, ".wav": true, ".m4a": true, ".aac": true, ".ogg": true,
+	".oga": true, ".opus": true, ".flac": true, ".wma": true,
+	".mp4": true, ".m4v": true, ".mov": true, ".webm": true, ".mkv": true,
+	".avi": true, ".3gp": true, ".mpeg": true, ".mpg": true,
+}
+
+// Options bundles the optional non-Go engines available during extraction.
+// A nil OCR disables image support; a nil Transcribe disables audio/video.
+type Options struct {
+	// OCR reads text from images (nil → images reported unsupported).
+	OCR ocr.OCRFunc
+	// Transcribe turns audio/video bytes into text via speech-to-text.
+	Transcribe func(data []byte, filename, mime string) (string, error)
+}
+
 // Extract returns the plain text of data given the upload's filename and MIME
 // type. It never returns both text and an error. Images are rejected with
 // ErrUnsupported because no OCR function is supplied; use ExtractWith to OCR
@@ -83,6 +103,12 @@ func Extract(name, mimeType string, data []byte) (string, error) {
 // ocrFn is set, recognized text is trimmed, capped with MaxTextChars, and
 // returned like any other extractor output.
 func ExtractWith(name, mimeType string, data []byte, ocrFn ocr.OCRFunc) (string, error) {
+	return ExtractOpts(name, mimeType, data, Options{OCR: ocrFn})
+}
+
+// ExtractOpts is ExtractWith generalized to the optional OCR and speech-to-text
+// engines (Phase 4.5).
+func ExtractOpts(name, mimeType string, data []byte, opts Options) (string, error) {
 	base := baseMime(mimeType)
 	ext := strings.ToLower(filepath.Ext(name))
 	kind := detectDocument(base, ext, data)
@@ -91,9 +117,11 @@ func ExtractWith(name, mimeType string, data []byte, ocrFn ocr.OCRFunc) (string,
 	case isPDF(base, ext, data):
 		return extractPDF(data)
 	case isImage(base, ext):
-		return extractImage(data, ocrFn)
+		return extractImage(data, opts.OCR)
 	case kind != "":
 		return extractDocument(kind, data)
+	case isMedia(base, ext):
+		return extractMedia(data, name, mimeType, opts.Transcribe)
 	case isText(base, ext, data):
 		return extractText(data)
 	default:
@@ -102,6 +130,32 @@ func ExtractWith(name, mimeType string, data []byte, ocrFn ocr.OCRFunc) (string,
 		}
 		return "", fmt.Errorf("%w: %s", ErrUnsupported, base)
 	}
+}
+
+// isMedia decides whether an upload is audio/video to transcribe.
+func isMedia(base, ext string) bool {
+	return strings.HasPrefix(base, "audio/") || strings.HasPrefix(base, "video/") || mediaExtensions[ext]
+}
+
+// extractMedia transcribes audio/video via speech-to-text. A nil Transcribe
+// yields ErrUnsupported; an engine failure yields ErrTranscribe; no speech
+// yields ErrEmpty.
+func extractMedia(data []byte, name, mimeType string, transcribe func([]byte, string, string) (string, error)) (string, error) {
+	if transcribe == nil {
+		return "", fmt.Errorf("%w: audio/video requires speech-to-text, which is disabled", ErrUnsupported)
+	}
+	if len(data) == 0 {
+		return "", ErrEmpty
+	}
+	text, err := transcribe(data, name, mimeType)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrTranscribe, err)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", ErrEmpty
+	}
+	return capText(text), nil
 }
 
 // baseMime strips any parameters (e.g. "text/plain; charset=utf-8").
