@@ -266,6 +266,10 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		// Quota limits (2.11); 0 = off.
 		DailyTokenLimit  *int64 `json:"daily_token_limit"`
 		MonthlyCostLimit *int64 `json:"monthly_cost_limit"`
+		// Maps (feature 3.4).
+		MapsProvider *string `json:"maps_provider"`
+		MapsRegion   *string `json:"maps_region"`
+		MapsUnits    *string `json:"maps_units"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -352,6 +356,13 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.MapsProvider != nil {
+		if err := s.setMapsProvider(r.Context(), *req.MapsProvider); err != nil {
+			s.log.Error("set maps_provider", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
 	if req.MonthlyCostLimit != nil {
 		if *req.MonthlyCostLimit < 0 {
 			writeError(w, http.StatusBadRequest, "monthly_cost_limit must be >= 0")
@@ -359,6 +370,20 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.st.SetSetting(r.Context(), settingMonthlyCostLimit, strconv.FormatInt(*req.MonthlyCostLimit, 10)); err != nil {
 			s.log.Error("set monthly_cost_limit", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.MapsRegion != nil {
+		if err := s.setMapsRegion(r.Context(), *req.MapsRegion); err != nil {
+			s.log.Error("set maps_region", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.MapsUnits != nil {
+		if err := s.setMapsUnits(r.Context(), *req.MapsUnits); err != nil {
+			s.log.Error("set maps_units", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
 		}
@@ -399,6 +424,10 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// 2.11: quota limits (self-contained block).
 	for k, v := range s.usageSettings(r.Context()) {
+		out[k] = v
+	}
+	// Feature 3.4: maps (self-contained block).
+	for k, v := range s.mapsSettings(r.Context()) {
 		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)

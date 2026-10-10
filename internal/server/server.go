@@ -33,6 +33,7 @@ type Server struct {
 	encKey    []byte          // AES-256 key for per-user API keys (§2.1)
 	serverKey string          // optional shared OpenCode Go key (may be empty)
 	search    SearchDefaults  // env-derived web-search defaults (Phase 2.4)
+	geo       GeoDefaults     // env-derived maps defaults (Phase 3.4)
 	sbx       *sandbox.Runner // code sandbox runner; nil when disabled (2.6/2.7)
 	ocrEngine ocr.Engine      // image OCR backend (feature 2.5/2.13); nil when disabled
 	// ocrEngineName is the configured MYOGCHAT_OCR_ENGINE mode (tesseract |
@@ -44,12 +45,13 @@ type Server struct {
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
 // optional shared key (empty when the deployment is pure BYOK); search holds the
-// env-derived web-search defaults (keys, provider, result count, region); sbx
-// runs the code sandbox tools (nil when the sandbox is disabled by env);
-// ocrEngine enables image OCR and may be nil; ocrEngineName is the configured
-// OCR engine mode and ocrVisionAvailable reports whether vision OCR is usable.
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool) *Server {
-	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, search: search, sbx: sbx, ocrEngine: ocrEngine, ocrEngineName: ocrEngineName, ocrVisionAvailable: ocrVisionAvailable}
+// env-derived web-search defaults (keys, provider, result count, region); geo
+// holds the env-derived maps defaults (3.4); sbx runs the code sandbox tools
+// (nil when the sandbox is disabled by env); ocrEngine enables image OCR and may
+// be nil; ocrEngineName is the configured OCR engine mode and ocrVisionAvailable
+// reports whether vision OCR is usable.
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool) *Server {
+	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, search: search, geo: geo, sbx: sbx, ocrEngine: ocrEngine, ocrEngineName: ocrEngineName, ocrVisionAvailable: ocrVisionAvailable}
 }
 
 // Handler returns the root handler: routes + auth + request logging.

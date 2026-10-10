@@ -266,10 +266,10 @@ merges sequentially and resolves the small additive conflicts in shared files
   A `calendar_*` tool + a Settings section. **Effort:** ~4–6 d.
 - See `docs/SCOPING.md` §3.3.
 
-### 3.4 Maps
+### 3.4 Maps — ✅ done (branch `feat/maps`)
 - **OSM-only (keyless)** — Nominatim (geocode/reverse) + OSRM (directions) +
-  Photon/Overpass (places). A `maps_*` tool reusing the 2.4 loop; global 1 req/s
-  limiter + a result cache (policy). **Effort:** ~3–4 d. See `docs/SCOPING.md` §3.4.
+  Photon/Overpass (places). Four `maps_*` tools reusing the 2.4 loop; global
+  1 req/s limiter + a SQLite result cache (policy). See `docs/3.4-maps.md`.
 
 ### 3.5 Speech-to-text (STT) — scoped (~2–3 d)
 - **Ollama does NOT serve STT** (LLMs + embeddings only). Pi default:

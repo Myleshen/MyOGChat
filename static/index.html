@@ -357,6 +357,33 @@
           </div>
         </div>
         <!-- web-search:end -->
+        <!-- maps:start — self-contained maps block (3.4); safe to relocate -->
+        <div id="maps-block" class="web-search-block">
+          <p class="settings-subtitle settings-subtitle-sm">Maps (OpenStreetMap)</p>
+          <p id="maps-status" class="settings-subtitle-sm">Maps: loading…</p>
+          <label class="field">
+            <span class="field-label">Provider</span>
+            <select id="maps-provider">
+              <option value="osm">OpenStreetMap (keyless)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Region (optional country code)</span>
+            <input id="maps-region" type="text" autocomplete="off" placeholder="e.g. us">
+          </label>
+          <label class="field">
+            <span class="field-label">Units</span>
+            <select id="maps-units">
+              <option value="metric">Metric (km)</option>
+              <option value="imperial">Imperial (mi)</option>
+            </select>
+          </label>
+          <p id="maps-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="button" id="maps-save" class="btn btn-primary">Save</button>
+          </div>
+        </div>
+        <!-- maps:end -->
         <form id="linkwarden-form" class="add-user-form" autocomplete="off">
           <p class="settings-subtitle settings-subtitle-sm">Linkwarden</p>
           <label class="field">

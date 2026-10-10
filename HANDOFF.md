@@ -42,7 +42,7 @@ internal/
   models/     static model registry + cost/peak/tier pricing + thinking flags
   upstream/   OpenCode Go clients: chat + responses dialects, SSE parsing, agentic tool loop (agent.go)
   server/     HTTP routes, SSE streaming, auth middleware, per-user scoping
-  tools/      tool registry + web_search (Tavily/Brave/DDG chain), fetch_url, Linkwarden, run_bash/run_python
+  tools/      tool registry + web_search (Tavily/Brave/DDG chain), fetch_url, Linkwarden, maps_* (OSM: Nominatim/OSRM/Photon+Overpass), run_bash/run_python
   sandbox/    hardened ephemeral Docker code sandbox runner (2.6/2.7)
   extract/    text + PDF extraction for attachments (images → injected OCR)
   ocr/        image OCR via Docker Tesseract (feature 2.5)
@@ -61,7 +61,7 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2
 - `README.md` — user-facing overview
 - `docs/` — `2.2-groups.md`, `2.3-attachments.md`, `2.4-tools.md`,
   `2.4-search-providers.md`, `2.8-linkwarden.md`, `2.10-2.11-tool-activity-usage.md`,
-  `2.13-vision-ocr.md`
+  `2.13-vision-ocr.md`, `3.4-maps.md`
 
 ## Conventions & hard constraints
 
@@ -150,6 +150,11 @@ fix, deploy.
 All Phase 2 items (2.1–2.11) are implemented. Provision the host with
 `deploy/sandbox-setup.sh` and `deploy/ocr-setup.sh`.
 Parallelize with git worktrees off `main` (see "Parallel workstreams").
+
+**Phase 3 — in progress:** **3.4 Maps (keyless OSM)** is implemented on branch
+`feat/maps` (`docs/3.4-maps.md`): `maps_geocode` / `maps_reverse` /
+`maps_directions` / `maps_places` over the 2.4 loop, with a global 1 req/s
+limiter and a SQLite result cache. Not yet merged/deployed.
 
 ## Known gaps / caveats (be honest)
 

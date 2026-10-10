@@ -53,11 +53,16 @@ type config struct {
 	searchResults    int
 	searchRegion     string
 	searchSafeSearch string
-	port             string
-	dbPath           string
-	retentionDays    int
-	sandboxEnabled   bool           // MYOGCHAT_SANDBOX hard kill switch (default on)
-	sandbox          sandbox.Config // code-sandbox container parameters (2.6/2.7)
+	// Maps (feature 3.4): keyless OSM stack.
+	mapsProvider   string
+	mapsRegion     string
+	mapsUnits      string
+	mapsLimit      int
+	port           string
+	dbPath         string
+	retentionDays  int
+	sandboxEnabled bool           // MYOGCHAT_SANDBOX hard kill switch (default on)
+	sandbox        sandbox.Config // code-sandbox container parameters (2.6/2.7)
 	// Image OCR (feature 2.5).
 	ocrEnabled bool
 	ocrImage   string
@@ -210,11 +215,16 @@ func loadConfig() (config, error) {
 		searchResults:    5,
 		searchRegion:     envOr("MYOGCHAT_SEARCH_REGION", "us-en"),
 		searchSafeSearch: envOr("MYOGCHAT_SEARCH_SAFESEARCH", "moderate"),
-		port:             envOr("MYOGCHAT_PORT", "8787"),
-		dbPath:           os.Getenv("MYOGCHAT_DB"),
-		retentionDays:    30,
-		sandboxEnabled:   sandbox.EnabledFromEnv(),
-		sandbox:          sandbox.ConfigFromEnv(),
+		// Maps (feature 3.4). OSM is the only provider (keyless).
+		mapsProvider:   envOr("MYOGCHAT_MAPS_PROVIDER", "osm"),
+		mapsRegion:     envOr("MYOGCHAT_MAPS_REGION", ""),
+		mapsUnits:      envOr("MYOGCHAT_MAPS_UNITS", "metric"),
+		mapsLimit:      5,
+		port:           envOr("MYOGCHAT_PORT", "8787"),
+		dbPath:         os.Getenv("MYOGCHAT_DB"),
+		retentionDays:  30,
+		sandboxEnabled: sandbox.EnabledFromEnv(),
+		sandbox:        sandbox.ConfigFromEnv(),
 		// Image OCR (feature 2.5). On by default; MYOGCHAT_OCR=0 disables it
 		// entirely (no engine is built, so images are always ErrUnsupported).
 		ocrEnabled: envOr("MYOGCHAT_OCR", "1") != "0",
@@ -298,6 +308,20 @@ func loadConfig() (config, error) {
 			n = 20
 		}
 		cfg.searchResults = n
+	}
+	if v := os.Getenv("MYOGCHAT_MAPS_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return config{}, errors.New("MYOGCHAT_MAPS_LIMIT must be an integer")
+		}
+		// Clamp to [1, 20], matching the maps tools' result cap.
+		if n < 1 {
+			n = 1
+		}
+		if n > 20 {
+			n = 20
+		}
+		cfg.mapsLimit = n
 	}
 	return cfg, nil
 }
@@ -443,6 +467,11 @@ func run(cfg config, log *slog.Logger) error {
 		MaxResults: cfg.searchResults,
 		Region:     cfg.searchRegion,
 		SafeSearch: cfg.searchSafeSearch,
+	}, server.GeoDefaults{
+		Provider: cfg.mapsProvider,
+		Region:   cfg.mapsRegion,
+		Units:    cfg.mapsUnits,
+		Limit:    cfg.mapsLimit,
 	}, sbx, ocrEngine, ocrEngineName, vision != nil)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
@@ -466,6 +495,9 @@ func run(cfg config, log *slog.Logger) error {
 		"brave_key", cfg.braveKey != "",
 		"search_provider", cfg.searchProvider,
 		"search_results", cfg.searchResults,
+		"maps_provider", cfg.mapsProvider,
+		"maps_region", cfg.mapsRegion,
+		"maps_units", cfg.mapsUnits,
 		"sandbox", cfg.sandboxEnabled,
 		"sandbox_docker", cfg.sandbox.Docker,
 		"sandbox_network", cfg.sandbox.Network,
@@ -539,6 +571,12 @@ func janitor(ctx context.Context, st *store.Store, retentionDays int, log *slog.
 			log.Error("retention janitor", "error", err)
 		} else if a > 0 {
 			log.Info("retention janitor purged attachments", "count", a, "cutoff", cutoff)
+		}
+		// Expired maps cache rows (3.4) are housekeeping, not retention.
+		if g, err := st.DeleteExpiredGeoCache(ctx, time.Now().UnixMilli()); err != nil {
+			log.Error("retention janitor", "error", err)
+		} else if g > 0 {
+			log.Info("retention janitor purged geo cache", "count", g)
 		}
 	}
 

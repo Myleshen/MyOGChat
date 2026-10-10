@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -95,6 +96,11 @@ CREATE TABLE IF NOT EXISTS group_members (
 CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(owner_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id);
+CREATE TABLE IF NOT EXISTS geo_cache (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
 `
 
 // User mirrors a row of the users table (§9.1).
@@ -286,6 +292,7 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)`,
 		// 2.11: range scans over assistant usage rows.
 		`CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_geo_cache_expires ON geo_cache(expires_at)`,
 	} {
 		if _, err := s.db.Exec(idx); err != nil {
 			return err
@@ -1230,4 +1237,45 @@ func (s *Store) AllUsersUsage(ctx context.Context, cutoff int64) ([]UserUsage, e
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// ---------- geo cache (3.4) ----------
+
+// GetGeoCache returns a cached maps provider result when it exists and has not
+// expired (expires_at is unix milliseconds). It satisfies tools.GeoCache.
+func (s *Store) GetGeoCache(ctx context.Context, key string) (string, bool, error) {
+	var (
+		value     string
+		expiresAt int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value, expires_at FROM geo_cache WHERE key = ?`, key).Scan(&value, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if expiresAt <= time.Now().UnixMilli() {
+		return "", false, nil
+	}
+	return value, true, nil
+}
+
+// PutGeoCache upserts a cached maps provider result until expiresAt (unix ms).
+func (s *Store) PutGeoCache(ctx context.Context, key, value string, expiresAt int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO geo_cache (key, value, expires_at) VALUES (?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
+		key, value, expiresAt)
+	return err
+}
+
+// DeleteExpiredGeoCache purges expired geo-cache rows (janitor helper).
+func (s *Store) DeleteExpiredGeoCache(ctx context.Context, now int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM geo_cache WHERE expires_at <= ?`, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
