@@ -253,19 +253,26 @@ merges sequentially and resolves the small additive conflicts in shared files
 
 ## Phase 3 (scoped — exploratory, not scheduled)
 
-### 3.1 Image generation — IN (self-hosted on the Proxmox GPU)
+### 3.1 Image generation — ✅ app side done (self-hosted on the Proxmox GPU)
 - **External providers out** (owner isn't getting one; OpenCode Go has no
   image-output model) → **self-host** on the Proxmox box.
 - **GPU:** GTX 1650 Ti Mobile (Turing, CC 7.5, 4 GB), driver 615.71.09 — fully
-  supported by **current CUDA 13 / PyTorch cu128** (the earlier "Pascal/CUDA
-  12.x" caveat does not apply). **Verdict: GO** — SD-Turbo ~8–12 s @512², SD1.5
-  ~18–35 s; SDXL/Flux don't fit 4 GB.
-- **Runtime:** **ComfyUI** (`--force-fp16`) in an **LXC with device passthrough**;
-  front it with a tiny **OpenAI-compatible shim** (`POST /v1/images/generations`).
-- **App side:** new **binary `images` table** + `POST /api/images` +
-  `GET /api/images/{id}` + a chat "generate image" UI.
-- **Gate:** time one SD-Turbo 512² image; **< 15 s warm → proceed**.
+  supported by **current CUDA 13 / PyTorch cu128**. SD-Turbo ~4.5–5 s @512² warm;
+  SDXL/Flux don't fit 4 GB.
+- **Runtime:** **ComfyUI** in an **LXC with device passthrough**, run with
+  `--force-fp32` (fp16 produced NaN/black on this GPU). The Go client talks to
+  ComfyUI's **native API** directly (`POST /prompt` → poll `GET /history/{id}` →
+  `GET /view`); the OpenAI-compatible shim is no longer required.
+- **Gate: PASSED (2026-10-10)** — 4.5–5 s warm on CT 101 (`comfyui.local:8188`).
+- **App side shipped:** `internal/imagegen` client, new **`images` table**
+  (owner-scoped BLOB) + `messages.images` reference, `POST /api/images`,
+  `GET`/`DELETE /api/images/{id}`, settings (`imagegen_*`), janitor wiring, and a
+  composer **Generate image** affordance + Settings → Integrations block.
+- **Env:** `MYOGCHAT_IMAGEGEN_URL`, `MYOGCHAT_IMAGEGEN_TOKEN` (DB overrides;
+  token encrypted). See `docs/3.1-imagegen.md`.
 - **See `docs/SCOPING.md` §3.1 and `docs/research/3.1-imagegen-recheck.md`.**
+- **Gap:** the live ComfyUI round-trip wasn't run from the dev workstation
+  (fake-server tests only) — smoke-test against the LXC.
 
 ### 3.2 IMAP email — ✅ done (read-only)
 - **Read/search** mail via **app-specific passwords** (Gmail/iCloud/**Zoho Pro

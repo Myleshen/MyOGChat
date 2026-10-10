@@ -50,6 +50,11 @@ type Server struct {
 	speechCfg SpeechDefaults
 	newSTT    func(speech.STTConfig) speech.Transcriber
 	newTTS    func(speech.TTSConfig) speech.Synthesizer
+
+	// Self-hosted image generation (feature 3.1) env defaults; DB settings
+	// override the URL/token.
+	imagegenURL   string
+	imagegenToken string
 }
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
@@ -59,13 +64,15 @@ type Server struct {
 // (nil when the sandbox is disabled by env); ocrEngine enables image OCR and may
 // be nil; ocrEngineName is the configured OCR engine mode and ocrVisionAvailable
 // reports whether vision OCR is usable; speechDefaults configures the speech
-// engines (features 3.5 / 3.6).
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool, speechDefaults SpeechDefaults) *Server {
+// engines (features 3.5 / 3.6); imagegenURL/imagegenToken are the env defaults
+// for self-hosted image generation (feature 3.1, both may be empty).
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool, speechDefaults SpeechDefaults, imagegenURL, imagegenToken string) *Server {
 	s := &Server{
 		st: st, up: up, auth: a, static: staticFS, log: log,
 		encKey: encKey, serverKey: serverKey, search: search, geo: geo, sbx: sbx,
 		ocrEngine: ocrEngine, ocrEngineName: ocrEngineName, ocrVisionAvailable: ocrVisionAvailable,
-		speechCfg: speechDefaults,
+		speechCfg:   speechDefaults,
+		imagegenURL: imagegenURL, imagegenToken: imagegenToken,
 	}
 	// Build engines per request so DB URL/voice overrides take effect live.
 	s.newSTT = func(cfg speech.STTConfig) speech.Transcriber { return speech.NewOpenAISTT(cfg) }
@@ -138,6 +145,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/me/mail", s.handlePatchMyMail)
 	mux.HandleFunc("DELETE /api/me/mail", s.handleDeleteMyMail)
 	mux.HandleFunc("POST /api/me/mail/test", s.handleTestMyMail)
+	// Image generation (per-user, 3.1).
+	mux.HandleFunc("POST /api/images", s.handleCreateImage)
+	mux.HandleFunc("GET /api/images/{id}", s.handleGetImage)
+	mux.HandleFunc("DELETE /api/images/{id}", s.handleDeleteImage)
 
 	// Admin: users and settings (§9.4).
 	mux.HandleFunc("GET /api/users", s.handleListUsers)

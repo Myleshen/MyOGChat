@@ -82,6 +82,10 @@ type config struct {
 
 	// Speech (features 3.5 / 3.6).
 	speech server.SpeechDefaults
+
+	// Self-hosted image generation (feature 3.1).
+	imagegenURL   string
+	imagegenToken string
 }
 
 func main() {
@@ -248,6 +252,10 @@ func loadConfig() (config, error) {
 		ocrVisionMaxTokens: ocr.DefaultVisionMaxTokens,
 		ocrVisionTimeout:   ocr.DefaultVisionTimeout,
 		ocrMaxImageDim:     ocr.DefaultMaxImageDim,
+		// Self-hosted image generation (feature 3.1). Unset by default; the
+		// admin can also set the URL/token in Settings → Integrations.
+		imagegenURL:   os.Getenv("MYOGCHAT_IMAGEGEN_URL"),
+		imagegenToken: os.Getenv("MYOGCHAT_IMAGEGEN_TOKEN"),
 	}
 	if v := os.Getenv("MYOGCHAT_OCR_TIMEOUT"); v != "" {
 		d, err := parseOCRDuration(v)
@@ -566,7 +574,7 @@ func run(cfg config, log *slog.Logger) error {
 		Region:   cfg.mapsRegion,
 		Units:    cfg.mapsUnits,
 		Limit:    cfg.mapsLimit,
-	}, sbx, ocrEngine, ocrEngineName, vision != nil, cfg.speech)
+	}, sbx, ocrEngine, ocrEngineName, vision != nil, cfg.speech, cfg.imagegenURL, cfg.imagegenToken)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -606,6 +614,7 @@ func run(cfg config, log *slog.Logger) error {
 		"tts", cfg.speech.TTSURL != "",
 		"tts_url", cfg.speech.TTSURL,
 		"tts_format", cfg.speech.TTSFormat,
+		"imagegen_url", cfg.imagegenURL,
 	)
 
 	errc := make(chan error, 1)
@@ -678,6 +687,12 @@ func janitor(ctx context.Context, st *store.Store, retentionDays int, log *slog.
 			log.Error("retention janitor", "error", err)
 		} else if g > 0 {
 			log.Info("retention janitor purged geo cache", "count", g)
+		}
+		// Generated images share the retention window too (3.1).
+		if img, err := st.DeleteImagesOlderThan(ctx, cutoff); err != nil {
+			log.Error("retention janitor", "error", err)
+		} else if img > 0 {
+			log.Info("retention janitor purged images", "count", img, "cutoff", cutoff)
 		}
 	}
 

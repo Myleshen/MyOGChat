@@ -90,7 +90,7 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	if err != nil {
 		t.Fatalf("columns(messages): %v", err)
 	}
-	for _, col := range []string{"reasoning_tokens", "duration_ms", "attachments", "tools"} {
+	for _, col := range []string{"reasoning_tokens", "duration_ms", "attachments", "tools", "images"} {
 		if !msgCols[col] {
 			t.Errorf("migration did not add messages.%s", col)
 		}
@@ -481,6 +481,86 @@ func TestMessageToolsRoundTrip(t *testing.T) {
 	}
 	if msgs[1].Tools != nil {
 		t.Errorf("message with no tools = %+v, want nil", msgs[1].Tools)
+	}
+}
+
+// TestMessageImagesRoundTrip checks that a message's image refs survive a
+// round-trip (feature 3.1).
+func TestMessageImagesRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	u := seedUser(t, s, "u-img", "imger", false)
+	if err := s.InsertConversation(ctx, &Conversation{
+		ID: "ci1", UserID: &u.ID, Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+	if err := s.InsertMessage(ctx, &Message{
+		ID: "mi1", ConversationID: "ci1", Role: "assistant", Content: "",
+		Images:    []GeneratedImage{{ID: "img-1", Prompt: "a red fox", Mime: "image/png", Width: 512, Height: 512, Size: 4}},
+		CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := s.ListMessages(ctx, "ci1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 || len(msgs[0].Images) != 1 || msgs[0].Images[0].ID != "img-1" {
+		t.Fatalf("message images not round-tripped: %+v", msgs)
+	}
+	if msgs[0].Images[0].Prompt != "a red fox" {
+		t.Errorf("image prompt = %q, want %q", msgs[0].Images[0].Prompt, "a red fox")
+	}
+}
+
+// TestImagesRoundTripAndScoping covers the images store (feature 3.1):
+// round-trip, owner scoping, and the retention janitor.
+func TestImagesRoundTripAndScoping(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-alice", "alice", false)
+	bob := seedUser(t, s, "u-bob", "bob", false)
+
+	img := &Image{
+		ID: "img-1", UserID: alice.ID, Prompt: "a red fox", Model: "sd_turbo.safetensors",
+		Mime: "image/png", Width: 512, Height: 512, Size: 4,
+		Data: []byte("PNG!"), CreatedAt: 1000,
+	}
+	if err := s.InsertImage(ctx, img); err != nil {
+		t.Fatalf("InsertImage: %v", err)
+	}
+
+	got, err := s.GetImage(ctx, "img-1", alice.ID)
+	if err != nil {
+		t.Fatalf("owner cannot read own image: %v", err)
+	}
+	if got.Prompt != "a red fox" || string(got.Data) != "PNG!" || got.Width != 512 || got.Height != 512 {
+		t.Errorf("GetImage = %+v (data %q), want the stored row", got, got.Data)
+	}
+
+	// Cross-user read and delete are indistinguishable from a missing row.
+	if _, err := s.GetImage(ctx, "img-1", bob.ID); err != ErrNotFound {
+		t.Errorf("cross-user read = %v, want ErrNotFound", err)
+	}
+	if n, err := s.DeleteImage(ctx, "img-1", bob.ID); err != nil || n != 0 {
+		t.Errorf("cross-user delete = %d, %v; want 0, nil", n, err)
+	}
+
+	// Retention janitor purge by age.
+	if n, err := s.DeleteImagesOlderThan(ctx, 500); err != nil || n != 0 {
+		t.Errorf("DeleteImagesOlderThan(500) = %d, %v; want 0, nil", n, err)
+	}
+	if n, err := s.DeleteImagesOlderThan(ctx, 2000); err != nil || n != 1 {
+		t.Errorf("DeleteImagesOlderThan(2000) = %d, %v; want 1, nil", n, err)
+	}
+
+	// Owner delete.
+	if err := s.InsertImage(ctx, img); err != nil {
+		t.Fatalf("re-InsertImage: %v", err)
+	}
+	if n, err := s.DeleteImage(ctx, "img-1", alice.ID); err != nil || n != 1 {
+		t.Errorf("owner delete = %d, %v; want 1, nil", n, err)
 	}
 }
 

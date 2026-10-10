@@ -277,6 +277,9 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		STTURL     *string `json:"stt_url"`
 		TTSURL     *string `json:"tts_url"`
 		TTSVoice   *string `json:"tts_voice"`
+		// Image generation (feature 3.1).
+		ImagegenURL   *string `json:"imagegen_url"`
+		ImagegenToken *string `json:"imagegen_token"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -427,6 +430,19 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.ImagegenURL != nil || req.ImagegenToken != nil {
+		rawURL := ""
+		if req.ImagegenURL != nil {
+			rawURL = *req.ImagegenURL
+		} else if v, _, err := s.st.GetSetting(r.Context(), settingImagegenURL); err == nil {
+			rawURL = v
+		}
+		if err := s.setImagegen(r.Context(), rawURL, req.ImagegenToken); err != nil {
+			s.log.Error("set imagegen settings", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
 	if req.BraveMode != nil {
 		if err := s.setBraveMode(r.Context(), *req.BraveMode); err != nil {
 			s.log.Error("set brave_mode", "error", err)
@@ -478,6 +494,10 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// Features 3.5 / 3.6: speech (self-contained block).
 	for k, v := range s.speechSettings(r.Context()) {
+		out[k] = v
+	}
+	// Feature 3.1: self-hosted image generation (self-contained block).
+	for k, v := range s.imagegenSettings(r.Context()) {
 		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)
