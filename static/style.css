@@ -718,6 +718,23 @@ button { font: inherit; }
 }
 .attach-btn:disabled { opacity: 0.5; cursor: default; }
 
+/* Voice input (feature 3.5): mic button + recording/transcribing states. */
+.mic-btn {
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+.mic-btn:disabled { opacity: 0.5; cursor: default; }
+.mic-btn.recording {
+  color: #fff;
+  background: var(--red);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+.mic-btn.transcribing { opacity: 0.6; }
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(240, 80, 80, 0.55); }
+  50% { box-shadow: 0 0 0 8px rgba(240, 80, 80, 0); }
+}
+
 /* "N file(s) attached" line inside a user message */
 .msg-attachments {
   margin-top: 6px;

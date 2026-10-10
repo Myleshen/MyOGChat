@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"myogchat/internal/ocr"
 	"myogchat/internal/sandbox"
 	"myogchat/internal/server"
+	"myogchat/internal/speech"
 	"myogchat/internal/store"
 	"myogchat/internal/upstream"
 )
@@ -62,6 +64,8 @@ type config struct {
 	ocrLangs   string
 	ocrDocker  string
 	ocrTimeout time.Duration
+	// Speech (features 3.5 / 3.6).
+	speech server.SpeechDefaults
 }
 
 func main() {
@@ -221,6 +225,11 @@ func loadConfig() (config, error) {
 		}
 		cfg.ocrTimeout = d
 	}
+	speech, err := loadSpeechConfig()
+	if err != nil {
+		return config{}, err
+	}
+	cfg.speech = speech
 	if cfg.dbPath == "" {
 		p, err := resolveDBPath()
 		if err != nil {
@@ -269,19 +278,82 @@ func envOr(key, fallback string) string {
 // parseOCRDuration accepts a Go duration ("30s") or a bare integer number of
 // seconds ("30") for MYOGCHAT_OCR_TIMEOUT.
 func parseOCRDuration(v string) (time.Duration, error) {
+	return parseSecondsOrDuration(v, "MYOGCHAT_OCR_TIMEOUT")
+}
+
+// parseSecondsOrDuration accepts a Go duration ("30s") or a bare integer number
+// of seconds ("30"), returning a positive duration.
+func parseSecondsOrDuration(v, envName string) (time.Duration, error) {
 	if d, err := time.ParseDuration(v); err == nil {
 		if d <= 0 {
-			return 0, errors.New("MYOGCHAT_OCR_TIMEOUT must be positive")
+			return 0, errors.New(envName + " must be positive")
 		}
 		return d, nil
 	}
 	if n, err := strconv.Atoi(v); err == nil {
 		if n <= 0 {
-			return 0, errors.New("MYOGCHAT_OCR_TIMEOUT must be positive")
+			return 0, errors.New(envName + " must be positive")
 		}
 		return time.Duration(n) * time.Second, nil
 	}
-	return 0, errors.New("MYOGCHAT_OCR_TIMEOUT must be a duration (e.g. 30s) or a number of seconds")
+	return 0, errors.New(envName + " must be a duration (e.g. 30s) or a number of seconds")
+}
+
+// loadSpeechConfig resolves the STT/TTS configuration from the environment.
+// Both are on by default (`auto`, pointing at the local services);
+// MYOGCHAT_STT=off / MYOGCHAT_TTS=off clear the URL so the server reports them
+// unavailable. An admin can override the URL/voice in Settings at runtime.
+func loadSpeechConfig() (server.SpeechDefaults, error) {
+	out := server.SpeechDefaults{
+		STTModel:    envOr("MYOGCHAT_STT_MODEL", speech.DefaultSTTModel),
+		STTLanguage: strings.TrimSpace(os.Getenv("MYOGCHAT_STT_LANGUAGE")),
+		STTAPIKey:   strings.TrimSpace(os.Getenv("MYOGCHAT_STT_KEY")),
+		STTTimeout:  speech.DefaultSTTTimeout,
+		TTSModel:    envOr("MYOGCHAT_TTS_MODEL", speech.DefaultTTSModel),
+		TTSVoice:    envOr("MYOGCHAT_TTS_VOICE", speech.DefaultTTSVoice),
+		TTSFormat:   normalizeTTSFormat(envOr("MYOGCHAT_TTS_FORMAT", "openai")),
+		TTSAPIKey:   strings.TrimSpace(os.Getenv("MYOGCHAT_TTS_KEY")),
+		TTSTimeout:  speech.DefaultTTSTimeout,
+	}
+	if !envDisabled(os.Getenv("MYOGCHAT_STT")) {
+		out.STTURL = envOr("MYOGCHAT_STT_URL", speech.DefaultSTTURL)
+	}
+	if !envDisabled(os.Getenv("MYOGCHAT_TTS")) {
+		out.TTSURL = envOr("MYOGCHAT_TTS_URL", speech.DefaultTTSURL)
+	}
+	if v := os.Getenv("MYOGCHAT_STT_TIMEOUT"); v != "" {
+		d, err := parseSecondsOrDuration(v, "MYOGCHAT_STT_TIMEOUT")
+		if err != nil {
+			return server.SpeechDefaults{}, err
+		}
+		out.STTTimeout = d
+	}
+	if v := os.Getenv("MYOGCHAT_TTS_TIMEOUT"); v != "" {
+		d, err := parseSecondsOrDuration(v, "MYOGCHAT_TTS_TIMEOUT")
+		if err != nil {
+			return server.SpeechDefaults{}, err
+		}
+		out.TTSTimeout = d
+	}
+	return out, nil
+}
+
+// envDisabled reports whether an env switch is set to a false-ish value.
+func envDisabled(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "off", "false", "no", "disabled":
+		return true
+	}
+	return false
+}
+
+// normalizeTTSFormat returns "piper" for the native Piper HTTP server and
+// "openai" otherwise (the OpenAI-compatible default).
+func normalizeTTSFormat(v string) string {
+	if strings.EqualFold(strings.TrimSpace(v), "piper") {
+		return "piper"
+	}
+	return "openai"
 }
 
 func run(cfg config, log *slog.Logger) error {
@@ -318,6 +390,13 @@ func run(cfg config, log *slog.Logger) error {
 	if _, err := st.EnsureSetting(ctx, "ocr_enabled", "1"); err != nil {
 		return err
 	}
+	// Speech (3.5/3.6) defaults to on; the admin can toggle STT/TTS separately.
+	if _, err := st.EnsureSetting(ctx, "stt_enabled", "1"); err != nil {
+		return err
+	}
+	if _, err := st.EnsureSetting(ctx, "tts_enabled", "1"); err != nil {
+		return err
+	}
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -350,7 +429,7 @@ func run(cfg config, log *slog.Logger) error {
 		MaxResults: cfg.searchResults,
 		Region:     cfg.searchRegion,
 		SafeSearch: cfg.searchSafeSearch,
-	}, sbx, ocrEngine)
+	}, sbx, ocrEngine, cfg.speech)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -377,6 +456,11 @@ func run(cfg config, log *slog.Logger) error {
 		"sandbox_docker", cfg.sandbox.Docker,
 		"sandbox_network", cfg.sandbox.Network,
 		"ocr", cfg.ocrEnabled,
+		"stt", cfg.speech.STTURL != "",
+		"stt_url", cfg.speech.STTURL,
+		"tts", cfg.speech.TTSURL != "",
+		"tts_url", cfg.speech.TTSURL,
+		"tts_format", cfg.speech.TTSFormat,
 	)
 
 	errc := make(chan error, 1)

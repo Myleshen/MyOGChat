@@ -64,6 +64,9 @@ const stopBtn = document.getElementById("stop-btn");
 const attachBtn = document.getElementById("attach-btn");
 const fileInput = document.getElementById("file-input");
 const attachmentsBar = document.getElementById("attachments-bar");
+/* Voice (features 3.5 / 3.6). */
+const micBtn = document.getElementById("mic-btn");
+const audioInput = document.getElementById("audio-input");
 
 const toastEl = document.getElementById("toast");
 
@@ -133,6 +136,17 @@ const ocrSection = document.getElementById("ocr-section");
 const settingOcrEnabled = document.getElementById("setting-ocr-enabled");
 const ocrStatus = document.getElementById("ocr-status");
 
+/* Voice / speech (features 3.5 / 3.6) — self-contained, safe to relocate. */
+const voiceSection = document.getElementById("voice-section");
+const settingSttEnabled = document.getElementById("setting-stt-enabled");
+const settingSttUrl = document.getElementById("setting-stt-url");
+const settingTtsEnabled = document.getElementById("setting-tts-enabled");
+const settingTtsUrl = document.getElementById("setting-tts-url");
+const settingTtsVoice = document.getElementById("setting-tts-voice");
+const voiceStatus = document.getElementById("voice-status");
+const voiceError = document.getElementById("voice-error");
+const voiceSave = document.getElementById("voice-save");
+
 const projectModal = document.getElementById("project-modal");
 const projectForm = document.getElementById("project-form");
 const projectModalTitle = document.getElementById("project-modal-title");
@@ -159,6 +173,13 @@ const state = {
   streaming: false,
   abort: null,             // AbortController while streaming
   pendingAttachments: [],  // uploaded files awaiting send: {id,name,mime,size,chars,uploading?}
+  speech: {                // GET /api/speech/status (features 3.5 / 3.6)
+    stt_available: false,
+    stt_enabled: false,
+    tts_available: false,
+    tts_enabled: false,
+    tts_voice: "",
+  },
 };
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -436,6 +457,8 @@ function handleUnauthorized() {
   state.groups = [];
   state.pendingAttachments = [];
   renderAttachments();
+  stopSpeaking();
+  state.speech = { stt_available: false, stt_enabled: false, tts_available: false, tts_enabled: false, tts_voice: "" };
   appEl.hidden = true;
   hideSettingsPage();
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
@@ -566,6 +589,8 @@ async function enterApp() {
   state.currentMessages = [];
   state.activeProjectId = null;
   renderUser();
+  // Voice availability for the composer (non-admin friendly).
+  loadSpeechStatus().catch(() => {});
   // Admins: prime the pending-users count for the gear badge (silent).
   if (state.user && state.user.is_admin) {
     loadSettingsInfo(true).catch(() => {});
@@ -710,6 +735,7 @@ function showSettingsPage() {
   integrationsSection.hidden = !isAdmin;
   toolsSection.hidden = !isAdmin; /* code-sandbox tools (2.6/2.7) */
   ocrSection.hidden = !isAdmin;
+  voiceSection.hidden = !isAdmin; /* voice / speech (3.5/3.6) */
   settingsPage.hidden = false;
   const body = settingsPage.querySelector(".settings-body");
   if (body) body.scrollTop = 0;
@@ -756,6 +782,7 @@ function renderUser() {
   userAdminBadge.hidden = !isAdmin;
   usersSection.hidden = !isAdmin;
   ocrSection.hidden = !isAdmin;
+  voiceSection.hidden = !isAdmin; /* voice / speech (3.5/3.6) */
 }
 
 /* ============================== Admin: users panel ============================== */
@@ -927,6 +954,7 @@ async function loadSettingsInfo(silent) {
     applyIntegrationSettings(s);
     applySandboxSettings(s); /* code-sandbox tools (2.6/2.7) */
     applyOCRSettings(s);
+    applyVoiceSettings(s); /* voice / speech (3.5/3.6) */
   } catch (err) {
     if (err instanceof AuthError) return;
     if (isForbidden(err)) {
@@ -934,6 +962,7 @@ async function loadSettingsInfo(silent) {
       integrationsSection.hidden = true;
       toolsSection.hidden = true; /* code-sandbox tools (2.6/2.7) */
       ocrSection.hidden = true;
+      voiceSection.hidden = true; /* voice / speech (3.5/3.6) */
       return;
     }
     if (!silent) toast(err.message);
@@ -1088,6 +1117,53 @@ async function saveOcrEnabled() {
     if (err instanceof AuthError) return;
     settingOcrEnabled.checked = !value;
     toast(isForbidden(err) ? "Admin access required" : err.message);
+  }
+}
+
+/* Voice / speech (features 3.5 / 3.6) — populate the admin Voice block. */
+function applyVoiceSettings(s) {
+  if (!s) return;
+  if (settingSttEnabled) settingSttEnabled.checked = s.stt_enabled !== false;
+  if (settingTtsEnabled) settingTtsEnabled.checked = s.tts_enabled !== false;
+  if (settingSttUrl) settingSttUrl.value = s.stt_url || "";
+  if (settingTtsUrl) settingTtsUrl.value = s.tts_url || "";
+  if (settingTtsVoice) settingTtsVoice.value = s.tts_voice || "";
+  if (voiceStatus) {
+    const stt = s.stt_available ? "STT ready" : "STT not configured";
+    const tts = s.tts_available ? "TTS ready" : "TTS not configured";
+    const voice = s.tts_voice ? " · voice " + s.tts_voice : "";
+    voiceStatus.textContent = stt + " · " + tts + voice;
+  }
+}
+
+async function saveVoiceSettings() {
+  setFormError(voiceError, "");
+  const body = {
+    stt_enabled: !!(settingSttEnabled && settingSttEnabled.checked),
+    tts_enabled: !!(settingTtsEnabled && settingTtsEnabled.checked),
+    stt_url: settingSttUrl ? settingSttUrl.value.trim() : "",
+    tts_url: settingTtsUrl ? settingTtsUrl.value.trim() : "",
+    tts_voice: settingTtsVoice ? settingTtsVoice.value.trim() : "",
+  };
+  if (voiceSave) voiceSave.disabled = true;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    applyVoiceSettings(s);
+    loadSpeechStatus();
+    toast("Voice settings saved");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      toast("Admin access required");
+      return;
+    }
+    setFormError(voiceError, err.message);
+  } finally {
+    if (voiceSave) voiceSave.disabled = false;
   }
 }
 
@@ -2147,6 +2223,13 @@ function buildAssistantFooter(m, isLast) {
   footer.appendChild(meta);
 
   const actions = el("span", "msg-actions");
+  // Speak/stop: server TTS when configured, else the on-device Web Speech API.
+  if (speechReady("tts") || window.speechSynthesis) {
+    const speakId = m.id || m.role + ":" + (m.content || "").slice(0, 40);
+    actions.appendChild(
+      actionButton(currentSpeakId === speakId ? "Stop" : "Speak", (btn) => speakMessage(m, btn))
+    );
+  }
   actions.appendChild(actionButton("Copy", (btn) => copyMessage(m, btn)));
   if (isLast) actions.appendChild(actionButton("Retry", () => regenerate()));
   footer.appendChild(actions);
@@ -2337,6 +2420,7 @@ function setStreaming(on) {
   stopBtn.hidden = !on;
   updateSendBtn();
   updateAttachBtn();
+  updateMicBtn();
   if (!on) input.focus({ preventScroll: true });
 }
 
@@ -2819,6 +2903,314 @@ async function onFilesSelected() {
   }
 }
 
+/* ============================== Voice: STT + TTS (3.5 / 3.6) ============================== */
+
+const MAX_TTS_CHARS = 4000;
+const ttsCache = new Map(); // message id -> Blob
+let mediaRecorder = null;
+let recordedChunks = [];
+let micState = "idle"; // idle | recording | transcribing
+let currentAudio = null; // <audio> currently playing
+let currentSpeakBtn = null; // button to reset when playback ends
+let currentSpeakId = null; // message id currently being spoken
+
+/* speechReady reports whether the server has the feature configured + enabled. */
+function speechReady(kind) {
+  return kind === "stt"
+    ? !!(state.speech.stt_available && state.speech.stt_enabled)
+    : !!(state.speech.tts_available && state.speech.tts_enabled);
+}
+
+function canRecord() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+}
+
+/* Load availability for the composer buttons (any signed-in user). */
+async function loadSpeechStatus() {
+  try {
+    const s = await api("/api/speech/status");
+    state.speech = {
+      stt_available: !!(s && s.stt_available),
+      stt_enabled: !!(s && s.stt_enabled),
+      tts_available: !!(s && s.tts_available),
+      tts_enabled: !!(s && s.tts_enabled),
+      tts_voice: (s && s.tts_voice) || "",
+    };
+  } catch {
+    /* leave the defaults (off) */
+  }
+  updateMicBtn();
+  // Re-render so the per-message speak buttons reflect availability.
+  if (state.currentMessages.length) renderMessages();
+}
+
+function updateMicBtn() {
+  if (!micBtn) return;
+  micBtn.hidden = !speechReady("stt");
+  micBtn.disabled = state.streaming || micState === "transcribing";
+}
+
+function setMicState(next) {
+  micState = next;
+  if (!micBtn) return;
+  micBtn.classList.toggle("recording", next === "recording");
+  micBtn.classList.toggle("transcribing", next === "transcribing");
+  const label =
+    next === "recording"
+      ? "Stop recording"
+      : next === "transcribing"
+        ? "Transcribing…"
+        : "Record voice message";
+  micBtn.setAttribute("aria-label", label);
+  micBtn.title = label;
+  micBtn.disabled = state.streaming || next === "transcribing";
+}
+
+function toggleMic() {
+  if (!speechReady("stt") || state.streaming) return;
+  if (micState === "recording") {
+    stopRecording();
+    return;
+  }
+  if (micState === "transcribing") return;
+  startRecording();
+}
+
+async function startRecording() {
+  // No MediaRecorder (or a locked-down browser): fall back to a file picker.
+  if (!canRecord()) {
+    audioInput.click();
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    toast("Microphone permission denied");
+    return;
+  }
+  recordedChunks = [];
+  try {
+    mediaRecorder = new MediaRecorder(stream);
+  } catch {
+    stream.getTracks().forEach((t) => t.stop());
+    audioInput.click();
+    return;
+  }
+  mediaRecorder.addEventListener("dataavailable", (e) => {
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+  });
+  mediaRecorder.addEventListener("stop", () => {
+    stream.getTracks().forEach((t) => t.stop());
+    const type = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType : "audio/webm";
+    const blob = new Blob(recordedChunks, { type });
+    recordedChunks = [];
+    if (blob.size === 0) {
+      setMicState("idle");
+      return;
+    }
+    transcribeBlob(blob);
+  });
+  mediaRecorder.start();
+  setMicState("recording");
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    setMicState("transcribing");
+    mediaRecorder.stop();
+  } else {
+    setMicState("idle");
+  }
+}
+
+function audioExtension(type) {
+  const t = String(type || "").toLowerCase();
+  if (t.includes("mp4") || t.includes("aac") || t.includes("m4a")) return "m4a";
+  if (t.includes("ogg")) return "ogg";
+  if (t.includes("wav")) return "wav";
+  if (t.includes("mpeg") || t.includes("mp3")) return "mp3";
+  return "webm";
+}
+
+async function transcribeBlob(blob, name) {
+  if (!speechReady("stt")) {
+    setMicState("idle");
+    return;
+  }
+  setMicState("transcribing");
+  try {
+    const fd = new FormData();
+    fd.append("audio", blob, name || "recording." + audioExtension(blob.type));
+    const res = await fetch("/api/stt", { method: "POST", body: fd });
+    if (res.status === 401) {
+      handleUnauthorized();
+      throw new AuthError("unauthorized");
+    }
+    if (!res.ok) {
+      throw new ApiError(
+        (await readError(res)) || "Transcription failed (" + res.status + ")",
+        res.status
+      );
+    }
+    const data = await res.json();
+    insertTranscript(data && data.text ? data.text : "");
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message);
+  } finally {
+    setMicState("idle");
+  }
+}
+
+/* Append the transcript to the composer (never clobber what is typed). */
+function insertTranscript(text) {
+  text = String(text || "").trim();
+  if (!text) return;
+  const cur = input.value;
+  const sep = cur && !/\s$/.test(cur) ? " " : "";
+  input.value = cur + sep + text;
+  autosizeInput();
+  updateSendBtn();
+  input.focus();
+}
+
+function onAudioFileSelected() {
+  const file = audioInput.files && audioInput.files[0];
+  audioInput.value = "";
+  if (!file) return;
+  transcribeBlob(file, file.name);
+}
+
+/* Strip markdown/code so Piper reads prose, not syntax. */
+function plainTextForSpeech(md) {
+  let s = String(md || "");
+  s = s.replace(/```[\s\S]*?```/g, " ");
+  s = s.replace(/~~~[\s\S]*?~~~/g, " ");
+  s = s.replace(/`([^`]*)`/g, "$1");
+  s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, " ");
+  s = s.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+  s = s.replace(/^\s{0,3}#{1,6}\s+/gm, "");
+  s = s.replace(/^\s{0,3}>\s?/gm, "");
+  s = s.replace(/^\s*[-*+]\s+/gm, "");
+  s = s.replace(/^\s*\d+\.\s+/gm, "");
+  s = s.replace(/^\s*\|.*\|\s*$/gm, (line) => line.replace(/\|/g, " "));
+  s = s.replace(/[*_~]{1,3}/g, "");
+  s = s.replace(/[ \t]+/g, " ");
+  s = s.replace(/\n{3,}/g, "\n\n");
+  return s.trim().slice(0, MAX_TTS_CHARS);
+}
+
+function stopSpeaking() {
+  if (currentAudio) {
+    try {
+      currentAudio.pause();
+    } catch {
+      /* ignore */
+    }
+    currentAudio = null;
+  }
+  if (window.speechSynthesis) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      /* ignore */
+    }
+  }
+  if (currentSpeakBtn) currentSpeakBtn.textContent = "Speak";
+  currentSpeakBtn = null;
+  currentSpeakId = null;
+}
+
+/* On-device fallback (Web Speech API) when no server TTS is configured. */
+function speakWithBrowser(text) {
+  if (!window.speechSynthesis) {
+    toast("Text-to-speech is not available");
+    return;
+  }
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.onend = () => stopSpeaking();
+  utter.onerror = () => stopSpeaking();
+  window.speechSynthesis.speak(utter);
+}
+
+async function speakMessage(m, btn) {
+  const id = m.id || m.role + ":" + (m.content || "").slice(0, 40);
+  if (currentSpeakId === id) {
+    stopSpeaking();
+    return;
+  }
+  stopSpeaking();
+  const text = plainTextForSpeech(m.content);
+  if (!text) {
+    toast("Nothing to read aloud");
+    return;
+  }
+  if (!speechReady("tts")) {
+    if (window.speechSynthesis) {
+      currentSpeakId = id;
+      currentSpeakBtn = btn;
+      btn.textContent = "Stop";
+      speakWithBrowser(text);
+    } else {
+      toast("Text-to-speech is not available");
+    }
+    return;
+  }
+  btn.textContent = "…";
+  try {
+    let blob = ttsCache.get(id);
+    if (!blob) {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ text }),
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        throw new AuthError("unauthorized");
+      }
+      if (!res.ok) {
+        throw new ApiError((await readError(res)) || "Speech failed (" + res.status + ")", res.status);
+      }
+      blob = await res.blob();
+      ttsCache.set(id, blob);
+    }
+    playSpeechBlob(id, blob, btn);
+  } catch (err) {
+    btn.textContent = "Speak";
+    if (!(err instanceof AuthError)) toast(err.message);
+  }
+}
+
+function playSpeechBlob(id, blob, btn) {
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  currentAudio = audio;
+  currentSpeakId = id;
+  currentSpeakBtn = btn;
+  btn.textContent = "Stop";
+  const done = () => {
+    URL.revokeObjectURL(url);
+    if (currentAudio === audio) {
+      currentAudio = null;
+      currentSpeakId = null;
+      if (currentSpeakBtn === btn) {
+        btn.textContent = "Speak";
+        currentSpeakBtn = null;
+      }
+    }
+  };
+  audio.addEventListener("ended", done);
+  audio.addEventListener("error", () => {
+    done();
+    toast("Could not play audio");
+  });
+  audio.play().catch(() => {
+    done();
+    toast("Could not play audio");
+  });
+}
+
 /* ============================== Composer ============================== */
 
 function autosizeInput() {
@@ -3095,6 +3487,9 @@ function wireEvents() {
   /* Image OCR toggle (admin, feature 2.5). */
   settingOcrEnabled.addEventListener("change", saveOcrEnabled);
 
+  /* Voice / speech (features 3.5 / 3.6). */
+  if (voiceSave) voiceSave.addEventListener("click", saveVoiceSettings);
+
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();
   });
@@ -3203,6 +3598,11 @@ function wireEvents() {
     if (!attachBtn.disabled) fileInput.click();
   });
   fileInput.addEventListener("change", onFilesSelected);
+
+  /* Voice: mic toggles MediaRecorder; the hidden input is the no-MediaRecorder
+     fallback (and accepts an uploaded audio file). */
+  if (micBtn) micBtn.addEventListener("click", toggleMic);
+  if (audioInput) audioInput.addEventListener("change", onAudioFileSelected);
 }
 
 /* ============================== Service worker ============================== */

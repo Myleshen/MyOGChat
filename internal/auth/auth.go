@@ -105,6 +105,12 @@ func UserFrom(ctx context.Context) (store.User, bool) {
 	return u, ok
 }
 
+// WithUser returns a copy of ctx carrying u as the authenticated user. It is
+// primarily for tests that exercise handlers without the full middleware.
+func WithUser(ctx context.Context, u store.User) context.Context {
+	return context.WithValue(ctx, ctxKey{}, u)
+}
+
 // RequireAdmin writes 403 and returns false when u is not an admin.
 func RequireAdmin(w http.ResponseWriter, u store.User) bool {
 	if !u.IsAdmin {

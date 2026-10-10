@@ -207,6 +207,15 @@
           </button>
           <textarea id="input" rows="1" placeholder="Message MyOGChat…"
                     enterkeyhint="send" autocomplete="off"></textarea>
+          <button id="mic-btn" class="icon-btn mic-btn" type="button" hidden
+                  aria-label="Record voice message" title="Record voice message">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="2.5" width="6" height="11" rx="3"/>
+              <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/>
+              <path d="M12 18v3.5M8.5 21.5h7"/>
+            </svg>
+          </button>
           <button id="send-btn" class="icon-btn send-btn" type="submit" aria-label="Send message">
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path d="M10 16V4m0 0l-5 5m5-5l5 5" stroke="currentColor" stroke-width="2"
@@ -220,6 +229,7 @@
           </button>
         </div>
         <input id="file-input" class="visually-hidden" type="file" multiple>
+        <input id="audio-input" class="visually-hidden" type="file" accept="audio/*">
       </form>
     </main>
   </div>
@@ -407,6 +417,45 @@
         <p id="ocr-status" class="settings-subtitle-sm">OCR: loading…</p>
       </section>
       <!-- ===== end Image OCR (feature 2.5) ===== -->
+
+      <!-- ===== Voice / speech (features 3.5 / 3.6) — self-contained block ===== -->
+      <section id="voice-section" class="settings-section settings-voice" hidden>
+        <h2 class="settings-heading">Voice</h2>
+        <p class="settings-subtitle-sm">
+          Speech-to-text (whisper.cpp) powers the mic button; text-to-speech
+          (Piper) powers the speak button. Applies to everyone on this server.
+          Point the URLs at a local service or a GPU shim.
+        </p>
+        <label class="setting-toggle">
+          <span>Enable speech-to-text (mic button)</span>
+          <input type="checkbox" id="setting-stt-enabled">
+        </label>
+        <label class="field">
+          <span class="field-label">STT service URL</span>
+          <input id="setting-stt-url" type="url" autocomplete="off"
+                 placeholder="http://127.0.0.1:8080">
+        </label>
+        <label class="setting-toggle">
+          <span>Enable text-to-speech (speak button)</span>
+          <input type="checkbox" id="setting-tts-enabled">
+        </label>
+        <label class="field">
+          <span class="field-label">TTS service URL</span>
+          <input id="setting-tts-url" type="url" autocomplete="off"
+                 placeholder="http://127.0.0.1:5000">
+        </label>
+        <label class="field">
+          <span class="field-label">Default voice</span>
+          <input id="setting-tts-voice" type="text" autocomplete="off"
+                 placeholder="en_US-lessac-medium">
+        </label>
+        <p id="voice-status" class="settings-subtitle-sm">Voice: loading…</p>
+        <p id="voice-error" class="login-error" role="alert" hidden></p>
+        <div class="key-actions">
+          <button type="button" id="voice-save" class="btn btn-primary">Save</button>
+        </div>
+      </section>
+      <!-- ===== end Voice / speech ===== -->
 
       <!-- Admin only (contract §9.6). Hidden for non-admins. -->
       <section id="users-section" class="settings-section settings-users" hidden>
