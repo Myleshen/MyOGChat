@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -413,5 +414,54 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 	if v, _ := s.EnsureSetting(ctx, "allow_registration", "1"); v != "0" {
 		t.Errorf("EnsureSetting after update = %q, want 0", v)
+	}
+}
+
+// TestGeoCache covers the maps result cache (3.4): round-trip, expiry, and
+// janitor purge.
+func TestGeoCache(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	if err := s.PutGeoCache(ctx, "geocode:us:5:paris", `[{"name":"Paris"}]`, now+60_000); err != nil {
+		t.Fatalf("PutGeoCache: %v", err)
+	}
+	v, ok, err := s.GetGeoCache(ctx, "geocode:us:5:paris")
+	if err != nil || !ok || v != `[{"name":"Paris"}]` {
+		t.Fatalf("GetGeoCache = %q, %v, %v", v, ok, err)
+	}
+
+	// Upsert replaces the value.
+	if err := s.PutGeoCache(ctx, "geocode:us:5:paris", `[{"name":"Lutetia"}]`, now+60_000); err != nil {
+		t.Fatalf("PutGeoCache (upsert): %v", err)
+	}
+	if v, _, _ := s.GetGeoCache(ctx, "geocode:us:5:paris"); v != `[{"name":"Lutetia"}]` {
+		t.Errorf("upsert value = %q", v)
+	}
+
+	// An expired row is never returned.
+	if err := s.PutGeoCache(ctx, "reverse:1,2", `{}`, now-1); err != nil {
+		t.Fatalf("PutGeoCache (expired): %v", err)
+	}
+	if _, ok, _ := s.GetGeoCache(ctx, "reverse:1,2"); ok {
+		t.Error("expired row was returned")
+	}
+
+	// A missing key is simply absent.
+	if _, ok, err := s.GetGeoCache(ctx, "nope"); err != nil || ok {
+		t.Errorf("GetGeoCache(missing) = %v, %v; want false, nil", ok, err)
+	}
+
+	// The janitor purges only expired rows.
+	n, err := s.DeleteExpiredGeoCache(ctx, now)
+	if err != nil {
+		t.Fatalf("DeleteExpiredGeoCache: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("purged = %d, want 1", n)
+	}
+	if _, ok, _ := s.GetGeoCache(ctx, "geocode:us:5:paris"); !ok {
+		t.Error("unexpired row was purged")
 	}
 }

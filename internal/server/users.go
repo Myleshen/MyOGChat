@@ -239,6 +239,10 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		BraveKey          *string `json:"brave_key"`
 		SandboxEnabled    *bool   `json:"sandbox_enabled"`
 		OCREnabled        *bool   `json:"ocr_enabled"` // feature 2.5
+		// Maps (feature 3.4).
+		MapsProvider *string `json:"maps_provider"`
+		MapsRegion   *string `json:"maps_region"`
+		MapsUnits    *string `json:"maps_units"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -314,6 +318,27 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.MapsProvider != nil {
+		if err := s.setMapsProvider(r.Context(), *req.MapsProvider); err != nil {
+			s.log.Error("set maps_provider", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.MapsRegion != nil {
+		if err := s.setMapsRegion(r.Context(), *req.MapsRegion); err != nil {
+			s.log.Error("set maps_region", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.MapsUnits != nil {
+		if err := s.setMapsUnits(r.Context(), *req.MapsUnits); err != nil {
+			s.log.Error("set maps_units", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
 	s.writeSettings(w, r)
 }
 
@@ -346,6 +371,10 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// Feature 2.5: image OCR (self-contained block).
 	for k, v := range s.ocrSettings(r.Context()) {
+		out[k] = v
+	}
+	// Feature 3.4: maps (self-contained block).
+	for k, v := range s.mapsSettings(r.Context()) {
 		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)

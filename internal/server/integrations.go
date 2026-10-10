@@ -163,6 +163,15 @@ func (s *Server) toolRegistry(ctx context.Context) *tools.Registry {
 		reg.Add(tools.NewWebSearchTool(providers, cfg.Options()))
 	}
 	reg.Add(tools.NewFetchURLTool())
+	// Maps (Phase 3.4): the keyless OSM stack is always available, so the four
+	// maps_* tools are registered whenever tools are enabled.
+	geo := s.geoConfig(ctx)
+	if providers := tools.BuildGeoProviders(geo); len(providers) > 0 {
+		reg.Add(tools.NewGeocodeTool(providers, geo.Options()))
+		reg.Add(tools.NewReverseTool(providers, geo.Options()))
+		reg.Add(tools.NewDirectionsTool(providers, geo.Options()))
+		reg.Add(tools.NewPlacesTool(providers, geo.Options()))
+	}
 	if c, ok := s.linkwardenClient(ctx); ok {
 		reg.Add(tools.NewLinkwardenSearchTool(c))
 		reg.Add(tools.NewLinkwardenSaveTool(c))

@@ -115,6 +115,13 @@ const searchBraveKey = document.getElementById("search-brave-key");
 const searchError = document.getElementById("search-error");
 const searchSave = document.getElementById("search-save");
 const searchClearKey = document.getElementById("search-clear-key");
+/* Maps block (self-contained, 3.4; safe to relocate). */
+const mapsStatus = document.getElementById("maps-status");
+const mapsProvider = document.getElementById("maps-provider");
+const mapsRegion = document.getElementById("maps-region");
+const mapsUnits = document.getElementById("maps-units");
+const mapsError = document.getElementById("maps-error");
+const mapsSave = document.getElementById("maps-save");
 const linkwardenForm = document.getElementById("linkwarden-form");
 const linkwardenUrl = document.getElementById("linkwarden-url");
 const linkwardenToken = document.getElementById("linkwarden-token");
@@ -927,6 +934,7 @@ async function loadSettingsInfo(silent) {
     applyIntegrationSettings(s);
     applySandboxSettings(s); /* code-sandbox tools (2.6/2.7) */
     applyOCRSettings(s);
+    applyMapsSettings(s); /* maps (3.4) */
   } catch (err) {
     if (err instanceof AuthError) return;
     if (isForbidden(err)) {
@@ -966,6 +974,47 @@ function applySearchSettings(s) {
   ];
   const active = s.search_active ? s.search_active : "none";
   searchStatus.textContent = "Active provider: " + active + " · " + providers.join(" · ");
+}
+
+/* Populate the self-contained maps block (3.4). */
+function applyMapsSettings(s) {
+  if (!s) return;
+  if (mapsProvider) mapsProvider.value = s.maps_provider || "osm";
+  if (mapsRegion) mapsRegion.value = s.maps_region || "";
+  if (mapsUnits) mapsUnits.value = s.maps_units || "metric";
+  if (mapsStatus) {
+    const active = s.maps_active ? s.maps_active : "osm";
+    mapsStatus.textContent =
+      "Active provider: " + active + " · OpenStreetMap (keyless, © OpenStreetMap contributors)";
+  }
+}
+
+async function saveMaps() {
+  setFormError(mapsError, "");
+  const body = {
+    maps_provider: mapsProvider ? mapsProvider.value : "osm",
+    maps_region: mapsRegion ? mapsRegion.value.trim() : "",
+    maps_units: mapsUnits ? mapsUnits.value : "metric",
+  };
+  if (mapsSave) mapsSave.disabled = true;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    applyMapsSettings(s);
+    toast("Maps settings saved");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      toast("Admin access required");
+      return;
+    }
+    setFormError(mapsError, err.message);
+  } finally {
+    if (mapsSave) mapsSave.disabled = false;
+  }
 }
 
 async function saveSearch() {
@@ -3087,6 +3136,9 @@ function wireEvents() {
   /* Web search block (self-contained; safe to relocate). */
   if (searchSave) searchSave.addEventListener("click", saveSearch);
   if (searchClearKey) searchClearKey.addEventListener("click", clearBraveKey);
+
+  /* Maps block (self-contained, 3.4; safe to relocate). */
+  if (mapsSave) mapsSave.addEventListener("click", saveMaps);
 
   /* ==== BEGIN code-sandbox tools (2.6/2.7) — self-contained, safe to relocate ==== */
   if (settingSandboxEnabled) settingSandboxEnabled.addEventListener("change", saveSandboxEnabled);

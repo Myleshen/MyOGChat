@@ -471,17 +471,23 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "search_active": "tavily"|"brave"|"ddg", "linkwarden_url": string,
    "linkwarden_configured": bool, "linkwarden_token_hint": string,
    "sandbox_enabled": bool, "sandbox_available": bool,
-   "ocr_enabled": bool, "ocr_available": bool}`
+   "ocr_enabled": bool, "ocr_available": bool,
+   "maps_provider": "osm"|"auto", "maps_region": string,
+   "maps_units": "metric"|"imperial", "maps_active": "osm"}`
   (`share_server_key` §2.1; tools/Linkwarden §2.4/2.8; search §8.9; sandbox §10;
-   OCR §8.10)
+   OCR §8.10; maps §11)
 - `PATCH /api/settings` accepts any subset of
   `{"allow_registration"?: bool, "share_server_key"?: bool,
    "tools_enabled"?: bool, "linkwarden_url"?: string, "linkwarden_token"?: string,
    "search_provider"?: "auto"|"tavily"|"brave"|"ddg", "brave_key"?: string,
-   "sandbox_enabled"?: bool, "ocr_enabled"?: bool}`
+   "sandbox_enabled"?: bool, "ocr_enabled"?: bool,
+   "maps_provider"?: "osm"|"auto", "maps_region"?: string,
+   "maps_units"?: "metric"|"imperial"}`
   → `200` (same shape as GET). Unknown `search_provider` values normalize to
   `auto`; `brave_key: ""` clears the stored (encrypted) key; omitted
-  `linkwarden_token`/`brave_key` leave the stored value untouched.
+  `linkwarden_token`/`brave_key` leave the stored value untouched. Unknown
+  `maps_provider` values normalize to `auto` (which still resolves to OSM);
+  `maps_units` normalizes to `metric`|`imperial`; `maps_region: ""` clears it.
 
 Non-admin callers of any of these get `403`.
 
@@ -549,3 +555,38 @@ container and return stdout/stderr. Full design: `docs/2.6-2.7-sandbox.md`.
   `MYOGCHAT_SANDBOX_MAX_OUTPUT`.
 - `GET`/`PATCH /api/settings` gain `sandbox_enabled` (admin) and
   `sandbox_available` (read-only status).
+
+## 11. Maps (3.4) — keyless OpenStreetMap
+
+Geocoding, reverse geocoding, directions, and places, exposed as four tools over
+the 2.4 loop. **OSM-only** (owner decision): no Google Maps, no API key, no
+billing. Full design: `docs/3.4-maps.md`.
+
+- **Provider layer** (`internal/tools/maps.go`): a `GeoProvider` interface
+  (`Geocode` / `Reverse` / `Directions` / `Places`) mirroring `SearchProvider`,
+  with a single keyless `osmProvider` (`internal/tools/maps_osm.go`):
+  **Nominatim** (geocode/reverse), **OSRM** (directions, `geometries=geojson`),
+  **Photon** (places) with an **Overpass** fallback around a point.
+  `BuildGeoProviders(GeoConfig)` / `GeoActive(GeoConfig)` mirror the search layer;
+  the chain is never empty (OSM needs no key).
+- **Tools:** `maps_geocode` (`{query*, region?, limit?}`), `maps_reverse`
+  (`{lat*, lon*}`), `maps_directions` (`{origin*, destination*, mode?, units?}`),
+  `maps_places` (`{query*, near?, radius_m?, type?, limit?}`). `origin`/
+  `destination`/`near` accept free text or `"lat,lon"`. Registered whenever tools
+  are enabled (the keyless stack is always usable).
+- **Two policy must-dos:** a process-wide **1 req/s limiter** for the whole OSM
+  stack (Nominatim's absolute cap), and a **SQLite result cache**
+  (`geo_cache(key, value, expires_at)`; TTL 30 days for geocode/reverse/places,
+  7 days for routes) so repeated queries never hammer the donated public servers.
+- **Identity/attribution:** Nominatim requests send an app-identifying
+  `User-Agent` + `Referer`; every tool result ends with
+  `Source: © OpenStreetMap contributors (ODbL)`. lon/lat ordering is centralized
+  (`LatLng`; OSRM uses `lon,lat`, Nominatim `lat=`/`lon=`).
+- **Transit** is unsupported by the keyless stack; `maps_directions` returns a
+  clear error rather than a wrong route.
+- **Settings** (admin, `GET`/`PATCH /api/settings`): `maps_provider`
+  (`osm`|`auto`), `maps_region` (optional country code), `maps_units`
+  (`metric`|`imperial`); `maps_active` reports the effective provider.
+- **Env:** `MYOGCHAT_MAPS_PROVIDER` (default `osm`), `MYOGCHAT_MAPS_REGION`
+  (default empty), `MYOGCHAT_MAPS_UNITS` (default `metric`),
+  `MYOGCHAT_MAPS_LIMIT` (default 5, clamped 1–20).
