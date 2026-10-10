@@ -86,6 +86,21 @@ for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 127.0.0.0/8 1
   echo "   DROP $SUBNET -> $cidr"
 done
 
+# Container -> host traffic is delivered locally, so it bypasses DOCKER-USER
+# (which only sees FORWARD). Drop sandbox traffic destined to the host's own
+# addresses, so a sandbox cannot reach the app, SSH, DNS, or other host/bridge
+# services. Container DNS (127.0.0.11) is unaffected.
+addin() {
+  if iptables -C INPUT "$@" 2>/dev/null; then
+    return 0
+  fi
+  iptables -I INPUT "$@"
+}
+for ip in $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | sort -u); do
+  addin -s "$SUBNET" -d "$ip" -j DROP
+  echo "   DROP $SUBNET -> $ip (host)"
+done
+
 # IPv6 link-local (best effort; user-defined networks are IPv4-only by default).
 if command -v ip6tables >/dev/null 2>&1; then
   if ! ip6tables -C DOCKER-USER -s "$SUBNET" -d fe80::/10 -j DROP 2>/dev/null; then
@@ -95,5 +110,5 @@ fi
 
 echo
 echo "Egress hardening applied. Sandbox containers can now reach the public"
-echo "internet but not your LAN. Re-run with --harden after recreating the"
-echo "network (subnet change) to refresh the rules."
+echo "internet but not your LAN or this host's services. Re-run with --harden"
+echo "after recreating the network (subnet change) to refresh the rules."
