@@ -109,7 +109,7 @@ func TestToolRegistryIncludesEmailOnlyWhenConnected(t *testing.T) {
 	ctx := context.Background()
 	u := seedKeyUser(t, st, "u-mail2", "mailer2", "")
 
-	reg := srv.toolRegistry(ctx, u.ID)
+	reg := srv.toolRegistry(ctx, u)
 	if _, ok := reg.Get("email_search"); ok {
 		t.Fatal("email tools registered without a mailbox")
 	}
@@ -123,7 +123,7 @@ func TestToolRegistryIncludesEmailOnlyWhenConnected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetMailAccount: %v", err)
 	}
-	reg = srv.toolRegistry(ctx, u.ID)
+	reg = srv.toolRegistry(ctx, u)
 	for _, name := range []string{"email_folders", "email_search", "email_read"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("tool %q not registered with a connected mailbox", name)
