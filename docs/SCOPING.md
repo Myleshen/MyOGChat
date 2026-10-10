@@ -140,8 +140,12 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
   `POST /api/images`, `GET /api/images/{id}` (bytes), `DELETE`, a new **binary
   `images` table** (owner-scoped BLOB; `attachments` is text-only), settings via
   `internal/secret`, janitor wiring, and a chat "generate image" UI.
-- **Gate:** time one SD-Turbo 512² image (cold + warm); **< 15 s warm → proceed**
-  (benchmarks predict ~10 s).
+- **Gate: PASSED (2026-10-10)** — SD-Turbo 512² = **~4.5–5 s** warm on **CT 101**
+  (`comfyui`, `comfyui.local:8188`, full clone of the dev template, GPU passed
+  through via `/dev/nvidia*` + userspace 615.71.09). ⚠️ **Must run ComfyUI with
+  `--force-fp32`** — fp16 produced NaN/black images on this GPU (and fp32 is also
+  ~2× faster here). GPU stays ~55 °C, ~2.5 GB VRAM. Quality: good (SD-Turbo, 4
+  steps, `dpmpp_2m`/`karras`).
 
 ## 3.2 IMAP email — medium (~2–4 days)
 
