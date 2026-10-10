@@ -28,16 +28,16 @@ type Server struct {
 	static fs.FS
 	log    *slog.Logger
 
-	encKey    []byte // AES-256 key for per-user API keys (§2.1)
-	serverKey string // optional shared OpenCode Go key (may be empty)
-	tavilyKey string // optional Tavily key for web_search (Phase 2.4)
+	encKey    []byte         // AES-256 key for per-user API keys (§2.1)
+	serverKey string         // optional shared OpenCode Go key (may be empty)
+	search    SearchDefaults // env-derived web-search defaults (Phase 2.4)
 }
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
-// optional shared key (empty when the deployment is pure BYOK); tavilyKey
-// enables the web_search tool when non-empty.
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey, tavilyKey string) *Server {
-	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, tavilyKey: tavilyKey}
+// optional shared key (empty when the deployment is pure BYOK); search holds the
+// env-derived web-search defaults (keys, provider, result count, region).
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults) *Server {
+	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, search: search}
 }
 
 // Handler returns the root handler: routes + auth + request logging.

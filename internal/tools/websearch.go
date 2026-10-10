@@ -1,39 +1,27 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
+	"log/slog"
 	"strings"
-	"time"
 )
 
-// tavilyBaseURL is the Tavily search API endpoint.
-const tavilyBaseURL = "https://api.tavily.com"
-
-// webSearchTimeout bounds one Tavily request.
-const webSearchTimeout = 20 * time.Second
-
-// WebSearchTool queries Tavily and returns the top results as
-// "title — url\nsnippet" blocks.
+// WebSearchTool queries an ordered chain of search providers and returns the top
+// results as "title — url\nsnippet" blocks. The model-facing name and contract
+// ("web_search") are unchanged regardless of which provider answers.
 type WebSearchTool struct {
-	apiKey  string
-	baseURL string
-	hc      *http.Client
+	providers []SearchProvider
+	opts      Options
 }
 
-// NewWebSearchTool returns a web_search tool using apiKey. Callers should only
-// register it when apiKey is non-empty.
-func NewWebSearchTool(apiKey string) *WebSearchTool {
-	return &WebSearchTool{
-		apiKey:  strings.TrimSpace(apiKey),
-		baseURL: tavilyBaseURL,
-		hc:      &http.Client{Timeout: webSearchTimeout},
-	}
+// NewWebSearchTool returns a web_search tool that tries providers in order,
+// falling through on error or empty results. Callers should only register it
+// when at least one provider is usable.
+func NewWebSearchTool(providers []SearchProvider, opts Options) *WebSearchTool {
+	return &WebSearchTool{providers: providers, opts: opts}
 }
 
 func (t *WebSearchTool) Name() string { return "web_search" }
@@ -58,7 +46,7 @@ func (t *WebSearchTool) Parameters() json.RawMessage {
 }
 
 func (t *WebSearchTool) Run(ctx context.Context, args json.RawMessage) (string, error) {
-	if t.apiKey == "" {
+	if len(t.providers) == 0 {
 		return "", errors.New("web search is not configured")
 	}
 	var in struct {
@@ -81,52 +69,46 @@ func (t *WebSearchTool) Run(ctx context.Context, args json.RawMessage) (string, 
 	return formatSearchResults(results), nil
 }
 
-type tavilyResult struct {
-	Title   string  `json:"title"`
-	URL     string  `json:"url"`
-	Content string  `json:"content"`
-	Score   float64 `json:"score"`
-}
-
-// search performs one Tavily search and returns up to 5 results.
-func (t *WebSearchTool) search(ctx context.Context, query string) ([]tavilyResult, error) {
-	payload := map[string]any{
-		"query":        query,
-		"max_results":  5,
-		"search_depth": "basic",
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(ctx, webSearchTimeout)
+// search walks the provider chain, returning the first non-empty result set. On
+// a provider error or empty result it logs a warning and continues to the next.
+// The whole chain shares one overall time budget (searchBudget).
+func (t *WebSearchTool) search(ctx context.Context, query string) ([]Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, searchBudget)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/search", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+
+	var lastErr error
+	gotResponse := false
+	tried := 0
+	for _, p := range t.providers {
+		if tried >= maxSearchChain {
+			break
+		}
+		tried++
+		results, err := p.Search(ctx, query, t.opts)
+		if err != nil {
+			slog.Default().Warn("web search provider failed", "provider", p.Name(), "error", err)
+			lastErr = err
+			continue
+		}
+		gotResponse = true
+		if len(results) == 0 {
+			slog.Default().Warn("web search provider returned no results", "provider", p.Name())
+			continue
+		}
+		return results, nil
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+t.apiKey)
-	resp, err := t.hc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("web search failed: %w", err)
+	if gotResponse {
+		// At least one provider answered; it just had nothing to show.
+		return nil, nil
 	}
-	defer resp.Body.Close()
-	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("web search failed: HTTP %d: %s", resp.StatusCode, firstLine(snippet))
+	if lastErr != nil {
+		return nil, fmt.Errorf("web search failed: %w", lastErr)
 	}
-	var out struct {
-		Results []tavilyResult `json:"results"`
-	}
-	if err := json.Unmarshal(snippet, &out); err != nil {
-		return nil, fmt.Errorf("decode web search response: %w", err)
-	}
-	return out.Results, nil
+	return nil, errors.New("web search is not configured")
 }
 
 // formatSearchResults renders results as compact blocks for the model.
-func formatSearchResults(results []tavilyResult) string {
+func formatSearchResults(results []Result) string {
 	var b strings.Builder
 	for i, r := range results {
 		if i > 0 {
@@ -141,9 +123,9 @@ func formatSearchResults(results []tavilyResult) string {
 			b.WriteString(" — ")
 			b.WriteString(r.URL)
 		}
-		if content := strings.TrimSpace(r.Content); content != "" {
+		if snippet := strings.TrimSpace(r.Snippet); snippet != "" {
 			b.WriteString("\n")
-			b.WriteString(content)
+			b.WriteString(snippet)
 		}
 	}
 	return b.String()

@@ -27,9 +27,10 @@ func TestWebSearchTool(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := NewWebSearchTool("tvly-test")
-	tool.baseURL = srv.URL
-	tool.hc = srv.Client()
+	p := newTavilyProvider("tvly-test")
+	p.baseURL = srv.URL
+	p.hc = srv.Client()
+	tool := NewWebSearchTool([]SearchProvider{p}, Options{MaxResults: 5})
 
 	out, err := tool.Run(context.Background(), json.RawMessage(`{"query":"languages"}`))
 	if err != nil {
@@ -53,9 +54,10 @@ func TestWebSearchNoResults(t *testing.T) {
 		io.WriteString(w, `{"results":[]}`)
 	}))
 	defer srv.Close()
-	tool := NewWebSearchTool("k")
-	tool.baseURL = srv.URL
-	tool.hc = srv.Client()
+	p := newTavilyProvider("k")
+	p.baseURL = srv.URL
+	p.hc = srv.Client()
+	tool := NewWebSearchTool([]SearchProvider{p}, Options{})
 	out, err := tool.Run(context.Background(), json.RawMessage(`{"query":"zzz"}`))
 	if err != nil || out != "No results found." {
 		t.Fatalf("out = %q, err = %v", out, err)
@@ -68,17 +70,25 @@ func TestWebSearchHTTPError(t *testing.T) {
 		io.WriteString(w, `{"detail":{"error":"bad key"}}`)
 	}))
 	defer srv.Close()
-	tool := NewWebSearchTool("k")
-	tool.baseURL = srv.URL
-	tool.hc = srv.Client()
+	p := newTavilyProvider("k")
+	p.baseURL = srv.URL
+	p.hc = srv.Client()
+	tool := NewWebSearchTool([]SearchProvider{p}, Options{})
 	if _, err := tool.Run(context.Background(), json.RawMessage(`{"query":"x"}`)); err == nil {
 		t.Fatal("expected an error on HTTP 401")
 	}
 }
 
 func TestWebSearchNotConfigured(t *testing.T) {
-	tool := NewWebSearchTool("")
+	tool := NewWebSearchTool(nil, Options{})
 	if _, err := tool.Run(context.Background(), json.RawMessage(`{"query":"x"}`)); err == nil {
-		t.Fatal("expected an error when no API key is configured")
+		t.Fatal("expected an error when no provider is configured")
+	}
+}
+
+func TestWebSearchRequiresQuery(t *testing.T) {
+	tool := NewWebSearchTool([]SearchProvider{newDDGProvider()}, Options{})
+	if _, err := tool.Run(context.Background(), json.RawMessage(`{"query":"  "}`)); err == nil {
+		t.Fatal("expected an error when query is empty")
 	}
 }

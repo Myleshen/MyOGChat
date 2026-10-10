@@ -104,7 +104,13 @@ const groupError = document.getElementById("group-error");
 /* Integrations (admin only, Phase 2.4 / 2.8). */
 const integrationsSection = document.getElementById("integrations-section");
 const settingToolsEnabled = document.getElementById("setting-tools-enabled");
-const tavilyStatus = document.getElementById("tavily-status");
+/* Web search block (self-contained; safe to relocate). */
+const searchStatus = document.getElementById("search-status");
+const searchProvider = document.getElementById("search-provider");
+const searchBraveKey = document.getElementById("search-brave-key");
+const searchError = document.getElementById("search-error");
+const searchSave = document.getElementById("search-save");
+const searchClearKey = document.getElementById("search-clear-key");
 const linkwardenForm = document.getElementById("linkwarden-form");
 const linkwardenUrl = document.getElementById("linkwarden-url");
 const linkwardenToken = document.getElementById("linkwarden-token");
@@ -846,17 +852,71 @@ async function loadSettingsInfo(silent) {
 function applyIntegrationSettings(s) {
   if (!s) return;
   if (settingToolsEnabled) settingToolsEnabled.checked = s.tools_enabled !== false;
-  if (tavilyStatus) {
-    tavilyStatus.textContent = s.tavily_configured
-      ? "Tavily: configured (TAVILY_API_KEY)."
-      : "Tavily: not configured — set TAVILY_API_KEY in the server environment.";
-  }
+  applySearchSettings(s);
   if (linkwardenUrl) linkwardenUrl.value = s.linkwarden_url || "";
   if (linkwardenToken) linkwardenToken.value = "";
   if (linkwardenStatus) {
     linkwardenStatus.textContent = s.linkwarden_configured
       ? "Configured" + (s.linkwarden_token_hint ? " (token …" + s.linkwarden_token_hint + ")" : "") + "."
       : "Not configured.";
+  }
+}
+
+/* Populate the self-contained web search block. */
+function applySearchSettings(s) {
+  if (searchProvider) searchProvider.value = s.search_provider || "auto";
+  if (searchBraveKey) searchBraveKey.value = "";
+  if (!searchStatus) return;
+  const providers = [
+    "Tavily: " + (s.tavily_configured ? "configured" : "not configured"),
+    "Brave: " + (s.brave_configured ? "configured" : "not configured"),
+    "DuckDuckGo: always available",
+  ];
+  const active = s.search_active ? s.search_active : "none";
+  searchStatus.textContent = "Active provider: " + active + " · " + providers.join(" · ");
+}
+
+async function saveSearch() {
+  setFormError(searchError, "");
+  const body = { search_provider: searchProvider ? searchProvider.value : "auto" };
+  const key = searchBraveKey ? searchBraveKey.value.trim() : "";
+  // Only send the key when provided so saving the provider keeps the stored one.
+  if (key) body.brave_key = key;
+  if (searchSave) searchSave.disabled = true;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    applyIntegrationSettings(s);
+    toast("Web search saved");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      toast("Admin access required");
+      return;
+    }
+    setFormError(searchError, err.message);
+  } finally {
+    if (searchSave) searchSave.disabled = false;
+  }
+}
+
+async function clearBraveKey() {
+  if (!confirm("Clear the stored Brave API key?")) return;
+  setFormError(searchError, "");
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ brave_key: "" }),
+    });
+    applyIntegrationSettings(s);
+    toast("Brave key cleared");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
   }
 }
 
@@ -2874,6 +2934,10 @@ function wireEvents() {
   settingToolsEnabled.addEventListener("change", saveToolsEnabled);
   linkwardenForm.addEventListener("submit", saveLinkwarden);
   linkwardenClear.addEventListener("click", clearLinkwarden);
+
+  /* Web search block (self-contained; safe to relocate). */
+  if (searchSave) searchSave.addEventListener("click", saveSearch);
+  if (searchClearKey) searchClearKey.addEventListener("click", clearBraveKey);
 
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();

@@ -42,11 +42,16 @@ const encryptionKey = "encryption_key"
 
 // config is the resolved runtime configuration (DESIGN.md).
 type config struct {
-	apiKey        string
-	tavilyKey     string
-	port          string
-	dbPath        string
-	retentionDays int
+	apiKey           string
+	tavilyKey        string
+	braveKey         string
+	searchProvider   string
+	searchResults    int
+	searchRegion     string
+	searchSafeSearch string
+	port             string
+	dbPath           string
+	retentionDays    int
 }
 
 func main() {
@@ -179,11 +184,16 @@ func uuid() string {
 // loadConfig reads and validates environment variables.
 func loadConfig() (config, error) {
 	cfg := config{
-		apiKey:        os.Getenv("OPENCODE_API_KEY"),
-		tavilyKey:     os.Getenv("TAVILY_API_KEY"),
-		port:          envOr("MYOGCHAT_PORT", "8787"),
-		dbPath:        os.Getenv("MYOGCHAT_DB"),
-		retentionDays: 30,
+		apiKey:           os.Getenv("OPENCODE_API_KEY"),
+		tavilyKey:        os.Getenv("TAVILY_API_KEY"),
+		braveKey:         os.Getenv("BRAVE_API_KEY"),
+		searchProvider:   envOr("MYOGCHAT_SEARCH_PROVIDER", "auto"),
+		searchResults:    5,
+		searchRegion:     envOr("MYOGCHAT_SEARCH_REGION", "us-en"),
+		searchSafeSearch: envOr("MYOGCHAT_SEARCH_SAFESEARCH", "moderate"),
+		port:             envOr("MYOGCHAT_PORT", "8787"),
+		dbPath:           os.Getenv("MYOGCHAT_DB"),
+		retentionDays:    30,
 	}
 	if cfg.dbPath == "" {
 		p, err := resolveDBPath()
@@ -205,6 +215,20 @@ func loadConfig() (config, error) {
 			n = 60
 		}
 		cfg.retentionDays = n
+	}
+	if v := os.Getenv("MYOGCHAT_SEARCH_RESULTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return config{}, errors.New("MYOGCHAT_SEARCH_RESULTS must be an integer")
+		}
+		// Contract: results per query are clamped to [1, 20].
+		if n < 1 {
+			n = 1
+		}
+		if n > 20 {
+			n = 20
+		}
+		cfg.searchResults = n
 	}
 	return cfg, nil
 }
@@ -248,7 +272,14 @@ func run(cfg config, log *slog.Logger) error {
 		return err
 	}
 
-	srv := server.New(st, upstream.NewClient(), auth.New(st, secret), static, log, encKey, cfg.apiKey, cfg.tavilyKey)
+	srv := server.New(st, upstream.NewClient(), auth.New(st, secret), static, log, encKey, cfg.apiKey, server.SearchDefaults{
+		Provider:   cfg.searchProvider,
+		TavilyKey:  cfg.tavilyKey,
+		BraveKey:   cfg.braveKey,
+		MaxResults: cfg.searchResults,
+		Region:     cfg.searchRegion,
+		SafeSearch: cfg.searchSafeSearch,
+	})
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -268,6 +299,9 @@ func run(cfg config, log *slog.Logger) error {
 		"needs_setup", users == 0,
 		"server_key", cfg.apiKey != "",
 		"tavily_key", cfg.tavilyKey != "",
+		"brave_key", cfg.braveKey != "",
+		"search_provider", cfg.searchProvider,
+		"search_results", cfg.searchResults,
 	)
 
 	errc := make(chan error, 1)

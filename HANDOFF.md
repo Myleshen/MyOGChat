@@ -42,7 +42,7 @@ internal/
   models/     static model registry + cost/peak/tier pricing + thinking flags
   upstream/   OpenCode Go clients: chat + responses dialects, SSE parsing, agentic tool loop (agent.go)
   server/     HTTP routes, SSE streaming, auth middleware, per-user scoping
-  tools/      tool registry + web_search (Tavily), fetch_url, Linkwarden
+  tools/      tool registry + web_search (Tavily/Brave/DDG chain), fetch_url, Linkwarden
   extract/    text + PDF extraction for attachments
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
@@ -57,7 +57,8 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.8-linkwarden.md
 - `AGENTS.md` — concise agent notes (layout, rules, commands)
 - `TODO.md` — roadmap with per-item status
 - `README.md` — user-facing overview
-- `docs/2.x-*.md` — per-feature specs
+- `docs/` — `2.2-groups.md`, `2.3-attachments.md`, `2.4-tools.md`,
+  `2.4-search-providers.md`, `2.8-linkwarden.md`
 
 ## Conventions & hard constraints
 
@@ -134,7 +135,7 @@ fix, deploy.
 | 2.1 | Per-user keys (BYOK) | ✅ shipped |
 | 2.2 | Groups & shared keys | ✅ shipped |
 | 2.3 | Files & PDF attachments | ✅ shipped |
-| 2.4 | Tools + web search | ✅ shipped (**web_search needs `TAVILY_API_KEY`** in the Pi env) |
+| 2.4 | Tools + web search | ✅ shipped (**web_search** is provider-agnostic: Tavily → Brave → DuckDuckGo fallback; DuckDuckGo needs no key) |
 | 2.8 | URL summarization + Linkwarden | ✅ shipped (Linkwarden needs instance URL + token in Settings) |
 | 2.5 | **OCR for images** | ❌ todo |
 | 2.6 | **Python sandbox** | ❌ todo |
@@ -147,9 +148,10 @@ Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
 ## Known gaps / caveats (be honest)
 
-- **web_search is disabled** until `TAVILY_API_KEY` is added to the Pi env (then
-  restart). `fetch_url` + Linkwarden work without it. Verified live: `fetch_url`
-  ran and the model answered from it.
+- **web_search** now works with zero configuration (DuckDuckGo keyless fallback).
+  Tavily/Brave keys (`TAVILY_API_KEY` / `BRAVE_API_KEY`, or the `brave_key` DB
+  setting) give higher-quality results; the provider is selectable in Settings →
+  Integrations (`search_provider`). `fetch_url` + Linkwarden are independent.
 - **Group key-sharing** is unit-tested (`internal/server/keys_test.go`) but a full
   live "member uses the owner's key" round-trip hasn't been done.
 - **PDF** is unit-tested (+ a fixture) and the UI attach/send works; a real
@@ -161,7 +163,7 @@ Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
 - **Service-worker cache** can mask new assets during testing: start a fresh
   browser session (`agent-browser close --all`) or hard-refresh. `sw.js` version
-  is bumped per release (currently v7).
+  is bumped per release (currently v8).
 - **`pkill -f <pattern>`** can match your own shell command and kill it — use
   `pkill -x <name>` or a pattern that won't match the command line.
 - **`/zen/go/v1/models` is public** (200 with no auth); only completions

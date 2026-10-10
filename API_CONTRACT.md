@@ -337,6 +337,23 @@ Required UI:
    regenerate endpoint. **Copy**: copy a message's raw text, and copy code
    blocks (already required).
 
+### 8.9 Web search providers
+
+`web_search` is provider-agnostic (tool name + `{"query"}` schema unchanged).
+An ordered fallback chain **Tavily → Brave → DuckDuckGo** answers the query;
+DuckDuckGo needs no key, so the chain is never empty and the tool is registered
+whenever any provider is usable. See `docs/2.4-search-providers.md`.
+
+Env vars (read once at startup): `TAVILY_API_KEY`, `BRAVE_API_KEY`,
+`MYOGCHAT_SEARCH_PROVIDER` (`tavily`|`brave`|`ddg`|`auto`, default `auto`),
+`MYOGCHAT_SEARCH_RESULTS` (default 5, clamped 1–20), `MYOGCHAT_SEARCH_REGION`
+(default `us-en`), `MYOGCHAT_SEARCH_SAFESEARCH` (`off`|`moderate`|`strict`,
+default `moderate`).
+
+DB settings: `search_provider` (overrides the env default) and `brave_key`
+(encrypted at rest with `internal/secret`, takes precedence over `BRAVE_API_KEY`).
+Both are surfaced in `GET/PATCH /api/settings` (see §9.4).
+
 ## 9. Users & authentication (replaces §1)
 
 Multi-user accounts with username/email/password. The shared-token login is
@@ -417,8 +434,19 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
   (`status` ∈ `active` | `pending` | `disabled`; setting `active` approves a
   pending registration).
 - `DELETE /api/users/{id}` → `204` (cannot delete yourself → `400`)
-- `GET /api/settings` → `{"allow_registration": bool, "pending_users": N}`
-- `PATCH /api/settings` `{"allow_registration"?: bool}` → `200` (same shape as GET)
+- `GET /api/settings` → `200`:
+  `{"allow_registration": bool, "pending_users": N, "share_server_key": bool,
+   "server_key_present": bool, "tools_enabled": bool, "tavily_configured": bool,
+   "brave_configured": bool, "search_provider": "auto"|"tavily"|"brave"|"ddg",
+   "search_active": "tavily"|"brave"|"ddg", "linkwarden_url": string,
+   "linkwarden_configured": bool, "linkwarden_token_hint": string}`
+- `PATCH /api/settings` accepts any subset of
+  `{"allow_registration"?: bool, "share_server_key"?: bool,
+   "tools_enabled"?: bool, "linkwarden_url"?: string, "linkwarden_token"?: string,
+   "search_provider"?: "auto"|"tavily"|"brave"|"ddg", "brave_key"?: string}`
+  → `200` (same shape as GET). Unknown `search_provider` values normalize to
+  `auto`; `brave_key: ""` clears the stored (encrypted) key; omitted
+  `linkwarden_token`/`brave_key` leave the stored value untouched. See §8.9.
 
 Non-admin callers of any of these get `403`.
 

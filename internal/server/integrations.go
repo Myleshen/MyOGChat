@@ -16,7 +16,74 @@ const (
 	settingToolsEnabled    = "tools_enabled"
 	settingLinkwardenURL   = "linkwarden_url"
 	settingLinkwardenToken = "linkwarden_token"
+	// Web-search provider selection + Brave key (Phase 2.4).
+	settingSearchProvider = "search_provider"
+	settingBraveKey       = "brave_key"
 )
+
+// SearchDefaults holds the env-derived web-search configuration. DB settings
+// (search_provider, brave_key) override these per request.
+type SearchDefaults struct {
+	Provider   string // tavily | brave | ddg | auto
+	TavilyKey  string
+	BraveKey   string
+	MaxResults int
+	Region     string
+	SafeSearch string
+}
+
+// searchConfig resolves the effective web-search configuration: env defaults
+// overlaid with the DB provider selection and (decrypted) Brave key.
+func (s *Server) searchConfig(ctx context.Context) tools.SearchConfig {
+	cfg := tools.SearchConfig{
+		Provider:   s.search.Provider,
+		TavilyKey:  s.search.TavilyKey,
+		MaxResults: s.search.MaxResults,
+		Region:     s.search.Region,
+		SafeSearch: s.search.SafeSearch,
+	}
+	if v, ok, err := s.st.GetSetting(ctx, settingSearchProvider); err == nil && ok && strings.TrimSpace(v) != "" {
+		cfg.Provider = v
+	}
+	if key, ok := s.braveKey(ctx); ok {
+		cfg.BraveKey = key
+	}
+	return cfg
+}
+
+// braveKey returns the Brave API key from the DB setting (decrypted) or, when
+// unset, the env default. ok is false when neither is present.
+func (s *Server) braveKey(ctx context.Context) (string, bool) {
+	if enc, ok, _ := s.st.GetSetting(ctx, settingBraveKey); ok && enc != "" {
+		if raw, err := secret.Decrypt(s.encKey, enc); err == nil {
+			if k := strings.TrimSpace(string(raw)); k != "" {
+				return k, true
+			}
+		}
+	}
+	if k := strings.TrimSpace(s.search.BraveKey); k != "" {
+		return k, true
+	}
+	return "", false
+}
+
+// setSearchProvider persists the provider selector (normalized; unknown → auto).
+func (s *Server) setSearchProvider(ctx context.Context, provider string) error {
+	return s.st.SetSetting(ctx, settingSearchProvider, tools.NormalizeProvider(provider))
+}
+
+// setBraveKey persists the encrypted Brave API key. An empty value clears it.
+func (s *Server) setBraveKey(ctx context.Context, key string) error {
+	plain := strings.TrimSpace(key)
+	if plain == "" {
+		return s.st.SetSetting(ctx, settingBraveKey, "")
+	}
+	enc, err := secret.Encrypt(s.encKey, []byte(plain))
+	if err != nil {
+		return err
+	}
+	return s.st.SetSetting(ctx, settingBraveKey, enc)
+}
 
 // toolsEnabled reports whether tool calling is on (default true).
 func (s *Server) toolsEnabled(ctx context.Context) bool {
@@ -62,15 +129,17 @@ func (s *Server) linkwardenClient(ctx context.Context) (*tools.LinkwardenClient,
 }
 
 // toolRegistry builds the per-request set of tools. It is empty when tools are
-// disabled. web_search is only present when a Tavily key is configured;
-// fetch_url is always available; Linkwarden tools require the integration.
+// disabled. web_search is present whenever any search provider is usable
+// (DuckDuckGo needs no key, so it is always available); fetch_url is always
+// available; Linkwarden tools require the integration.
 func (s *Server) toolRegistry(ctx context.Context) *tools.Registry {
 	reg := tools.NewRegistry()
 	if !s.toolsEnabled(ctx) {
 		return reg
 	}
-	if s.tavilyKey != "" {
-		reg.Add(tools.NewWebSearchTool(s.tavilyKey))
+	cfg := s.searchConfig(ctx)
+	if providers := tools.BuildSearchProviders(cfg); len(providers) > 0 {
+		reg.Add(tools.NewWebSearchTool(providers, cfg.Options()))
 	}
 	reg.Add(tools.NewFetchURLTool())
 	if c, ok := s.linkwardenClient(ctx); ok {
@@ -129,9 +198,14 @@ func (s *Server) integrationSettings(ctx context.Context) map[string]any {
 	if configured {
 		hint = keyHint(token)
 	}
+	cfg := s.searchConfig(ctx)
+	_, braveConfigured := s.braveKey(ctx)
 	return map[string]any{
 		"tools_enabled":         s.toolsEnabled(ctx),
-		"tavily_configured":     s.tavilyKey != "",
+		"tavily_configured":     strings.TrimSpace(cfg.TavilyKey) != "",
+		"brave_configured":      braveConfigured,
+		"search_provider":       tools.NormalizeProvider(cfg.Provider),
+		"search_active":         tools.SearchActive(cfg),
 		"linkwarden_url":        rawURL,
 		"linkwarden_configured": configured,
 		"linkwarden_token_hint": hint,
