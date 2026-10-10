@@ -677,3 +677,54 @@ func TestGeoCache(t *testing.T) {
 		t.Error("unexpired row was purged")
 	}
 }
+
+func TestCalendarAccounts(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u1", "alice", false)
+	bob := seedUser(t, s, "u2", "bob", false)
+
+	if _, err := s.GetCalendarAccount(ctx, alice.ID); err != ErrNotFound {
+		t.Fatalf("missing account err = %v, want ErrNotFound", err)
+	}
+
+	acc := &CalendarAccount{
+		ID: "cal-1", UserID: alice.ID, Kind: "caldav", Provider: "apple",
+		CalendarID: "/123/calendars/home/", Username: "alice@example.com",
+		CredentialEnc: "enc-secret", Endpoint: "https://p01-caldav.icloud.com",
+		CreatedAt: 1, UpdatedAt: 1,
+	}
+	if err := s.UpsertCalendarAccount(ctx, acc); err != nil {
+		t.Fatalf("UpsertCalendarAccount: %v", err)
+	}
+	got, err := s.GetCalendarAccount(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("GetCalendarAccount: %v", err)
+	}
+	if got.Kind != "caldav" || got.Username != "alice@example.com" || got.CredentialEnc != "enc-secret" || got.CalendarID != "/123/calendars/home/" {
+		t.Errorf("account round-trip = %+v", got)
+	}
+	// Scoping: another user sees nothing.
+	if _, err := s.GetCalendarAccount(ctx, bob.ID); err != ErrNotFound {
+		t.Errorf("cross-user account err = %v, want ErrNotFound", err)
+	}
+
+	// Upsert replaces in place (one account per user) and keeps created_at.
+	acc.Kind = "ics"
+	acc.CredentialEnc = "enc-url"
+	acc.UpdatedAt = 2
+	if err := s.UpsertCalendarAccount(ctx, acc); err != nil {
+		t.Fatalf("re-Upsert: %v", err)
+	}
+	got, _ = s.GetCalendarAccount(ctx, alice.ID)
+	if got.Kind != "ics" || got.CredentialEnc != "enc-url" || got.CreatedAt != 1 {
+		t.Errorf("upsert did not replace correctly: %+v", got)
+	}
+
+	if n, err := s.DeleteCalendarAccount(ctx, alice.ID); err != nil || n != 1 {
+		t.Fatalf("DeleteCalendarAccount = %d, %v; want 1, nil", n, err)
+	}
+	if _, err := s.GetCalendarAccount(ctx, alice.ID); err != ErrNotFound {
+		t.Errorf("account still present after delete")
+	}
+}

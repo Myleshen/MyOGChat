@@ -345,6 +345,68 @@
       </section>
       <!-- ==== END per-user web search ==== -->
 
+      <!-- Calendar (per-user, feature 3.3) — self-contained block; safe to relocate -->
+      <section id="calendar-section" class="settings-section settings-calendar">
+        <h2 class="settings-heading">Calendar</h2>
+        <p class="settings-subtitle-sm">
+          Connect a calendar so the assistant can read and — on CalDAV — create,
+          update, and delete events.
+        </p>
+        <p id="calendar-status" class="settings-subtitle-sm">Calendar: loading…</p>
+
+        <label class="field">
+          <span class="field-label">Type</span>
+          <select id="calendar-kind">
+            <option value="caldav">CalDAV (Apple/iCloud, Zoho)</option>
+            <option value="ics">Google (secret ICS URL, read-only)</option>
+          </select>
+        </label>
+
+        <div id="calendar-caldav-fields">
+          <label class="field">
+            <span class="field-label">Provider</span>
+            <select id="calendar-provider">
+              <option value="apple">Apple / iCloud</option>
+              <option value="zoho">Zoho</option>
+              <option value="custom">Custom / self-hosted</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Server URL</span>
+            <input id="calendar-endpoint" type="url" autocomplete="off"
+                   placeholder="https://caldav.icloud.com">
+          </label>
+          <label class="field">
+            <span class="field-label">Username</span>
+            <input id="calendar-username" type="text" autocomplete="off"
+                   placeholder="you@example.com">
+          </label>
+          <label class="field">
+            <span class="field-label">App-specific password</span>
+            <input id="calendar-password" type="password" autocomplete="off"
+                   placeholder="App-specific password">
+          </label>
+        </div>
+
+        <div id="calendar-ics-fields" hidden>
+          <label class="field">
+            <span class="field-label">Secret ICS URL</span>
+            <input id="calendar-url" type="url" autocomplete="off"
+                   placeholder="https://calendar.google.com/calendar/ical/…/basic.ics">
+          </label>
+          <p class="settings-subtitle-sm">
+            Google Calendar → Settings → Integrate calendar → “Secret address in
+            iCal format”. Read-only.
+          </p>
+        </div>
+
+        <p id="calendar-error" class="login-error" role="alert" hidden></p>
+        <div class="key-actions">
+          <button type="button" id="calendar-save" class="btn btn-primary">Connect</button>
+          <button type="button" id="calendar-disconnect" class="btn btn-ghost" hidden>Disconnect</button>
+        </div>
+      </section>
+
       <!-- Integrations (admin only, Phase 2.4 / 2.8). Hidden for non-admins. -->
       <section id="integrations-section" class="settings-section settings-integrations" hidden>
         <h2 class="settings-heading">Integrations</h2>

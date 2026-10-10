@@ -212,7 +212,7 @@ func (s *Server) linkwardenClient(ctx context.Context) (*tools.LinkwardenClient,
 // disabled. web_search is present whenever any search provider is usable
 // (DuckDuckGo needs no key, so it is always available); fetch_url is always
 // available; Linkwarden tools require the integration. u supplies the caller's
-// per-user search credentials (Serper key, 2.12).
+// per-user search credentials (Serper key, 2.12) and connected calendar (3.3).
 func (s *Server) toolRegistry(ctx context.Context, u store.User) *tools.Registry {
 	reg := tools.NewRegistry()
 	if !s.toolsEnabled(ctx) {
@@ -235,6 +235,12 @@ func (s *Server) toolRegistry(ctx context.Context, u store.User) *tools.Registry
 	if c, ok := s.linkwardenClient(ctx); ok {
 		reg.Add(tools.NewLinkwardenSearchTool(c))
 		reg.Add(tools.NewLinkwardenSaveTool(c))
+	}
+	if b, ok := s.calendarBackend(ctx, u.ID); ok {
+		reg.Add(tools.NewCalendarListTool(b))
+		reg.Add(tools.NewCalendarCreateTool(b))
+		reg.Add(tools.NewCalendarUpdateTool(b))
+		reg.Add(tools.NewCalendarDeleteTool(b))
 	}
 	// Code sandbox (Phase 2.6 / 2.7): registered only when the DB toggle is on
 	// AND Docker is reachable. Missing images surface a clear error at call time.

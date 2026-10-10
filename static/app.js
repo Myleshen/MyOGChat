@@ -105,6 +105,21 @@ const groupName = document.getElementById("group-name");
 const groupShareKey = document.getElementById("group-share-key");
 const groupError = document.getElementById("group-error");
 
+/* Calendar (per-user, feature 3.3) — self-contained block; safe to relocate. */
+const calendarSection = document.getElementById("calendar-section");
+const calendarStatus = document.getElementById("calendar-status");
+const calendarKind = document.getElementById("calendar-kind");
+const calendarProvider = document.getElementById("calendar-provider");
+const calendarCaldavFields = document.getElementById("calendar-caldav-fields");
+const calendarICSFields = document.getElementById("calendar-ics-fields");
+const calendarEndpoint = document.getElementById("calendar-endpoint");
+const calendarUsername = document.getElementById("calendar-username");
+const calendarPassword = document.getElementById("calendar-password");
+const calendarURL = document.getElementById("calendar-url");
+const calendarError = document.getElementById("calendar-error");
+const calendarSave = document.getElementById("calendar-save");
+const calendarDisconnect = document.getElementById("calendar-disconnect");
+
 /* Integrations (admin only, Phase 2.4 / 2.8). */
 const integrationsSection = document.getElementById("integrations-section");
 const settingToolsEnabled = document.getElementById("setting-tools-enabled");
@@ -747,6 +762,7 @@ function showSettingsPage() {
   loadGroups().catch(() => {});
   loadUsage().catch(() => {}); /* usage & quotas (2.11) */
   loadMySearch().catch(() => {}); /* per-user web search (2.12) */
+  loadCalendarStatus().catch(() => {});
   if (isAdmin) {
     loadUsers().catch(() => {});
     loadSettingsInfo(false).catch(() => {});
@@ -1562,6 +1578,120 @@ async function saveShareServerKey() {
     if (err instanceof AuthError) return;
     settingShareServerKey.checked = !value;
     toast(isForbidden(err) ? "Admin access required" : err.message);
+  }
+}
+
+/* ============================== Calendar (feature 3.3) ============================== */
+
+/* Default CalDAV endpoints per provider preset; discovery refines them. */
+const CALENDAR_ENDPOINTS = {
+  apple: "https://caldav.icloud.com",
+  zoho: "https://calendar.zoho.com",
+  custom: "",
+};
+
+function updateCalendarFieldVisibility() {
+  const kind = calendarKind ? calendarKind.value : "caldav";
+  calendarCaldavFields.hidden = kind !== "caldav";
+  calendarICSFields.hidden = kind !== "ics";
+}
+
+function applyCalendarProviderPreset() {
+  const preset = CALENDAR_ENDPOINTS[calendarProvider.value];
+  if (preset && !calendarEndpoint.value.trim()) calendarEndpoint.value = preset;
+}
+
+function showCalendarError(msg) {
+  calendarError.textContent = msg;
+  calendarError.hidden = false;
+}
+
+/* Render the connected state (never shows the secret). */
+function applyCalendarStatus(s) {
+  if (s && s.connected) {
+    const kindLabel = s.kind === "ics" ? "Google ICS (read-only)" : "CalDAV";
+    const who = s.username ? " as " + s.username : "";
+    calendarStatus.textContent =
+      "Connected: " + (s.provider ? s.provider + " " : "") + kindLabel + who +
+      (s.can_write ? " — read/write." : " — read-only.");
+    calendarDisconnect.hidden = false;
+    calendarKind.value = s.kind === "ics" ? "ics" : "caldav";
+    if (s.provider) calendarProvider.value = s.provider;
+    if (s.kind === "caldav") {
+      if (s.endpoint) calendarEndpoint.value = s.endpoint;
+      if (s.username) calendarUsername.value = s.username;
+    }
+    calendarSave.textContent = "Update";
+  } else {
+    calendarStatus.textContent = "Not connected. The assistant cannot read your calendar.";
+    calendarDisconnect.hidden = true;
+    calendarSave.textContent = "Connect";
+  }
+  updateCalendarFieldVisibility();
+}
+
+async function loadCalendarStatus() {
+  try {
+    const s = await api("/api/me/calendar");
+    applyCalendarStatus(s);
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    calendarStatus.textContent = "Could not load calendar status.";
+  }
+}
+
+async function saveCalendar() {
+  calendarError.hidden = true;
+  const kind = calendarKind.value;
+  const body = { kind };
+  if (kind === "caldav") {
+    body.provider = calendarProvider.value;
+    body.endpoint = calendarEndpoint.value.trim();
+    body.username = calendarUsername.value.trim();
+    body.password = calendarPassword.value;
+    if (!body.endpoint) return showCalendarError("Enter the CalDAV server URL.");
+    if (!body.username) return showCalendarError("Enter your username (Apple ID / Zoho email).");
+    if (!body.password) return showCalendarError("Enter your app-specific password.");
+  } else {
+    body.provider = "google";
+    body.url = calendarURL.value.trim();
+    if (!body.url) return showCalendarError("Enter the secret ICS URL.");
+  }
+  const original = calendarSave.textContent;
+  calendarSave.disabled = true;
+  calendarSave.textContent = "Connecting…";
+  try {
+    const s = await api("/api/me/calendar", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    calendarPassword.value = "";
+    calendarURL.value = "";
+    applyCalendarStatus(s);
+    toast("Calendar connected");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    calendarSave.textContent = original;
+    showCalendarError(err.message);
+  } finally {
+    calendarSave.disabled = false;
+  }
+}
+
+async function disconnectCalendar() {
+  if (!confirm("Disconnect this calendar?")) return;
+  try {
+    await api("/api/me/calendar", { method: "DELETE" });
+    calendarEndpoint.value = "";
+    calendarUsername.value = "";
+    calendarPassword.value = "";
+    calendarURL.value = "";
+    applyCalendarStatus({ connected: false });
+    toast("Calendar disconnected");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(err.message);
   }
 }
 
@@ -3381,6 +3511,12 @@ function wireEvents() {
 
   /* Groups & shared keys (§2.2). */
   groupForm.addEventListener("submit", createGroup);
+
+  /* Calendar (feature 3.3). */
+  if (calendarKind) calendarKind.addEventListener("change", updateCalendarFieldVisibility);
+  if (calendarProvider) calendarProvider.addEventListener("change", applyCalendarProviderPreset);
+  if (calendarSave) calendarSave.addEventListener("click", saveCalendar);
+  if (calendarDisconnect) calendarDisconnect.addEventListener("click", disconnectCalendar);
 
   /* Integrations: tools toggle + Linkwarden (admin, Phase 2.4 / 2.8). */
   settingToolsEnabled.addEventListener("change", saveToolsEnabled);

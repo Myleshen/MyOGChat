@@ -76,6 +76,10 @@ func (s *Server) Handler() http.Handler {
 	// Per-user Serper search key (2.12).
 	mux.HandleFunc("GET /api/me/serper", s.handleGetMySerper)
 	mux.HandleFunc("PUT /api/me/serper", s.handlePutMySerper)
+	// Calendar (per-user, 3.3).
+	mux.HandleFunc("GET /api/me/calendar", s.handleGetCalendar)
+	mux.HandleFunc("PUT /api/me/calendar", s.handlePutCalendar)
+	mux.HandleFunc("DELETE /api/me/calendar", s.handleDeleteCalendar)
 	// Groups & shared keys (§2.2).
 	mux.HandleFunc("GET /api/groups", s.handleListGroups)
 	mux.HandleFunc("POST /api/groups", s.handleCreateGroup)
