@@ -12,7 +12,7 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 
 - **Live:** `https://chat.example.com` (also `http://raspberrypi.local:8787` on LAN)
 - **Repo:** `github.com/Myleshen/MyOGChat` — `main` is the source of truth
-- **Phase 1:** complete. **Phase 2:** 5 of 9 items shipped (see status below).
+- **Phase 1:** complete. **Phase 2:** 6 of 9 items shipped (see status below).
 
 ## Live deployment
 
@@ -47,7 +47,7 @@ internal/
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
 deploy/       systemd unit + deploy.sh + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.8-linkwarden.md
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.8-linkwarden.md, 2.9-settings-page.md
 ```
 
 ## Docs index
@@ -127,7 +127,7 @@ scripts/ui-test.sh <BASE_URL> <TEST_USER> <TEST_PASS>
 approval-gated registration, admin, per-user isolation), mobile visual-viewport
 fix, deploy.
 
-**Phase 2 — 5 of 9 shipped:**
+**Phase 2 — 6 of 9 shipped:**
 
 | # | Item | Status |
 |---|---|---|
@@ -139,10 +139,10 @@ fix, deploy.
 | 2.5 | **OCR for images** | ❌ todo |
 | 2.6 | **Python sandbox** | ❌ todo |
 | 2.7 | **Bash sandbox** | ❌ todo |
-| 2.9 | **Full settings page (not a popup)** | ❌ todo — *the settings modal is still a popup; promote it to a page* |
+| 2.9 | **Full settings page (not a popup)** | ✅ shipped (merged, pending deploy) — `#/settings` page; see `docs/2.9-settings-page.md` |
 
-Suggested order: **2.9 first** (frontend-only; the modal has grown large), then
-**2.7 + 2.6 together** (shared sandbox design), then **2.5** (builds on 2.3).
+Suggested order: **2.7 + 2.6 together** (shared sandbox design), then **2.5**
+(builds on 2.3).
 Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
 ## Known gaps / caveats (be honest)
@@ -161,7 +161,7 @@ Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
 - **Service-worker cache** can mask new assets during testing: start a fresh
   browser session (`agent-browser close --all`) or hard-refresh. `sw.js` version
-  is bumped per release (currently v7).
+  is bumped per release (currently v8).
 - **`pkill -f <pattern>`** can match your own shell command and kill it — use
   `pkill -x <name>` or a pattern that won't match the command line.
 - **`/zen/go/v1/models` is public** (200 with no auth); only completions
@@ -190,7 +190,6 @@ After each merge: `go build/vet/test` + `node --check static/app.js` + run
 ## Immediate next steps
 
 1. (Optional) Add `TAVILY_API_KEY` to the Pi env to enable web search.
-2. Build **2.9 settings page**.
-3. Build **2.7 bash sandbox** + **2.6 python sandbox**.
-4. Build **2.5 OCR**.
-5. Keep `API_CONTRACT.md` / `TODO.md` current; add a `docs/2.x-*.md` per feature.
+2. Build **2.7 bash sandbox** + **2.6 python sandbox**.
+3. Build **2.5 OCR**.
+4. Keep `API_CONTRACT.md` / `TODO.md` current; add a `docs/2.x-*.md` per feature.

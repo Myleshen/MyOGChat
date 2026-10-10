@@ -70,10 +70,14 @@ const toastEl = document.getElementById("toast");
 const hljsDark = document.getElementById("hljs-dark");
 const hljsLight = document.getElementById("hljs-light");
 
-const settingsModal = document.getElementById("settings-modal");
-const settingsClose = document.getElementById("settings-close");
+const settingsPage = document.getElementById("settings-page");
+const settingsBack = document.getElementById("settings-back");
 const settingShowTps = document.getElementById("setting-showTps");
 const settingEnterToSend = document.getElementById("setting-enterToSend");
+const accountUsername = document.getElementById("account-username");
+const accountEmail = document.getElementById("account-email");
+const accountLogout = document.getElementById("account-logout");
+const appVersionEl = document.getElementById("app-version");
 
 const usersSection = document.getElementById("users-section");
 const usersTitle = document.getElementById("users-title");
@@ -141,6 +145,9 @@ const state = {
 };
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
+
+/* Shown in Settings → About. Bump alongside notable frontend changes. */
+const APP_VERSION = "1.0";
 
 const ICONS = {
   pencil:
@@ -413,6 +420,8 @@ function handleUnauthorized() {
   state.pendingAttachments = [];
   renderAttachments();
   appEl.hidden = true;
+  hideSettingsPage();
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   showLogin();
 }
 
@@ -464,6 +473,16 @@ function showRegisterPending(message) {
   setFormError(registerError, "");
   setFormError(registerPending, message || "Your account is awaiting admin approval.");
   setTimeout(() => showLoginBtn.focus(), 0);
+}
+
+/* Clear the session server-side (best effort) and return to the login screen. */
+async function doLogout() {
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+  } catch {
+    /* clear locally regardless */
+  }
+  handleUnauthorized();
 }
 
 /* GET /api/auth/me → sets state.user; returns true when signed in. */
@@ -553,6 +572,8 @@ async function enterApp() {
   } else {
     showWelcome();
   }
+  // Honour a deep link / reload on #/settings.
+  applyRoute();
 }
 
 async function loadModels() {
@@ -623,30 +644,83 @@ function closeTopModal() {
   if (node) closeModal(node);
 }
 
-function openSettings() {
+/* ============================== Settings page (route #/settings) ============================== */
+
+/* Hash route for the settings surface. The browser/Android back button drives
+   hashchange, so it always returns to the previous view; the in-page back
+   button mirrors it (history.back) — or clears the hash when settings was the
+   entry point (deep link / reload, where there is no earlier in-app entry). */
+const SETTINGS_HASH = "#/settings";
+let settingsPushed = false; // true when settings was opened from within the app
+
+function isSettingsRoute() {
+  return location.hash === SETTINGS_HASH;
+}
+
+function navigateToSettings() {
+  if (isSettingsRoute()) return;
+  settingsPushed = true;
+  location.hash = SETTINGS_HASH; // pushes a history entry; hashchange applies it
+}
+
+function leaveSettings() {
+  if (!isSettingsRoute()) {
+    applyRoute();
+    return;
+  }
+  if (settingsPushed) {
+    history.back(); // hashchange hides the page and returns to the previous view
+  } else {
+    // Deep link / reload: no in-app entry to return to — clear the hash without
+    // stacking another history entry.
+    history.replaceState(null, "", location.pathname + location.search);
+    applyRoute();
+  }
+}
+
+/* Show/hide the settings page to match the current hash. */
+function applyRoute() {
+  if (state.user && isSettingsRoute()) showSettingsPage();
+  else hideSettingsPage();
+}
+
+function showSettingsPage() {
   applySettingsToUI();
+  renderAccount();
   const isAdmin = !!(state.user && state.user.is_admin);
   usersSection.hidden = !isAdmin;
   shareKeyRow.hidden = !isAdmin;
   integrationsSection.hidden = !isAdmin;
-  openModal(settingsModal);
+  settingsPage.hidden = false;
+  const body = settingsPage.querySelector(".settings-body");
+  if (body) body.scrollTop = 0;
   loadKeyStatus().catch(() => {});
   loadGroups().catch(() => {});
   if (isAdmin) {
     loadUsers().catch(() => {});
     loadSettingsInfo(false).catch(() => {});
   }
-  setTimeout(() => {
-    const first = settingsModal.querySelector("input:checked") || settingsClose;
-    first.focus();
-  }, 0);
+  setTimeout(() => settingsBack.focus({ preventScroll: true }), 0);
+}
+
+function hideSettingsPage() {
+  if (settingsPage.hidden) return;
+  settingsPage.hidden = true;
+  settingsPushed = false;
+}
+
+/* Account section: username/email from the loaded session user + logout. */
+function renderAccount() {
+  const u = state.user;
+  accountUsername.textContent = u ? u.username : "";
+  accountEmail.textContent = u ? u.email || "" : "";
 }
 
 function applySettingsToUI() {
-  settingsModal.querySelectorAll('input[name="theme"]').forEach((r) => {
+  settingsPage.querySelectorAll('input[name="theme"]').forEach((r) => {
     r.checked = r.value === settings.theme;
   });
-  settingsModal.querySelectorAll('input[name="thinking"]').forEach((r) => {
+  settingsPage.querySelectorAll('input[name="thinking"]').forEach((r) => {
     r.checked = r.value === settings.thinking;
   });
   settingShowTps.checked = settings.showTps;
@@ -1784,7 +1858,7 @@ function setCurrentConversation(conv) {
   renderConvoList();
   updateNewChatLabel();
   renderTotalCost();
-  input.focus({ preventScroll: true });
+  if (settingsPage.hidden) input.focus({ preventScroll: true });
 }
 
 /* Build the POST /api/conversations body for a new chat. When a project is
@@ -2788,14 +2862,8 @@ function wireEvents() {
   showRegisterBtn.addEventListener("click", showRegister);
   showLoginBtn.addEventListener("click", () => showLogin());
 
-  logoutBtn.addEventListener("click", async () => {
-    try {
-      await fetch("/api/auth/logout", { method: "POST" });
-    } catch {
-      /* clear locally regardless */
-    }
-    handleUnauthorized();
-  });
+  logoutBtn.addEventListener("click", doLogout);
+  accountLogout.addEventListener("click", doLogout);
 
   menuBtn.addEventListener("click", () => {
     if (sidebar.classList.contains("open")) closeSidebar();
@@ -2819,16 +2887,17 @@ function wireEvents() {
       closeMenu();
       return;
     }
-    if (sidebar.classList.contains("open")) closeSidebar();
+    if (sidebar.classList.contains("open")) {
+      closeSidebar();
+      return;
+    }
+    if (isSettingsRoute()) leaveSettings();
   });
 
-  /* Settings */
-  settingsBtn.addEventListener("click", openSettings);
-  settingsClose.addEventListener("click", () => closeModal(settingsModal));
-  settingsModal.addEventListener("click", (e) => {
-    if (e.target === settingsModal) closeModal(settingsModal);
-  });
-  settingsModal.querySelectorAll('input[name="theme"]').forEach((r) => {
+  /* Settings page (route #/settings). */
+  settingsBtn.addEventListener("click", navigateToSettings);
+  settingsBack.addEventListener("click", leaveSettings);
+  settingsPage.querySelectorAll('input[name="theme"]').forEach((r) => {
     r.addEventListener("change", () => {
       if (!r.checked) return;
       settings.theme = r.value;
@@ -2836,7 +2905,7 @@ function wireEvents() {
       applyTheme();
     });
   });
-  settingsModal.querySelectorAll('input[name="thinking"]').forEach((r) => {
+  settingsPage.querySelectorAll('input[name="thinking"]').forEach((r) => {
     r.addEventListener("change", () => {
       if (!r.checked) return;
       settings.thinking = r.value;
@@ -3033,10 +3102,16 @@ applyTheme();
 applySidebarCollapsed();
 applyEnterHint();
 applySettingsToUI();
+if (appVersionEl) appVersionEl.textContent = APP_VERSION;
 configureMarked();
 wireEvents();
 wireViewport();
 registerSW();
+/* Route changes from the URL bar or the browser/Android back button. */
+window.addEventListener("hashchange", () => {
+  if (!isSettingsRoute()) settingsPushed = false;
+  applyRoute();
+});
 updateSendBtn();
 updateAttachBtn();
 updateNewChatLabel();
