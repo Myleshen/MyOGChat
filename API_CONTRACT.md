@@ -179,6 +179,12 @@ use tier prices (tier_input/tier_output/tier_cache).
 DeepSeek peak hours: 01:00–04:00 and 06:00–10:00 UTC, **Mon–Fri**; all other
 times use base prices.
 
+`Model` also carries `vision bool` (exposed in `/api/models`), true for the
+models that accept image input (feature 2.13): `deepseek-v4-flash-vision-exp`,
+`deepseek-v4.1-flash`, `gpt-6-luna`, `gpt-5.6-luna`, `grok-4.7`, `grok-4.6`,
+`glm-5.3-flash`, `mimo-v2.6-flash`, `mimo-v2.5`, `kimi-k3`, `kimi-k2.7-code`,
+`kimi-k2.6`, `space-bunny`, `longcat-2.5-preview-free`.
+
 **Cost formula** (integer micros, `math.Round`):
 `cost_micros = (prompt−cached)·in_rate + cached·cache_rate + completion·out_rate`
 where rates are `price_per_m / 1e6 · 1e6` applied per token. Tier/peak selection
@@ -384,6 +390,41 @@ request/response shapes are unchanged. Text/code and PDF behavior is unchanged.
   env switch and is surfaced by `GET`/`PATCH /api/settings` (§9.4) as
   `ocr_enabled` / `ocr_available`.
 
+### 8.11 Vision-model OCR (2.13)
+
+An alternative OCR backend transcribes images with a multimodal OpenCode Go
+model instead of Docker Tesseract. It is **opt-in** (the default is Tesseract);
+see `docs/2.13-vision-ocr.md`. The attachment request/response shapes are
+unchanged.
+
+- `internal/ocr.VisionModel` implements the existing `Engine`; a single
+  **non-streaming** `upstream.VisionOnce` owns both wire shapes (never the agent
+  loop):
+  - **chat:** `messages[].content[]` with
+    `{"type":"image_url","image_url":{"url":"data:image/png;base64,…","detail":"high"}}`
+  - **responses:** `input[].content[]` with
+    `{"type":"input_image","image_url":"data:…","detail":"high"}`
+  Both accept data URIs.
+- The vision engine is keyed (`ocr.KeyedEngine`): `Server.ocrFunc(ctx, u)` binds
+  the per-request key from the §2.1/§2.2 order (BYOK → group → shared server key)
+  with a fresh session UUID. A missing key makes the upload fail with
+  `extract.ErrOCR`.
+- Formats: JPEG/PNG/GIF/WebP only (others → `ocr.ErrUnavailable`); images whose
+  longest side exceeds `MYOGCHAT_OCR_MAX_IMAGE_DIM` (default 2048, `0` disables)
+  are downscaled before sending.
+- Config: `MYOGCHAT_OCR_ENGINE` (`tesseract`|`vision`|`auto`, default
+  `tesseract`), `MYOGCHAT_OCR_VISION_MODEL` (default
+  `deepseek-v4-flash-vision-exp`), `MYOGCHAT_OCR_VISION_DETAIL` (default `high`),
+  `MYOGCHAT_OCR_VISION_MAX_TOKENS` (default 2048),
+  `MYOGCHAT_OCR_VISION_TIMEOUT` (default 90s), `MYOGCHAT_OCR_MAX_IMAGE_DIM`
+  (default 2048). `auto` is decided once at startup by a Docker preflight
+  (Tesseract when available, with Vision as a fallback; else Vision).
+- `internal/models.Model` gains `vision bool` (exposed by `GET /api/models`), set
+  for the confirmed image-input models; `main.go` validates the vision model id
+  against it.
+- `GET /api/settings` (§9.4) additionally exposes read-only `ocr_engine`
+  (`tesseract`|`vision`|`auto`|`none`) and `ocr_vision_available`.
+
 ## 9. Users & authentication (replaces §1)
 
 Multi-user accounts with username/email/password. The shared-token login is
@@ -471,7 +512,9 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "search_active": "tavily"|"brave"|"ddg", "linkwarden_url": string,
    "linkwarden_configured": bool, "linkwarden_token_hint": string,
    "sandbox_enabled": bool, "sandbox_available": bool,
-   "ocr_enabled": bool, "ocr_available": bool}`
+   "ocr_enabled": bool, "ocr_available": bool,
+   "ocr_engine": "tesseract"|"vision"|"auto"|"none",
+   "ocr_vision_available": bool}`
   (`share_server_key` §2.1; tools/Linkwarden §2.4/2.8; search §8.9; sandbox §10;
    OCR §8.10)
 - `PATCH /api/settings` accepts any subset of

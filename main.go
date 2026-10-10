@@ -18,10 +18,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"myogchat/internal/auth"
+	"myogchat/internal/models"
 	"myogchat/internal/ocr"
 	"myogchat/internal/sandbox"
 	"myogchat/internal/server"
@@ -62,6 +64,13 @@ type config struct {
 	ocrLangs   string
 	ocrDocker  string
 	ocrTimeout time.Duration
+	// Vision-model OCR (feature 2.13).
+	ocrEngineMode      string        // tesseract | vision | auto
+	ocrVisionModel     string        // registry id
+	ocrVisionDetail    string        // low | high | original | auto
+	ocrVisionMaxTokens int           // output cap
+	ocrVisionTimeout   time.Duration // per-call
+	ocrMaxImageDim     int           // longest side before downscaling (0 = off)
 }
 
 func main() {
@@ -213,6 +222,14 @@ func loadConfig() (config, error) {
 		ocrLangs:   envOr("MYOGCHAT_OCR_LANGS", ocr.DefaultLangs),
 		ocrDocker:  envOr("MYOGCHAT_DOCKER", ocr.DefaultDocker),
 		ocrTimeout: ocr.DefaultTimeout,
+		// Vision-model OCR (feature 2.13): opt-in; the default engine is still
+		// the local, free, private Tesseract.
+		ocrEngineMode:      envOr("MYOGCHAT_OCR_ENGINE", "tesseract"),
+		ocrVisionModel:     envOr("MYOGCHAT_OCR_VISION_MODEL", ocr.DefaultVisionModel),
+		ocrVisionDetail:    envOr("MYOGCHAT_OCR_VISION_DETAIL", ocr.DefaultVisionDetail),
+		ocrVisionMaxTokens: ocr.DefaultVisionMaxTokens,
+		ocrVisionTimeout:   ocr.DefaultVisionTimeout,
+		ocrMaxImageDim:     ocr.DefaultMaxImageDim,
 	}
 	if v := os.Getenv("MYOGCHAT_OCR_TIMEOUT"); v != "" {
 		d, err := parseOCRDuration(v)
@@ -220,6 +237,32 @@ func loadConfig() (config, error) {
 			return config{}, err
 		}
 		cfg.ocrTimeout = d
+	}
+	if v := os.Getenv("MYOGCHAT_OCR_VISION_MAX_TOKENS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return config{}, errors.New("MYOGCHAT_OCR_VISION_MAX_TOKENS must be a positive integer")
+		}
+		cfg.ocrVisionMaxTokens = n
+	}
+	if v := os.Getenv("MYOGCHAT_OCR_VISION_TIMEOUT"); v != "" {
+		d, err := parseOCRDuration(v)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.ocrVisionTimeout = d
+	}
+	if v := os.Getenv("MYOGCHAT_OCR_MAX_IMAGE_DIM"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return config{}, errors.New("MYOGCHAT_OCR_MAX_IMAGE_DIM must be a non-negative integer (0 disables downscaling)")
+		}
+		if n == 0 {
+			// 0 disables downscaling; the engine treats a negative cap as off.
+			cfg.ocrMaxImageDim = -1
+		} else {
+			cfg.ocrMaxImageDim = n
+		}
 	}
 	if cfg.dbPath == "" {
 		p, err := resolveDBPath()
@@ -284,6 +327,17 @@ func parseOCRDuration(v string) (time.Duration, error) {
 	return 0, errors.New("MYOGCHAT_OCR_TIMEOUT must be a duration (e.g. 30s) or a number of seconds")
 }
 
+// normalizeOCREngine maps MYOGCHAT_OCR_ENGINE to one of tesseract|vision|auto
+// (unknown values fall back to tesseract, the default).
+func normalizeOCREngine(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "vision", "auto":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return "tesseract"
+	}
+}
+
 func run(cfg config, log *slog.Logger) error {
 	st, err := store.Open(cfg.dbPath)
 	if err != nil {
@@ -331,26 +385,58 @@ func run(cfg config, log *slog.Logger) error {
 		sbx = sandbox.NewRunner(cfg.sandbox)
 	}
 
-	// Build the OCR engine only when enabled at startup (MYOGCHAT_OCR). The
+	// Build the OCR engine(s) only when enabled at startup (MYOGCHAT_OCR). The
 	// DB-backed ocr_enabled setting gates it per request on top of this.
-	var ocrEngine ocr.Engine
+	//
+	// Feature 2.13 adds a vision-model engine. MYOGCHAT_OCR_ENGINE selects:
+	// tesseract (default), vision (opt-in), or auto (decided here at startup
+	// via a Docker preflight — predictable, not per request).
+	ocrMode := normalizeOCREngine(cfg.ocrEngineMode)
+	var tess ocr.Engine
 	if cfg.ocrEnabled {
-		ocrEngine = ocr.NewDockerTesseract(ocr.Config{
+		tess = ocr.NewDockerTesseract(ocr.Config{
 			Image:   cfg.ocrImage,
 			Langs:   cfg.ocrLangs,
 			Docker:  cfg.ocrDocker,
 			Timeout: cfg.ocrTimeout,
 		})
 	}
+	up := upstream.NewClient()
+	var vision ocr.Engine
+	if cfg.ocrEnabled {
+		if m, ok := models.ByID(cfg.ocrVisionModel); ok && m.Vision {
+			vision = ocr.NewVisionModel(ocr.VisionConfig{
+				Client:      up,
+				Model:       m.ID,
+				Dialect:     m.Dialect,
+				MaxTokens:   cfg.ocrVisionMaxTokens,
+				Detail:      cfg.ocrVisionDetail,
+				Timeout:     cfg.ocrVisionTimeout,
+				MaxImageDim: cfg.ocrMaxImageDim,
+			})
+		} else {
+			log.Warn("MYOGCHAT_OCR_VISION_MODEL is not a known vision-capable model; vision OCR disabled",
+				"model", cfg.ocrVisionModel)
+		}
+	}
+	if ocrMode == "auto" && !ocr.DockerAvailable(ctx, cfg.ocrDocker, cfg.ocrImage) {
+		log.Warn("OCR engine auto: docker/Tesseract unavailable at startup; using vision", "image", cfg.ocrImage)
+		tess = nil
+	}
+	ocrEngine := ocr.SelectEngine(ocrMode, tess, vision)
+	ocrEngineName := "none"
+	if ocrEngine != nil {
+		ocrEngineName = ocrMode
+	}
 
-	srv := server.New(st, upstream.NewClient(), auth.New(st, secret), static, log, encKey, cfg.apiKey, server.SearchDefaults{
+	srv := server.New(st, up, auth.New(st, secret), static, log, encKey, cfg.apiKey, server.SearchDefaults{
 		Provider:   cfg.searchProvider,
 		TavilyKey:  cfg.tavilyKey,
 		BraveKey:   cfg.braveKey,
 		MaxResults: cfg.searchResults,
 		Region:     cfg.searchRegion,
 		SafeSearch: cfg.searchSafeSearch,
-	}, sbx, ocrEngine)
+	}, sbx, ocrEngine, ocrEngineName, vision != nil)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -377,6 +463,9 @@ func run(cfg config, log *slog.Logger) error {
 		"sandbox_docker", cfg.sandbox.Docker,
 		"sandbox_network", cfg.sandbox.Network,
 		"ocr", cfg.ocrEnabled,
+		"ocr_engine", ocrEngineName,
+		"ocr_vision_model", cfg.ocrVisionModel,
+		"ocr_vision_available", vision != nil,
 	)
 
 	errc := make(chan error, 1)
