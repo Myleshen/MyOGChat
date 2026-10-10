@@ -77,8 +77,8 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		name = "file"
 	}
 	mimeType := header.Header.Get("Content-Type")
-	// Images are OCR'd when enabled (feature 2.5); other types are unchanged.
-	text, err := extract.ExtractWith(name, mimeType, data, s.ocrFunc(r.Context()))
+	// Images are OCR'd when enabled (features 2.5/2.13); other types are unchanged.
+	text, err := extract.ExtractWith(name, mimeType, data, s.ocrFunc(r.Context(), u))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, extractMessage(err))
 		return

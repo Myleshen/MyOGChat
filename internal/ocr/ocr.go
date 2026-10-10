@@ -188,9 +188,40 @@ func (d *DockerTesseract) OCR(ctx context.Context, image []byte) (string, error)
 			}
 			return "", fmt.Errorf("ocr: %w", runCtx.Err())
 		}
+		if isDockerUnavailable(err) {
+			return "", fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
 		return "", fmt.Errorf("ocr: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// isDockerUnavailable reports whether err means Docker (or the OCR image) is not
+// usable right now, as opposed to a genuine OCR failure. It drives the
+// FallbackEngine (feature 2.13): only unavailability should trigger a retry
+// through the vision model.
+func isDockerUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{
+		"cannot connect to the docker daemon",
+		"is the docker daemon running",
+		"docker: command not found",
+		"executable file not found",
+		"no such image",
+		"unable to find image",
+		"permission denied while trying to connect",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // forceRemove best-effort removes a container left behind by a timeout, using a

@@ -22,6 +22,7 @@ type Model struct {
 	Dialect       string  `json:"dialect"`
 	Effort        bool    `json:"effort"`
 	Thinking      bool    `json:"thinking"`
+	Vision        bool    `json:"vision"`
 	InputPerM     float64 `json:"input_per_m"`
 	OutputPerM    float64 `json:"output_per_m"`
 	CacheReadPerM float64 `json:"cache_read_per_m"`
@@ -43,29 +44,29 @@ type Model struct {
 // Thinking marks models that surface visible reasoning (chat dialect) or expose
 // a reasoning-effort control (responses dialect) — see contract §8.7.
 var Registry = []Model{
-	{ID: "longcat-2.5-preview-free", Name: "LongCat 2.5 Free", Dialect: DialectChat, Thinking: true, InputPerM: 0, OutputPerM: 0, CacheReadPerM: 0},
-	{ID: "mimo-v2.6-flash", Name: "MiMo V2.6 Flash", Dialect: DialectChat, InputPerM: 0.14, OutputPerM: 0.28, CacheReadPerM: 0.0028},
-	{ID: "mimo-v2.5", Name: "MiMo V2.5", Dialect: DialectChat, InputPerM: 0.14, OutputPerM: 0.28, CacheReadPerM: 0.0028},
+	{ID: "longcat-2.5-preview-free", Name: "LongCat 2.5 Free", Dialect: DialectChat, Thinking: true, Vision: true, InputPerM: 0, OutputPerM: 0, CacheReadPerM: 0},
+	{ID: "mimo-v2.6-flash", Name: "MiMo V2.6 Flash", Dialect: DialectChat, Vision: true, InputPerM: 0.14, OutputPerM: 0.28, CacheReadPerM: 0.0028},
+	{ID: "mimo-v2.5", Name: "MiMo V2.5", Dialect: DialectChat, Vision: true, InputPerM: 0.14, OutputPerM: 0.28, CacheReadPerM: 0.0028},
 	{ID: "hy3", Name: "Hy3", Dialect: DialectChat, InputPerM: 0.14, OutputPerM: 0.58, CacheReadPerM: 0.035},
-	{ID: "glm-5.3-flash", Name: "GLM-5.3 Flash", Dialect: DialectChat, Thinking: true, InputPerM: 0.15, OutputPerM: 0.50, CacheReadPerM: 0.03},
-	{ID: "space-bunny", Name: "Space Bunny", Dialect: DialectChat, Thinking: true, InputPerM: 0.15, OutputPerM: 0.60, CacheReadPerM: 0.03},
+	{ID: "glm-5.3-flash", Name: "GLM-5.3 Flash", Dialect: DialectChat, Thinking: true, Vision: true, InputPerM: 0.15, OutputPerM: 0.50, CacheReadPerM: 0.03},
+	{ID: "space-bunny", Name: "Space Bunny", Dialect: DialectChat, Thinking: true, Vision: true, InputPerM: 0.15, OutputPerM: 0.60, CacheReadPerM: 0.03},
 	{ID: "longcat-2.0", Name: "LongCat 2.0", Dialect: DialectChat, Thinking: true, InputPerM: 0.30, OutputPerM: 1.20, CacheReadPerM: 0.006},
 	{ID: "mimo-v2.6-pro", Name: "MiMo V2.6 Pro", Dialect: DialectChat, InputPerM: 0.435, OutputPerM: 0.87, CacheReadPerM: 0.003625},
 	{ID: "mimo-v2.5-pro", Name: "MiMo V2.5 Pro", Dialect: DialectChat, InputPerM: 0.435, OutputPerM: 0.87, CacheReadPerM: 0.003625},
 	{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", Dialect: DialectChat, Thinking: true, InputPerM: 0.66, OutputPerM: 1.98, CacheReadPerM: 0.022, HasPeak: true, PeakInputPerM: 1.32, PeakOutputPerM: 3.96, PeakCachePerM: 0.044},
-	{ID: "deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash", Dialect: DialectChat, Thinking: true, InputPerM: 0.15, OutputPerM: 0.60, CacheReadPerM: 0.003, HasPeak: true, PeakInputPerM: 0.30, PeakOutputPerM: 1.20, PeakCachePerM: 0.006},
+	{ID: "deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash", Dialect: DialectChat, Thinking: true, Vision: true, InputPerM: 0.15, OutputPerM: 0.60, CacheReadPerM: 0.003, HasPeak: true, PeakInputPerM: 0.30, PeakOutputPerM: 1.20, PeakCachePerM: 0.006},
 	{ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Dialect: DialectChat, Thinking: true, InputPerM: 0.15, OutputPerM: 0.60, CacheReadPerM: 0.003, HasPeak: true, PeakInputPerM: 0.30, PeakOutputPerM: 1.20, PeakCachePerM: 0.006},
-	{ID: "deepseek-v4-flash-vision-exp", Name: "DeepSeek V4 Flash Vision", Dialect: DialectChat, Thinking: true, InputPerM: 0.15, OutputPerM: 0.60, CacheReadPerM: 0.003, HasPeak: true, PeakInputPerM: 0.30, PeakOutputPerM: 1.20, PeakCachePerM: 0.006},
+	{ID: "deepseek-v4-flash-vision-exp", Name: "DeepSeek V4 Flash Vision", Dialect: DialectChat, Thinking: true, Vision: true, InputPerM: 0.15, OutputPerM: 0.60, CacheReadPerM: 0.003, HasPeak: true, PeakInputPerM: 0.30, PeakOutputPerM: 1.20, PeakCachePerM: 0.006},
 	{ID: "hy4-preview", Name: "Hy4 Preview", Dialect: DialectChat, InputPerM: 0.834, OutputPerM: 2.501, CacheReadPerM: 0.042},
-	{ID: "kimi-k2.7-code", Name: "Kimi K2.7 Code", Dialect: DialectChat, Thinking: true, InputPerM: 0.95, OutputPerM: 4.00, CacheReadPerM: 0.19},
-	{ID: "kimi-k2.6", Name: "Kimi K2.6", Dialect: DialectChat, InputPerM: 0.95, OutputPerM: 4.00, CacheReadPerM: 0.16},
+	{ID: "kimi-k2.7-code", Name: "Kimi K2.7 Code", Dialect: DialectChat, Thinking: true, Vision: true, InputPerM: 0.95, OutputPerM: 4.00, CacheReadPerM: 0.19},
+	{ID: "kimi-k2.6", Name: "Kimi K2.6", Dialect: DialectChat, Vision: true, InputPerM: 0.95, OutputPerM: 4.00, CacheReadPerM: 0.16},
 	{ID: "glm-5.2", Name: "GLM-5.2", Dialect: DialectChat, Thinking: true, InputPerM: 1.40, OutputPerM: 4.40, CacheReadPerM: 0.26},
 	{ID: "glm-5.3", Name: "GLM-5.3", Dialect: DialectChat, Thinking: true, InputPerM: 1.40, OutputPerM: 4.40, CacheReadPerM: 0.26},
-	{ID: "kimi-k3", Name: "Kimi K3", Dialect: DialectChat, InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30},
-	{ID: "gpt-6-luna", Name: "GPT 6 Luna", Dialect: DialectResponses, Effort: true, Thinking: true, InputPerM: 0.10, OutputPerM: 0.50, CacheReadPerM: 0.01, TierThreshold: 272000, TierInputPerM: 0.20, TierOutputPerM: 0.75, TierCachePerM: 0.02},
-	{ID: "gpt-5.6-luna", Name: "GPT 5.6 Luna", Dialect: DialectResponses, Effort: true, Thinking: true, InputPerM: 0.20, OutputPerM: 1.20, CacheReadPerM: 0.02, TierThreshold: 272000, TierInputPerM: 0.40, TierOutputPerM: 1.80, TierCachePerM: 0.04},
-	{ID: "grok-4.7", Name: "Grok 4.7", Dialect: DialectResponses, Effort: true, Thinking: true, InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.50, TierThreshold: 200000, TierInputPerM: 4.00, TierOutputPerM: 12.00, TierCachePerM: 1.00},
-	{ID: "grok-4.6", Name: "Grok 4.6", Dialect: DialectResponses, Effort: true, Thinking: true, InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.50, TierThreshold: 200000, TierInputPerM: 4.00, TierOutputPerM: 12.00, TierCachePerM: 1.00},
+	{ID: "kimi-k3", Name: "Kimi K3", Dialect: DialectChat, Vision: true, InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30},
+	{ID: "gpt-6-luna", Name: "GPT 6 Luna", Dialect: DialectResponses, Effort: true, Thinking: true, Vision: true, InputPerM: 0.10, OutputPerM: 0.50, CacheReadPerM: 0.01, TierThreshold: 272000, TierInputPerM: 0.20, TierOutputPerM: 0.75, TierCachePerM: 0.02},
+	{ID: "gpt-5.6-luna", Name: "GPT 5.6 Luna", Dialect: DialectResponses, Effort: true, Thinking: true, Vision: true, InputPerM: 0.20, OutputPerM: 1.20, CacheReadPerM: 0.02, TierThreshold: 272000, TierInputPerM: 0.40, TierOutputPerM: 1.80, TierCachePerM: 0.04},
+	{ID: "grok-4.7", Name: "Grok 4.7", Dialect: DialectResponses, Effort: true, Thinking: true, Vision: true, InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.50, TierThreshold: 200000, TierInputPerM: 4.00, TierOutputPerM: 12.00, TierCachePerM: 1.00},
+	{ID: "grok-4.6", Name: "Grok 4.6", Dialect: DialectResponses, Effort: true, Thinking: true, Vision: true, InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.50, TierThreshold: 200000, TierInputPerM: 4.00, TierOutputPerM: 12.00, TierCachePerM: 1.00},
 }
 
 var byID = func() map[string]Model {

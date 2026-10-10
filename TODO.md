@@ -173,7 +173,7 @@ merges sequentially and resolves the small additive conflicts in shared files
 - **Batch 2 (parallel, done):** 2.6 Python sandbox · 2.7 Bash sandbox · 2.5 OCR · 2.9 Settings page
   · multi-provider web search (2.4 extension)
 - **Batch 3 (in progress):** 2.10 tool activity ✅ · 2.11 usage/quotas ✅ ·
-  2.12 Serper + Brave llm/context · 2.13 vision-model OCR
+  2.12 Serper + Brave llm/context · 2.13 vision-model OCR ✅
 
 ---
 
@@ -220,17 +220,22 @@ merges sequentially and resolves the small additive conflicts in shared files
 - **Files:** `internal/tools/search.go`, `internal/server/integrations.go`,
   `main.go`, `static/app.js`, docs. **Effort:** small–medium.
 
-### 2.13 Vision-model OCR (alternative engine)
+### 2.13 Vision-model OCR (alternative engine) — ✅ done (branch `feat/vision-ocr`)
 - **Finding:** OpenCode Go exposes vision **input** models — `gpt-6-luna`
   (responses dialect; input = text, image, pdf) and `deepseek-v4-flash-vision-exp`
   (chat). They can transcribe images, so OCR can optionally run through a vision
   model instead of (or in addition to) Tesseract.
-- **Plan:** `internal/ocr.Engine` already exists — add a `VisionModel` engine that
-  sends the image as a content part and asks for verbatim transcription. Use when
-  Docker/Tesseract is unavailable, or for handwriting/figures. Trade-off: token
-  cost + a vision-capable model.
-- **Files:** `internal/ocr`, `internal/upstream` (image content parts), settings,
-  docs. **Effort:** medium.
+- **Shipped:** `internal/ocr.VisionModel` implements the existing `Engine`; a
+  single **non-streaming** `upstream.VisionOnce` owns both wire shapes (chat
+  `image_url` object, responses `input_image` flat). A `ocr.KeyedEngine` lets
+  `Server.ocrFunc(ctx, u)` bind the per-request key (BYOK → group → shared).
+  `FallbackEngine` retries on `ErrUnavailable`; `MYOGCHAT_OCR_ENGINE=tesseract|
+  vision|auto` (default `tesseract`; `auto` = Docker preflight at startup).
+  Model registry gains `vision bool`; images downscaled past
+  `MYOGCHAT_OCR_MAX_IMAGE_DIM`. See `docs/2.13-vision-ocr.md`.
+- **Files:** `internal/ocr` (`vision.go`, `select.go`, `downscale.go`),
+  `internal/upstream/vision.go`, `internal/server/ocr.go`, `internal/models`,
+  `main.go`, docs. **Effort:** medium.
 
 ---
 
