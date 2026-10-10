@@ -60,6 +60,9 @@ type Server struct {
 	// both required). Each user can override with their own stored instance.
 	linkwardenURL   string
 	linkwardenToken string
+
+	// mediaSem bounds concurrent background media-transcription workers (4.5b).
+	mediaSem chan struct{}
 }
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
@@ -83,6 +86,7 @@ func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log
 		imagegenToken:   imagegenToken,
 		linkwardenURL:   linkwardenURL,
 		linkwardenToken: linkwardenToken,
+		mediaSem:        make(chan struct{}, 2),
 	}
 	// Build engines per request so DB URL/voice overrides take effect live.
 	s.newSTT = func(cfg speech.STTConfig) speech.Transcriber { return speech.NewOpenAISTT(cfg) }

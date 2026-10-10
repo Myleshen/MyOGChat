@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"myogchat/internal/extract"
-	"myogchat/internal/speech"
 	"myogchat/internal/store"
 )
 
@@ -78,13 +78,34 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		name = "file"
 	}
 	mimeType := header.Header.Get("Content-Type")
-	// Images are OCR'd when enabled (features 2.5/2.13); audio/video are
-	// transcribed via speech-to-text (4.5); other types are unchanged.
-	opts := extract.Options{OCR: s.ocrFunc(r.Context(), u)}
-	if tr := s.sttTranscriber(r.Context(), ""); tr != nil {
-		opts.Transcribe = speech.STT(r.Context(), tr)
+	tr := s.sttTranscriber(r.Context(), "")
+
+	// Audio/video is transcribed asynchronously so a long clip can never block
+	// the request past the tunnel timeout (4.5b). The row is created "pending"
+	// and a bounded background worker fills in the transcript; the SPA polls
+	// GET /api/attachments/{id} until it is ready.
+	if tr != nil && extract.IsMedia(name, mimeType) {
+		att := store.Attachment{
+			ID: newUUID(), UserID: u.ID, Name: name, Mime: mimeType,
+			Size: int64(len(data)), Status: "pending", CreatedAt: time.Now().UnixMilli(),
+		}
+		if err := s.st.InsertAttachment(r.Context(), &att); err != nil {
+			s.log.Error("insert pending attachment", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to store attachment")
+			return
+		}
+		go s.transcribeAttachment(att.ID, data, name, mimeType)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"id": att.ID, "name": att.Name, "mime": att.Mime, "size": att.Size,
+			"chars": 0, "status": "pending",
+		})
+		return
 	}
-	text, err := extract.ExtractOpts(name, mimeType, data, opts)
+
+	// Everything else (text, PDF, images/OCR, documents) is extracted
+	// synchronously. A media upload without a configured STT service falls
+	// through here and is reported as unsupported.
+	text, err := extract.ExtractOpts(name, mimeType, data, extract.Options{OCR: s.ocrFunc(r.Context(), u)})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, extractMessage(err))
 		return
@@ -97,6 +118,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		Mime:      mimeType,
 		Size:      int64(len(data)),
 		Text:      text,
+		Status:    "ready",
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	if err := s.st.InsertAttachment(r.Context(), &att); err != nil {
@@ -105,12 +127,52 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":    att.ID,
-		"name":  att.Name,
-		"mime":  att.Mime,
-		"size":  att.Size,
-		"chars": att.Chars(),
+		"id":     att.ID,
+		"name":   att.Name,
+		"mime":   att.Mime,
+		"size":   att.Size,
+		"chars":  att.Chars(),
+		"status": att.Status,
 	})
+}
+
+// transcribeAttachment runs speech-to-text for a pending media attachment in the
+// background and persists the result (4.5b). Concurrency is bounded by mediaSem
+// so a burst of uploads cannot exhaust the STT service or the Pi.
+func (s *Server) transcribeAttachment(id string, data []byte, name, mime string) {
+	select {
+	case s.mediaSem <- struct{}{}:
+		defer func() { <-s.mediaSem }()
+	case <-time.After(2 * time.Minute):
+		s.finishAttachment(id, "", "error", "transcription is busy, please try again")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	tr := s.sttTranscriber(ctx, "")
+	if tr == nil {
+		s.finishAttachment(id, "", "error", "speech-to-text is not configured")
+		return
+	}
+	text, err := tr.Transcribe(ctx, data, name, mime)
+	if err != nil {
+		s.log.Warn("media transcription failed", "id", id, "error", err)
+		s.finishAttachment(id, "", "error", "could not transcribe the audio/video: "+err.Error())
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		s.finishAttachment(id, "", "error", "no speech was detected in the media")
+		return
+	}
+	s.finishAttachment(id, truncateRunes(text, extract.MaxTextChars), "ready", "")
+}
+
+// finishAttachment persists the terminal state of an async attachment.
+func (s *Server) finishAttachment(id, text, status, errMsg string) {
+	if err := s.st.SetAttachmentResult(context.Background(), id, text, status, errMsg); err != nil {
+		s.log.Error("finalize attachment", "id", id, "error", err)
+	}
 }
 
 // handleGetAttachment returns an attachment's metadata (owner only, 2.3).
@@ -135,6 +197,8 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 		"mime":       att.Mime,
 		"size":       att.Size,
 		"chars":      att.Chars(),
+		"status":     att.Status,
+		"error":      att.Error,
 		"created_at": att.CreatedAt,
 	})
 }
@@ -176,6 +240,13 @@ func extractMessage(err error) string {
 	}
 }
 
+// attachmentNotReadyError marks a send that referenced an attachment still being
+// transcribed (async media, 4.5b) or one whose extraction failed. The HTTP layer
+// maps it to 409 with the message text.
+type attachmentNotReadyError struct{ msg string }
+
+func (e *attachmentNotReadyError) Error() string { return e.msg }
+
 // loadAttachments resolves attachment ids for a user, preserving order and
 // de-duplicating. An unknown id (or one owned by another user) is an error so
 // the send fails clearly rather than silently dropping context.
@@ -196,6 +267,14 @@ func (s *Server) loadAttachments(ctx context.Context, userID string, ids []strin
 		a, err := s.st.GetAttachment(ctx, id, userID)
 		if err != nil {
 			return nil, err
+		}
+		// Reject an attachment that is still being transcribed or failed, so a
+		// send never silently folds empty context (async media, 4.5b).
+		if a.Status == "pending" {
+			return nil, &attachmentNotReadyError{msg: fmt.Sprintf("%q is still being transcribed — please wait a moment", a.Name)}
+		}
+		if a.Status == "error" {
+			return nil, &attachmentNotReadyError{msg: fmt.Sprintf("%q could not be processed: %s", a.Name, a.Error)}
 		}
 		seen[id] = true
 		atts = append(atts, a)

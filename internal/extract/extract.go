@@ -137,6 +137,13 @@ func isMedia(base, ext string) bool {
 	return strings.HasPrefix(base, "audio/") || strings.HasPrefix(base, "video/") || mediaExtensions[ext]
 }
 
+// IsMedia reports whether a name/MIME pair is audio/video handled by
+// transcription (Phase 4.5). The server uses this to route media uploads to the
+// asynchronous transcription path.
+func IsMedia(name, mimeType string) bool {
+	return isMedia(baseMime(mimeType), strings.ToLower(filepath.Ext(name)))
+}
+
 // extractMedia transcribes audio/video via speech-to-text. A nil Transcribe
 // yields ErrUnsupported; an engine failure yields ErrTranscribe; no speech
 // yields ErrEmpty.

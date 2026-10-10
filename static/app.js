@@ -3777,7 +3777,9 @@ function fmtBytes(n) {
 }
 
 function isUploading() {
-  return state.pendingAttachments.some((a) => a && a.uploading);
+  // True while any attachment is uploading OR being transcribed in the
+  // background (async media, 4.5b) — the send button stays disabled until ready.
+  return state.pendingAttachments.some((a) => a && (a.uploading || a.status === "pending"));
 }
 
 function updateAttachBtn() {
@@ -3802,23 +3804,55 @@ async function uploadAttachment(file) {
   return res.json();
 }
 
+// Poll a pending media attachment until its background transcription finishes
+// (or fails), updating its chip in place. Bounded to ~10 minutes.
+async function pollAttachment(a) {
+  for (let i = 0; i < 300; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    if (state.pendingAttachments.indexOf(a) === -1) return; // removed by the user
+    let meta;
+    try {
+      meta = await api("/api/attachments/" + enc(a.id));
+    } catch (err) {
+      if (err instanceof AuthError) return;
+      continue; // transient — keep polling
+    }
+    if (meta.status && meta.status !== "pending") {
+      a.status = meta.status;
+      a.chars = meta.chars || 0;
+      a.error = meta.error || "";
+      renderAttachments();
+      return;
+    }
+  }
+  if (state.pendingAttachments.indexOf(a) !== -1) {
+    a.status = "error";
+    a.error = "transcription timed out";
+    renderAttachments();
+  }
+}
+
 function renderAttachments() {
   const atts = state.pendingAttachments;
   attachmentsBar.innerHTML = "";
   attachmentsBar.hidden = atts.length === 0;
   for (const a of atts) {
-    const chip = el("span", "attachment-chip" + (a.uploading ? " uploading" : ""));
+    const failed = a.status === "error";
+    const chip = el(
+      "span",
+      "attachment-chip" + (a.uploading ? " uploading" : "") + (failed ? " error" : "")
+    );
     const name = el("span", "attachment-chip-name");
     name.textContent = a.name;
-    name.title = a.name;
+    name.title = failed && a.error ? a.name + " — " + a.error : a.name;
     chip.appendChild(name);
     const meta = el("span", "attachment-chip-size");
-    if (a.uploading) {
-      meta.textContent = "uploading…";
-      chip.appendChild(meta);
-    } else {
-      meta.textContent = fmtBytes(a.size);
-      chip.appendChild(meta);
+    if (a.uploading) meta.textContent = "uploading…";
+    else if (a.status === "pending") meta.textContent = "transcribing…";
+    else if (failed) meta.textContent = "failed";
+    else meta.textContent = fmtBytes(a.size);
+    chip.appendChild(meta);
+    if (!a.uploading) {
       const remove = el("button", "attachment-remove");
       remove.type = "button";
       remove.setAttribute("aria-label", "Remove " + a.name);
@@ -3874,7 +3908,10 @@ async function onFilesSelected() {
     try {
       const meta = await uploadAttachment(file);
       const i = state.pendingAttachments.indexOf(placeholder);
-      if (i !== -1) state.pendingAttachments[i] = meta;
+      if (i !== -1) {
+        state.pendingAttachments[i] = meta;
+        if (meta.status === "pending") pollAttachment(meta);
+      }
     } catch (err) {
       const i = state.pendingAttachments.indexOf(placeholder);
       if (i !== -1) state.pendingAttachments.splice(i, 1);

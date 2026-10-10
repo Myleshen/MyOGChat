@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS attachments (
   mime       TEXT,
   size       INTEGER NOT NULL,
   text       TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'ready',
+  error      TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages(conversation_id, created_at);
@@ -253,7 +255,9 @@ type Image struct {
 }
 
 // Attachment mirrors a row of the attachments table (2.3). Text is the
-// extracted plain text folded into the model request.
+// extracted plain text folded into the model request. Status tracks async
+// extraction (Phase 4.5): "ready" (default), "pending" (media transcription in
+// progress), or "error" (extraction failed; Error holds the message).
 type Attachment struct {
 	ID        string `json:"id"`
 	UserID    string `json:"-"`
@@ -261,6 +265,8 @@ type Attachment struct {
 	Mime      string `json:"mime,omitempty"`
 	Size      int64  `json:"size"`
 	Text      string `json:"-"`
+	Status    string `json:"status,omitempty"`
+	Error     string `json:"error,omitempty"`
 	CreatedAt int64  `json:"created_at"`
 }
 
@@ -368,6 +374,8 @@ func (s *Store) migrate() error {
 		{"users", "linkwarden_url", `ALTER TABLE users ADD COLUMN linkwarden_url TEXT`},
 		{"users", "linkwarden_token_enc", `ALTER TABLE users ADD COLUMN linkwarden_token_enc TEXT`},
 		{"messages", "images", `ALTER TABLE messages ADD COLUMN images TEXT`},
+		{"attachments", "status", `ALTER TABLE attachments ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'`},
+		{"attachments", "error", `ALTER TABLE attachments ADD COLUMN error TEXT`},
 	}
 	cache := map[string]map[string]bool{}
 	for _, st := range steps {
@@ -1201,26 +1209,45 @@ func (s *Store) IsGroupMember(ctx context.Context, groupID, userID string) (bool
 
 // ---------- attachments (2.3) ----------
 
-const attachmentCols = "id, user_id, name, mime, size, text, created_at"
+const attachmentCols = "id, user_id, name, mime, size, text, status, error, created_at"
 
 func scanAttachment(sc scanner) (Attachment, error) {
 	var a Attachment
-	var mime sql.NullString
-	if err := sc.Scan(&a.ID, &a.UserID, &a.Name, &mime, &a.Size, &a.Text, &a.CreatedAt); err != nil {
+	var mime, status, errMsg sql.NullString
+	if err := sc.Scan(&a.ID, &a.UserID, &a.Name, &mime, &a.Size, &a.Text, &status, &errMsg, &a.CreatedAt); err != nil {
 		return Attachment{}, err
 	}
-	a.Mime = ""
 	if mime.Valid {
 		a.Mime = mime.String
+	}
+	a.Status = "ready"
+	if status.Valid && status.String != "" {
+		a.Status = status.String
+	}
+	if errMsg.Valid {
+		a.Error = errMsg.String
 	}
 	return a, nil
 }
 
-// InsertAttachment stores an extracted file for its owner.
+// InsertAttachment stores an extracted file for its owner. An empty Status
+// defaults to "ready" (synchronous extraction); media uploads pass "pending".
 func (s *Store) InsertAttachment(ctx context.Context, a *Attachment) error {
+	if a.Status == "" {
+		a.Status = "ready"
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO attachments (`+attachmentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.UserID, a.Name, nullString(&a.Mime), a.Size, a.Text, a.CreatedAt)
+		`INSERT INTO attachments (`+attachmentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.UserID, a.Name, nullString(&a.Mime), a.Size, a.Text, a.Status, nullString(&a.Error), a.CreatedAt)
+	return err
+}
+
+// SetAttachmentResult finalizes an asynchronously extracted attachment. It is
+// not owner-scoped because the background worker runs without a request user.
+func (s *Store) SetAttachmentResult(ctx context.Context, id, text, status, errMsg string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE attachments SET text = ?, status = ?, error = ? WHERE id = ?`,
+		text, status, nullString(&errMsg), id)
 	return err
 }
 

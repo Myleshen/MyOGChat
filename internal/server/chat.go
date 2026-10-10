@@ -98,6 +98,11 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "unknown attachment")
 		return
 	}
+	var notReady *attachmentNotReadyError
+	if errors.As(err, &notReady) {
+		writeError(w, http.StatusConflict, notReady.msg)
+		return
+	}
 	if err != nil {
 		s.log.Error("load attachments", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load attachments")
