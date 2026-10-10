@@ -115,6 +115,9 @@ assert "key section present" "!document.getElementById('key-section').hidden"
 assert "groups section present" "!!document.getElementById('groups-section')"
 assert "non-admin: users section hidden" "document.getElementById('users-section').hidden"
 assert "about section present" "document.getElementById('app-version').textContent.length > 0"
+assert "web search section present (all users)" "!!document.getElementById('my-search-section')"
+assert "calendar section present (all users)" "!!document.getElementById('calendar-section')"
+assert "email section present (all users)" "!!document.getElementById('email-section')"
 shot 07a-settings-top.png
 ab fill "#group-name" "UI Test Group" >/dev/null 2>&1
 ab click "#group-form button[type=submit]" >/dev/null 2>&1; sleep 1
@@ -164,6 +167,8 @@ assert "integrations section visible for admin" "!document.getElementById('integ
 assert "web search block visible for admin" "!!document.getElementById('web-search-block') && !document.getElementById('web-search-block').hidden"
 assert "code sandbox section visible for admin" "!document.getElementById('tools-section').hidden"
 assert "ocr section visible for admin" "!document.getElementById('ocr-section').hidden"
+assert "usage section present" "!!document.getElementById('usage-section')"
+assert "voice section visible for admin" "!document.getElementById('voice-section').hidden"
 ab scrollintoview "#users-section" >/dev/null 2>&1; sleep 1
 shot 10-admin.png
 ab click "#settings-back" >/dev/null 2>&1; sleep 1
