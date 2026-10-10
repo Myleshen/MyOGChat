@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"testing"
+
+	"myogchat/internal/store"
 )
 
 func TestGeoConfigDefaultsAndOverrides(t *testing.T) {
@@ -64,7 +66,7 @@ func TestMapsSettingsFields(t *testing.T) {
 
 func TestToolRegistryRegistersMaps(t *testing.T) {
 	srv := newSearchTestServer(t, SearchDefaults{Provider: "auto"})
-	reg := srv.toolRegistry(context.Background())
+	reg := srv.toolRegistry(context.Background(), store.User{})
 	for _, name := range []string{"maps_geocode", "maps_reverse", "maps_directions", "maps_places"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s not registered", name)
