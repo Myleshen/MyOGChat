@@ -242,14 +242,21 @@ func (s *Server) setUserLinkwarden(ctx context.Context, u store.User, rawURL str
 	return s.st.SetUserLinkwarden(ctx, u.ID, url, enc, now)
 }
 
-// toolRegistry builds the per-request set of tools. It is empty when tools are
-// disabled. web_search is present whenever any search provider is usable
-// (DuckDuckGo needs no key, so it is always available); fetch_url is always
-// available; Linkwarden tools require the integration; the read-only email tools
-// require the user to have connected a mailbox (feature 3.2). u supplies the
-// caller's per-user search credentials (Serper key, 2.12) and connected calendar
-// (3.3).
+// toolRegistry builds the per-request set of tools with no image collector.
 func (s *Server) toolRegistry(ctx context.Context, u store.User) *tools.Registry {
+	return s.toolRegistryWithImage(ctx, u, nil)
+}
+
+// toolRegistryWithImage builds the per-request set of tools. It is empty when
+// tools are disabled. web_search is present whenever any search provider is
+// usable (DuckDuckGo needs no key, so it is always available); fetch_url is
+// always available; Linkwarden tools require the integration; the read-only
+// email tools require the user to have connected a mailbox (feature 3.2). u
+// supplies the caller's per-user search credentials (Serper key, 2.12) and
+// connected calendar (3.3). When onImage is non-nil and a ComfyUI backend is
+// configured, the generate_image tool (4.3b) is registered and reports generated
+// images through onImage.
+func (s *Server) toolRegistryWithImage(ctx context.Context, u store.User, onImage func(store.GeneratedImage)) *tools.Registry {
 	reg := tools.NewRegistry()
 	if !s.toolsEnabled(ctx) {
 		return reg
@@ -291,6 +298,14 @@ func (s *Server) toolRegistry(ctx context.Context, u store.User) *tools.Registry
 		reg.Add(tools.NewEmailFoldersTool(connect))
 		reg.Add(tools.NewEmailSearchTool(connect))
 		reg.Add(tools.NewEmailReadTool(connect))
+	}
+	// Image generation (4.3b): the model-facing generate_image tool, registered
+	// only when a ComfyUI backend is configured and the caller supplied a
+	// collector for the finished image.
+	if onImage != nil {
+		if _, ok := s.imagegenClient(ctx); ok {
+			reg.Add(&imageTool{s: s, u: u, collect: onImage})
+		}
 	}
 	return reg
 }
