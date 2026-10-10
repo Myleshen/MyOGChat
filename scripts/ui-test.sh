@@ -161,6 +161,9 @@ assert "settings page opens (admin)" "!document.getElementById('settings-page').
 assert "users section visible for admin" "!document.getElementById('users-section').hidden"
 assert "share-server-key toggle present" "!document.getElementById('share-key-row').hidden"
 assert "integrations section visible for admin" "!document.getElementById('integrations-section').hidden"
+assert "web search block visible for admin" "!!document.getElementById('web-search-block') && !document.getElementById('web-search-block').hidden"
+assert "code sandbox section visible for admin" "!document.getElementById('tools-section').hidden"
+assert "ocr section visible for admin" "!document.getElementById('ocr-section').hidden"
 ab scrollintoview "#users-section" >/dev/null 2>&1; sleep 1
 shot 10-admin.png
 ab click "#settings-back" >/dev/null 2>&1; sleep 1
