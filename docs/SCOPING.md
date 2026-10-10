@@ -232,18 +232,29 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
 
 ---
 
-## 3.5 Speech-to-text (STT) — scoped, research pending
+## 3.5 Speech-to-text (STT) — scoped (~2–3 d)
 
-- Transcribe voice input. **Ollama does *not* serve STT** (it's LLMs + embeddings
-  only) — the realistic runtimes are **whisper.cpp** / **faster-whisper** (Pi 4B
-  CPU, or CUDA on the Proxmox GTX 1650 Ti). Design: `POST /api/stt` + a PWA mic
-  button (`MediaRecorder`). Full report in `docs/research/` (TTS/STT).
+- **Ollama does NOT serve STT** (LLMs + embeddings only; no audio endpoints).
+- **Pi 4B default: whisper.cpp `base.en`** (MIT; ~1.5–2× real-time, ~0.4 GB;
+  ships an OpenAI-like HTTP server + arm64 Docker image). Streaming only via Vosk.
+- **Proxmox GPU option:** faster-whisper `large-v3` int8 (~3 GB) / `distil-large-v3`.
+- Design: `internal/speech` mirroring `internal/ocr` but with **persistent HTTP
+  services** (models stay warm); `POST /api/stt` (multipart audio → text) + a PWA
+  mic button (`MediaRecorder`). Keep the Go client OpenAI-compatible so the
+  Proxmox shim is a drop-in. Full report: `docs/research/3.5-3.6-tts-stt.md`.
 
-## 3.6 Text-to-speech (TTS) — scoped, research pending
+## 3.6 Text-to-speech (TTS) — scoped (~2–3 d)
 
-- Speak assistant replies. Likely **Piper** (ONNX, real-time on a Pi 4), with a
-  Proxmox-GPU option for heavier voices. Design: `POST /api/tts` + a speaker
-  button on messages. Ollama does **not** do TTS.
+- **Ollama does NOT do TTS.**
+- **Pi 4B default: Piper** (real-time with `low`/`x_low` voices; ONNX; HTTP server
+  mode). ⚠️ the maintained repo is **GPL-3.0** (old `rhasspy/piper` was MIT,
+  archived). **Kokoro-82M** (Apache-2.0) is higher quality but slower-than-real-time
+  on the Pi → GPU only. XTTS is non-commercial → skip.
+- Design: `POST /api/tts` (text → WAV) + a speaker button on messages; Web Speech
+  API as a zero-backend day-one fallback.
+- **Hardware:** STT + TTS + embeddings fit in 4 GB, but the Pi **CPU** is the
+  bottleneck — run sequentially, not concurrently; offload to the Proxmox GPU for
+  quality. Effort ~4–6 d Pi-only, ~8–12 d with GPU offload.
 
 ---
 
@@ -258,5 +269,5 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
 ## Still open
 
 1. **Serper key** — get one, or ship without it?
-2. **Image-gen gate** — run the SD-Turbo timing test on the Proxmox box before
-   committing to batch 6.
+
+*(Image-gen gate: **PASSED** — see §3.1.)*

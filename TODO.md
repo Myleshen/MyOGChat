@@ -265,13 +265,13 @@ merges sequentially and resolves the small additive conflicts in shared files
   Photon/Overpass (places). A `maps_*` tool reusing the 2.4 loop; global 1 req/s
   limiter + a result cache (policy). **Effort:** ~3–4 d. See `docs/SCOPING.md` §3.4.
 
-### 3.5 Speech-to-text (STT) — scoped, research pending
-- Transcribe voice input. **Note:** Ollama does **not** serve STT (it's LLMs +
-  embeddings only) — the realistic runtimes are **whisper.cpp** / **faster-whisper**
-  (Pi 4B CPU, or CUDA on the Proxmox GTX 1650 Ti). Design: `POST /api/stt` +
-  a PWA mic button (`MediaRecorder`). See `docs/research/` (TTS/STT report).
+### 3.5 Speech-to-text (STT) — scoped (~2–3 d)
+- **Ollama does NOT serve STT** (LLMs + embeddings only). Pi default:
+  **whisper.cpp `base.en`** (MIT, ~1.5–2× real-time, HTTP server). GPU option:
+  faster-whisper `large-v3` int8. Design: `internal/speech` + `POST /api/stt` +
+  a PWA mic button. See `docs/SCOPING.md` §3.5 / `docs/research/3.5-3.6-tts-stt.md`.
 
-### 3.6 Text-to-speech (TTS) — scoped, research pending
-- Speak assistant replies. Likely **Piper** (ONNX, real-time on a Pi 4) with a
-  Proxmox-GPU option for heavier voices. Design: `POST /api/tts` + a speaker
-  button on messages. Ollama does **not** do TTS. See `docs/research/`.
+### 3.6 Text-to-speech (TTS) — scoped (~2–3 d)
+- Pi default: **Piper** (real-time on the Pi; GPL-3.0 — note). GPU: Kokoro-82M
+  (Apache-2.0). Design: `POST /api/tts` + a speaker button; Web Speech API fallback.
+  See `docs/SCOPING.md` §3.6.
