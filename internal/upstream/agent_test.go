@@ -373,3 +373,86 @@ func TestResponsesToolSpecs(t *testing.T) {
 		t.Errorf("responses tool specs must not nest under function: %s", b)
 	}
 }
+
+// TestStreamAgentChatIncludesContext guards the 2.3 regression where the agent
+// loop (used whenever tools are enabled) dropped Params.Context, so attachment
+// text never reached the model.
+func TestStreamAgentChatIncludesContext(t *testing.T) {
+	var mu sync.Mutex
+	var firstBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		if firstBody == nil {
+			firstBody = body
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+			"data: [DONE]\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	c := &Client{hc: srv.Client(), baseURL: srv.URL}
+	collectEvents(t, c.StreamAgent(context.Background(), Params{
+		Dialect:  "chat",
+		Model:    "test",
+		APIKey:   "k",
+		Context:  "ATTACHMENT-CONTEXT-BLOCK",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "x"}}},
+	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }))
+
+	mu.Lock()
+	body := string(firstBody)
+	mu.Unlock()
+	if !strings.Contains(body, "ATTACHMENT-CONTEXT-BLOCK") {
+		t.Errorf("chat agent request missing attachment context: %s", body)
+	}
+	if !strings.Contains(body, `"role":"system"`) {
+		t.Errorf("context was not sent as a system message: %s", body)
+	}
+}
+
+// TestStreamAgentResponsesIncludesContext is the responses-dialect counterpart.
+func TestStreamAgentResponsesIncludesContext(t *testing.T) {
+	var mu sync.Mutex
+	var firstBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		if firstBody == nil {
+			firstBody = body
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w,
+			"event: response.output_text.delta\ndata: {\"delta\":\"ok\"}\n\n",
+			"event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"output\":[]}}\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	c := &Client{hc: srv.Client(), baseURL: srv.URL}
+	collectEvents(t, c.StreamAgent(context.Background(), Params{
+		Dialect:  "responses",
+		Model:    "test",
+		APIKey:   "k",
+		Context:  "ATTACHMENT-CONTEXT-BLOCK",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "x"}}},
+	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }))
+
+	mu.Lock()
+	body := string(firstBody)
+	mu.Unlock()
+	if !strings.Contains(body, "ATTACHMENT-CONTEXT-BLOCK") {
+		t.Errorf("responses agent request missing attachment context: %s", body)
+	}
+	if !strings.Contains(body, `"role":"system"`) {
+		t.Errorf("context was not sent as a system message: %s", body)
+	}
+}

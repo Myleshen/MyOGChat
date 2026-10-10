@@ -45,6 +45,10 @@ func (c *Client) StreamAgent(ctx context.Context, p Params, exec ExecuteTool) <-
 // agentChat runs the agentic loop for the chat-completions dialect.
 func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, send func(Event) bool) error {
 	msgs := make([]any, 0, len(p.Messages)+2)
+	if p.Context != "" {
+		// Attachment text (2.3) is leading context, exactly as in streamChat.
+		msgs = append(msgs, map[string]any{"role": "system", "content": p.Context})
+	}
 	if p.Instructions != "" {
 		msgs = append(msgs, map[string]any{"role": "system", "content": p.Instructions})
 	}
@@ -160,6 +164,10 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, send
 // agentResponses runs the agentic loop for the responses dialect.
 func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool, send func(Event) bool) error {
 	input := make([]any, 0, len(p.Messages)+2)
+	if p.Context != "" {
+		// Attachment text (2.3) is leading context, exactly as in streamResponses.
+		input = append(input, map[string]any{"role": "system", "content": p.Context})
+	}
 	for _, m := range p.Messages {
 		input = append(input, map[string]any{"role": m.Role, "content": m.Content})
 	}
