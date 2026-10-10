@@ -170,10 +170,91 @@ merges sequentially and resolves the small additive conflicts in shared files
 - **Batch 1 (parallel, done):** 2.2 Groups · 2.3 Files/PDF · 2.4+2.8 Tools & web/URL/Linkwarden
 - **Batch 2 (parallel, done):** 2.6 Python sandbox · 2.7 Bash sandbox · 2.5 OCR · 2.9 Settings page
   · multi-provider web search (2.4 extension)
+- **Batch 3 (scoped, not started):** 2.10 tool activity · 2.11 usage/quotas ·
+  2.12 Serper + Brave llm/context · 2.13 vision-model OCR
 
 ---
 
-## Phase 3 (broad / exploratory — not planned yet)
+## Phase 2.x — polish & extensions (scoped, approved, not started)
 
-- Image generation
-- Personal tools: IMAP email, calendar, maps, etc.
+> Scoped and ready to build as the next parallel batch. **Not implemented yet.**
+
+### 2.10 Persist tool activity
+- **Problem:** the inline tool block (`web_search · done · …`) is rendered live
+  from SSE `tool` events but never stored, so it disappears on reload/re-render.
+- **Plan:** add `messages.tools TEXT` (JSON array of `{name,status,summary}`),
+  mirroring `messages.attachments` (2.3). The server collects `EventTool` events
+  during a reply and saves them with the assistant message; the SPA's existing
+  `buildToolsBlock(m.tools)` then renders them after reload.
+- **Files:** `internal/store/store.go` (migration + struct), `internal/server/chat.go`
+  (collect + persist), `static/app.js` (merge live + persisted), docs.
+- **Effort:** small. **Value:** high (UX + testability).
+
+### 2.11 Usage & quota accounting
+- **Goal:** per-user token/cost visibility, plus optional admin-set caps.
+- **Data:** every message already stores `prompt_tokens`, `completion_tokens`,
+  `cached_tokens`, `cost_micros` — usage is an aggregate query (no new table at
+  personal scale; add an index on `conversations.user_id` if needed).
+- **API:** `GET /api/me/usage?range=7d|30d|all` → totals by day/model; admin
+  `GET /api/users/usage`. **Quotas:** admin settings `daily_token_limit` /
+  `monthly_cost_limit` (0 = off) enforced in `streamReply` before the upstream
+  call with a clear error; optional per-user overrides.
+- **UI:** a **Usage** section in Settings (own usage; admins see all users + the
+  quota controls).
+- **Files:** new `internal/server/usage.go`, store aggregates, settings fields,
+  `static/app.js`/`style.css`, docs. **Effort:** medium. **Value:** high once keys
+  are shared.
+
+### 2.12 Search providers — Serper + Brave `llm/context`
+- The `SearchProvider` interface (`internal/tools/search.go`) makes this small.
+- **Serper.dev** (`SERPER_API_KEY`, `POST https://google.serper.dev/search`,
+  header `X-API-KEY`) → Google-grade results; add to the chain
+  (Tavily → Brave → Serper → DDG, order configurable). **Brave `llm/context`**
+  (`GET /res/v1/llm/context`, same `X-Subscription-Token`) returns RAG-ready
+  snippets — an optional "search+context" mode.
+- **UI:** Serper key field + provider list in Settings → Integrations.
+- **Files:** `internal/tools/search.go`, `internal/server/integrations.go`,
+  `main.go`, `static/app.js`, docs. **Effort:** small–medium.
+
+### 2.13 Vision-model OCR (alternative engine)
+- **Finding:** OpenCode Go exposes vision **input** models — `gpt-6-luna`
+  (responses dialect; input = text, image, pdf) and `deepseek-v4-flash-vision-exp`
+  (chat). They can transcribe images, so OCR can optionally run through a vision
+  model instead of (or in addition to) Tesseract.
+- **Plan:** `internal/ocr.Engine` already exists — add a `VisionModel` engine that
+  sends the image as a content part and asks for verbatim transcription. Use when
+  Docker/Tesseract is unavailable, or for handwriting/figures. Trade-off: token
+  cost + a vision-capable model.
+- **Files:** `internal/ocr`, `internal/upstream` (image content parts), settings,
+  docs. **Effort:** medium.
+
+---
+
+## Phase 3 (scoped — exploratory, not scheduled)
+
+### 3.1 Image generation
+- **Key finding:** **OpenCode Go does not provide image generation.** Its models
+  output **text only** — `gpt-6-luna` accepts image *input* (vision) but returns
+  text; there is no image-output model in the registry or the OpenCode Go docs.
+- **So it needs a separate image provider** (BYOK), e.g.:
+  - **OpenAI Images API** (`gpt-image-1` / "GPT Image 2.5") — hosted, pay-per-image.
+  - **Replicate / fal.ai** (Flux, SDXL, …) — hosted, many models.
+  - **Self-hosted** ComfyUI / SDXL — needs a GPU (the Pi 4B can't do it well).
+- **Plan:** a new provider abstraction + `POST /api/images` (prompt, size, model),
+  store generated images as attachments, render in chat, track cost.
+- **Effort:** medium–large. **Blocker:** needs a chosen image provider + key.
+
+### 3.2 IMAP email
+- Read/search/send mail from a connected mailbox. **Needs:** IMAP + SMTP
+  credentials stored encrypted (`internal/secret`), TLS, app-passwords; a Settings
+  section + `email_*` tools.
+- **Effort:** medium–large. **Risk:** credential handling + provider quirks.
+
+### 3.3 Calendar
+- CalDAV client (Radicale / Nextcloud / Google) → list/create events; a
+  `calendar_*` tool + a Settings section. **Effort:** medium.
+
+### 3.4 Maps
+- Geocoding / directions / places via a provider (OpenStreetMap Nominatim + OSRM
+  are keyless; Mapbox/Google are keyed). A `maps_*` tool reusing the 2.4 loop.
+- **Effort:** small–medium.
