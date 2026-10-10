@@ -374,6 +374,35 @@
       </section>
       <!-- ==== END per-user web search ==== -->
 
+      <!-- ==== BEGIN per-user Linkwarden (2.8) — self-contained, safe to relocate ==== -->
+      <!-- Visible to all users (not admin-only): each user connects their own instance. -->
+      <section id="linkwarden-section" class="settings-section settings-linkwarden">
+        <h2 class="settings-heading">Linkwarden</h2>
+        <p class="settings-subtitle-sm">
+          Connect your own Linkwarden instance so the assistant can search your
+          saved links and save new ones.
+        </p>
+        <form id="linkwarden-form" class="add-user-form" autocomplete="off">
+          <label class="field">
+            <span class="field-label">Instance URL</span>
+            <input id="linkwarden-url" type="url" autocomplete="off"
+                   placeholder="https://links.example.com">
+          </label>
+          <label class="field">
+            <span class="field-label">API token</span>
+            <input id="linkwarden-token" type="password" autocomplete="off"
+                   placeholder="Leave blank to keep the stored token">
+          </label>
+          <p id="linkwarden-status" class="settings-subtitle-sm">Not configured.</p>
+          <p id="linkwarden-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button type="button" id="linkwarden-clear" class="btn btn-ghost">Disconnect</button>
+          </div>
+        </form>
+      </section>
+      <!-- ==== END per-user Linkwarden ==== -->
+
       <!-- Calendar (per-user, feature 3.3) — self-contained block; safe to relocate -->
       <section id="calendar-section" class="settings-section settings-calendar">
         <h2 class="settings-heading">Calendar</h2>
@@ -507,24 +536,6 @@
           </div>
         </div>
         <!-- maps:end -->
-        <form id="linkwarden-form" class="add-user-form" autocomplete="off">
-          <p class="settings-subtitle settings-subtitle-sm">Linkwarden</p>
-          <label class="field">
-            <span class="field-label">Instance URL</span>
-            <input id="linkwarden-url" type="url" autocomplete="off"
-                   placeholder="https://links.example.com">
-          </label>
-          <label class="field">
-            <span class="field-label">API token</span>
-            <input id="linkwarden-token" type="password" autocomplete="off" placeholder="Token">
-          </label>
-          <p id="linkwarden-status" class="settings-subtitle-sm">Not configured.</p>
-          <p id="linkwarden-error" class="login-error" role="alert" hidden></p>
-          <div class="key-actions">
-            <button type="submit" class="btn btn-primary">Save</button>
-            <button type="button" id="linkwarden-clear" class="btn btn-ghost">Clear</button>
-          </div>
-        </form>
         <!-- ===== Image generation (feature 3.1) — self-contained block; safe to relocate ===== -->
         <div id="imagegen-block" class="imagegen-block">
           <p class="settings-subtitle settings-subtitle-sm">Image generation</p>

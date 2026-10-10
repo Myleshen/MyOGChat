@@ -118,6 +118,28 @@ func TestLinkwardenSaveErrorResponse(t *testing.T) {
 	}
 }
 
+func TestLinkwardenCheck(t *testing.T) {
+	// A 2xx authenticated search is accepted.
+	c, _ := newTestLinkwarden(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			t.Errorf("auth = %q", r.Header.Get("Authorization"))
+		}
+		io.WriteString(w, `{"data":{"links":[]}}`)
+	})
+	if err := c.Check(context.Background()); err != nil {
+		t.Fatalf("Check(ok): %v", err)
+	}
+
+	// A 401 is surfaced as an error.
+	bad, _ := newTestLinkwarden(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"message":"unauthorized"}`)
+	})
+	if err := bad.Check(context.Background()); err == nil {
+		t.Fatal("Check(401) should error")
+	}
+}
+
 func TestLinkwardenToolsFormat(t *testing.T) {
 	c, _ := newTestLinkwarden(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/search") {

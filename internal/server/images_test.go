@@ -59,7 +59,7 @@ func newImageTestServer(t *testing.T, comfyURL string) (*Server, *store.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 	a := auth.New(st, []byte("test-session-secret"))
-	srv := New(st, upstream.NewClient(), a, nil, slog.Default(), testEncKey(), "", SearchDefaults{}, GeoDefaults{}, nil, nil, "", false, SpeechDefaults{}, comfyURL, "")
+	srv := New(st, upstream.NewClient(), a, nil, slog.Default(), testEncKey(), "", SearchDefaults{}, GeoDefaults{}, nil, nil, "", false, SpeechDefaults{}, comfyURL, "", "", "")
 	return srv, st
 }
 

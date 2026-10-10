@@ -110,6 +110,12 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	if !userCols["serper_key_enc"] {
 		t.Error("migration did not add users.serper_key_enc")
 	}
+	if !userCols["linkwarden_url"] {
+		t.Error("migration did not add users.linkwarden_url")
+	}
+	if !userCols["linkwarden_token_enc"] {
+		t.Error("migration did not add users.linkwarden_token_enc")
+	}
 
 	// The first admin claims the ownerless legacy rows.
 	u := seedUser(t, s, "u1", "admin", true)
@@ -153,6 +159,48 @@ func TestUserSerperKeyRoundTrip(t *testing.T) {
 	got, _ = s.GetUserByID(ctx, u.ID)
 	if got.SerperKeyEnc != nil {
 		t.Fatalf("SerperKeyEnc = %v, want nil", got.SerperKeyEnc)
+	}
+}
+
+// TestUserLinkwardenRoundTrip stores and clears a per-user Linkwarden config
+// and confirms it is scoped to the owning user (2.8).
+func TestUserLinkwardenRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-lw-alice", "alice", false)
+	bob := seedUser(t, s, "u-lw-bob", "bob", false)
+
+	enc := "ciphertext"
+	if err := s.SetUserLinkwarden(ctx, alice.ID, "https://links.example.com", &enc, 42); err != nil {
+		t.Fatalf("SetUserLinkwarden: %v", err)
+	}
+	got, err := s.GetUserByID(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if got.LinkwardenURL == nil || *got.LinkwardenURL != "https://links.example.com" {
+		t.Fatalf("LinkwardenURL = %v, want the stored url", got.LinkwardenURL)
+	}
+	if got.LinkwardenTokenEnc == nil || *got.LinkwardenTokenEnc != "ciphertext" {
+		t.Fatalf("LinkwardenTokenEnc = %v, want ciphertext", got.LinkwardenTokenEnc)
+	}
+	if got.UpdatedAt != 42 {
+		t.Errorf("UpdatedAt = %d, want 42", got.UpdatedAt)
+	}
+
+	// The other user is unaffected (scoping).
+	other, _ := s.GetUserByID(ctx, bob.ID)
+	if other.LinkwardenURL != nil || other.LinkwardenTokenEnc != nil {
+		t.Fatalf("bob's Linkwarden = %v / %v, want nil", other.LinkwardenURL, other.LinkwardenTokenEnc)
+	}
+
+	// Clearing both sets NULL.
+	if err := s.SetUserLinkwarden(ctx, alice.ID, "", nil, 43); err != nil {
+		t.Fatalf("SetUserLinkwarden(clear): %v", err)
+	}
+	got, _ = s.GetUserByID(ctx, alice.ID)
+	if got.LinkwardenURL != nil || got.LinkwardenTokenEnc != nil {
+		t.Fatalf("Linkwarden not cleared: %v / %v", got.LinkwardenURL, got.LinkwardenTokenEnc)
 	}
 }
 

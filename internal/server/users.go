@@ -257,8 +257,6 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		AllowRegistration *bool   `json:"allow_registration"`
 		ShareServerKey    *bool   `json:"share_server_key"`
 		ToolsEnabled      *bool   `json:"tools_enabled"`
-		LinkwardenURL     *string `json:"linkwarden_url"`
-		LinkwardenToken   *string `json:"linkwarden_token"`
 		SearchProvider    *string `json:"search_provider"`
 		BraveKey          *string `json:"brave_key"`
 		BraveMode         *string `json:"brave_mode"`
@@ -356,19 +354,6 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.st.SetSetting(r.Context(), upd.key, strings.TrimSpace(*upd.val)); err != nil {
 			s.log.Error("set "+upd.key, "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to update settings")
-			return
-		}
-	}
-	if req.LinkwardenURL != nil || req.LinkwardenToken != nil {
-		rawURL := ""
-		if req.LinkwardenURL != nil {
-			rawURL = *req.LinkwardenURL
-		} else if v, _, err := s.st.GetSetting(r.Context(), settingLinkwardenURL); err == nil {
-			rawURL = v
-		}
-		if err := s.setLinkwarden(r.Context(), rawURL, req.LinkwardenToken); err != nil {
-			s.log.Error("set linkwarden settings", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
 		}

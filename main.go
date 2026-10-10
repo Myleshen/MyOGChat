@@ -26,6 +26,7 @@ import (
 	"myogchat/internal/models"
 	"myogchat/internal/ocr"
 	"myogchat/internal/sandbox"
+	"myogchat/internal/secret"
 	"myogchat/internal/server"
 	"myogchat/internal/speech"
 	"myogchat/internal/store"
@@ -86,6 +87,10 @@ type config struct {
 	// Self-hosted image generation (feature 3.1).
 	imagegenURL   string
 	imagegenToken string
+
+	// Per-user Linkwarden (2.8) optional env fallback (both required to apply).
+	linkwardenURL   string
+	linkwardenToken string
 }
 
 func main() {
@@ -128,7 +133,7 @@ func resolveDBPath() (string, error) {
 // runUserCmd implements `myogchat user <add|rm|list>` against the database.
 func runUserCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: myogchat user <add|rm|list>")
+		return errors.New("usage: myogchat user <add|rm|list|setkey>")
 	}
 	path, err := resolveDBPath()
 	if err != nil {
@@ -200,8 +205,139 @@ func runUserCmd(args []string) error {
 		}
 		fmt.Printf("removed user %s\n", u.Username)
 		return nil
+
+	case "setkey":
+		return runSetKeyCmd(ctx, st, args[1:])
 	}
 	return fmt.Errorf("unknown user subcommand %q", args[0])
+}
+
+// runSetKeyCmd implements `myogchat user setkey --username <name>` to set the
+// per-user secrets (Serper key, Linkwarden URL/token) directly in the database
+// without a session. Secrets are encrypted with internal/secret using the DB
+// `encryption_key` setting. An empty value clears that field; secrets are never
+// printed (only a redacted confirmation).
+func runSetKeyCmd(ctx context.Context, st *store.Store, args []string) error {
+	fs := flag.NewFlagSet("setkey", flag.ContinueOnError)
+	username := fs.String("username", "", "username or email")
+	serper := fs.String("serper", "", "Serper API key (empty clears)")
+	lwURL := fs.String("linkwarden-url", "", "Linkwarden instance URL (empty clears)")
+	lwToken := fs.String("linkwarden-token", "", "Linkwarden API token (empty clears)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *username == "" {
+		return errors.New("--username is required")
+	}
+	setSerper := flagWasSet(fs, "serper")
+	setLWURL := flagWasSet(fs, "linkwarden-url")
+	setLWToken := flagWasSet(fs, "linkwarden-token")
+	if !setSerper && !setLWURL && !setLWToken {
+		return errors.New("specify at least one of --serper, --linkwarden-url, --linkwarden-token")
+	}
+	u, err := st.GetUserByIdentifier(ctx, *username)
+	if err != nil {
+		return err
+	}
+	// The AES key is the DB-stored encryption_key, shared with the server; it
+	// is generated once (like the server's first run) if it is missing.
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	encKey, err := ensureSecret(ctx, st, log, encryptionKey)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UnixMilli()
+	parts := make([]string, 0, 3)
+
+	if setSerper {
+		var enc *string
+		if key := strings.TrimSpace(*serper); key != "" {
+			e, err := secret.Encrypt(encKey, []byte(key))
+			if err != nil {
+				return err
+			}
+			enc = &e
+		}
+		if err := st.SetUserSerperKey(ctx, u.ID, enc, now); err != nil {
+			return err
+		}
+		parts = append(parts, "serper="+setCleared(enc))
+	}
+
+	if setLWURL || setLWToken {
+		cur, err := st.GetUserByID(ctx, u.ID)
+		if err != nil {
+			return err
+		}
+		newURL := ""
+		if cur.LinkwardenURL != nil {
+			newURL = *cur.LinkwardenURL
+		}
+		if setLWURL {
+			newURL = strings.TrimSpace(*lwURL)
+		}
+		tokenEnc := cur.LinkwardenTokenEnc
+		tokenState := ""
+		if setLWToken {
+			if raw := strings.TrimSpace(*lwToken); raw != "" {
+				e, err := secret.Encrypt(encKey, []byte(raw))
+				if err != nil {
+					return err
+				}
+				tokenEnc = &e
+				tokenState = "set (hint …" + secretHint(raw) + ")"
+			} else {
+				tokenEnc = nil
+				tokenState = "cleared"
+			}
+		}
+		if err := st.SetUserLinkwarden(ctx, u.ID, newURL, tokenEnc, now); err != nil {
+			return err
+		}
+		if setLWURL {
+			if newURL == "" {
+				parts = append(parts, "linkwarden_url=cleared")
+			} else {
+				parts = append(parts, "linkwarden_url="+newURL)
+			}
+		}
+		if setLWToken {
+			parts = append(parts, "linkwarden_token="+tokenState)
+		}
+	}
+
+	fmt.Printf("updated keys for %s: %s\n", u.Username, strings.Join(parts, " "))
+	return nil
+}
+
+// flagWasSet reports whether a flag was explicitly provided on the command
+// line (so an empty value can clear a field, distinct from omitted).
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+// setCleared renders a redacted set/cleared state for a nullable encrypted
+// field (never the secret itself).
+func setCleared(enc *string) string {
+	if enc == nil || *enc == "" {
+		return "cleared"
+	}
+	return "set"
+}
+
+// secretHint returns the last 4 characters of a secret for display only.
+func secretHint(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= 4 {
+		return ""
+	}
+	return s[len(s)-4:]
 }
 
 // uuid returns a random RFC 4122 v4 UUID (for CLI-created rows).
@@ -256,6 +392,9 @@ func loadConfig() (config, error) {
 		// admin can also set the URL/token in Settings → Integrations.
 		imagegenURL:   os.Getenv("MYOGCHAT_IMAGEGEN_URL"),
 		imagegenToken: os.Getenv("MYOGCHAT_IMAGEGEN_TOKEN"),
+		// Per-user Linkwarden (2.8) env fallback; each user can store their own.
+		linkwardenURL:   os.Getenv("LINKWARDEN_URL"),
+		linkwardenToken: os.Getenv("LINKWARDEN_TOKEN"),
 	}
 	if v := os.Getenv("MYOGCHAT_OCR_TIMEOUT"); v != "" {
 		d, err := parseOCRDuration(v)
@@ -574,7 +713,8 @@ func run(cfg config, log *slog.Logger) error {
 		Region:   cfg.mapsRegion,
 		Units:    cfg.mapsUnits,
 		Limit:    cfg.mapsLimit,
-	}, sbx, ocrEngine, ocrEngineName, vision != nil, cfg.speech, cfg.imagegenURL, cfg.imagegenToken)
+	}, sbx, ocrEngine, ocrEngineName, vision != nil, cfg.speech, cfg.imagegenURL, cfg.imagegenToken,
+		cfg.linkwardenURL, cfg.linkwardenToken)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -615,6 +755,8 @@ func run(cfg config, log *slog.Logger) error {
 		"tts_url", cfg.speech.TTSURL,
 		"tts_format", cfg.speech.TTSFormat,
 		"imagegen_url", cfg.imagegenURL,
+		"linkwarden_url", cfg.linkwardenURL,
+		"linkwarden_token", cfg.linkwardenToken != "",
 	)
 
 	errc := make(chan error, 1)

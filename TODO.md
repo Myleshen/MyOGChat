@@ -136,8 +136,14 @@ key when sharing is allowed.
 ### 2.8 URL summarization + Linkwarden integration — ✅ done (deployed)
 - **Summarize a URL**: fetch → extract readable text → summarize (a `fetch_url`
   tool in the 2.4 loop).
-- **Linkwarden**: connect to the owner's instance (URL + token in settings) to
-  search saved links and save new ones directly from a chat.
+- **Linkwarden is per-user** (owner request): each user connects their own
+  instance (`users.linkwarden_url` + encrypted `users.linkwarden_token_enc`) via
+  `GET/PUT/DELETE /api/me/linkwarden` and a self-contained Settings section; the
+  tools (`linkwarden_search`/`linkwarden_save`) are registered from the caller's
+  config, with an optional `LINKWARDEN_URL`/`LINKWARDEN_TOKEN` env fallback. The
+  admin-global Linkwarden settings are removed. Operators can provision a user's
+  secrets with `myogchat user setkey` (no login). See `docs/2.8-linkwarden.md`
+  and `API_CONTRACT.md` §17.
 
 ### 2.9 Full settings page (not a popup) — ✅ done (deployed)
 - Settings is now a dedicated, mobile-first **page** at the hash route

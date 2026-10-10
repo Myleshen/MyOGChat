@@ -538,8 +538,7 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "brave_configured": bool, "serper_configured": bool,
    "search_provider": "auto"|"tavily"|"brave"|"serper"|"ddg",
    "search_active": "tavily"|"brave"|"serper"|"ddg",
-   "brave_mode": "web"|"context", "linkwarden_url": string,
-   "linkwarden_configured": bool, "linkwarden_token_hint": string,
+   "brave_mode": "web"|"context",
    "sandbox_enabled": bool, "sandbox_available": bool,
    "ocr_enabled": bool, "ocr_available": bool,
    "ocr_engine": "tesseract"|"vision"|"auto"|"none", "ocr_vision_available": bool,
@@ -550,12 +549,12 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "tts_enabled": bool, "tts_available": bool, "tts_url": string, "tts_voice": string,
    "imagegen_url": string, "imagegen_configured": bool,
    "imagegen_available": bool, "imagegen_token_hint": string}`
-  (`share_server_key` §2.1; tools/Linkwarden §2.4/2.8; search §8.9; sandbox §10;
+  (`share_server_key` §2.1; tools §2.4; search §8.9; sandbox §10;
    OCR §8.10; quotas §11; maps §12; calendar §13; speech §14; email §15;
-   image generation §16)
+   image generation §16. Linkwarden is **per-user** — see §17)
 - `PATCH /api/settings` accepts any subset of
   `{"allow_registration"?: bool, "share_server_key"?: bool,
-   "tools_enabled"?: bool, "linkwarden_url"?: string, "linkwarden_token"?: string,
+   "tools_enabled"?: bool,
    "search_provider"?: "auto"|"tavily"|"brave"|"serper"|"ddg", "brave_key"?: string,
    "brave_mode"?: "web"|"context", "sandbox_enabled"?: bool, "ocr_enabled"?: bool,
    "daily_token_limit"?: int, "monthly_cost_limit"?: int,
@@ -566,8 +565,8 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "imagegen_url"?: string, "imagegen_token"?: string}`
   → `200` (same shape as GET). Unknown `search_provider` values normalize to
   `auto`; unknown `brave_mode` values normalize to `web`; `brave_key: ""` clears
-  the stored (encrypted) key; omitted `linkwarden_token`/`brave_key`/
-  `imagegen_token` leave the stored value untouched (`imagegen_token: ""` clears
+  the stored (encrypted) key; omitted `brave_key`/`imagegen_token` leave the
+  stored value untouched (`imagegen_token: ""` clears
   it); quota limits must be `>= 0` (negative → `400`). Unknown `maps_provider`
   values normalize to `auto` (which still resolves to OSM); `maps_units`
   normalizes to `metric`|`imperial`; `maps_region: ""` clears it.
@@ -983,3 +982,43 @@ Assistant messages may include `"images": [{"id","prompt","mime","width","height
 (§8.4); the SPA renders `<img src="/api/images/{id}">`. The retention janitor
 purges images older than the retention window alongside conversations and
 attachments.
+
+## 17. Linkwarden (per-user, 2.8)
+
+Each user connects **their own** Linkwarden instance (URL + API token); the
+`linkwarden_search` / `linkwarden_save` tools are registered per request from the
+**caller's** config (like the email/calendar tools). The old admin-global
+`linkwarden_url` / `linkwarden_token` settings are **removed**; the optional
+server-wide env fallback `LINKWARDEN_URL` + `LINKWARDEN_TOKEN` (both must be set)
+is used only when the caller has not stored their own instance.
+
+### 17.1 Schema (additive)
+
+```sql
+-- users gains:
+--   linkwarden_url       TEXT   -- instance origin (not secret)
+--   linkwarden_token_enc TEXT   -- AES-256-GCM token (internal/secret)
+```
+
+### 17.2 Endpoints (session required, per-user, all users)
+
+- `GET /api/me/linkwarden` → `200 {"configured": bool, "url": string,
+  "token_hint": string}`. `configured` is true when the caller's own instance or
+  the env fallback resolves; `token_hint` is the last 4 chars of the effective
+  token (never the token).
+- `PUT /api/me/linkwarden` `{"url": string, "token"?: string}` → `200` (same
+  shape as GET, `configured:true`). The URL is normalized
+  (`NormalizeBaseURL`) and the URL + token are validated with a lightweight
+  authenticated request; a failure is `400`. `token` omitted/empty keeps the
+  caller's stored token; the stored token is encrypted. `400` on a missing URL
+  or when no token is available.
+- `DELETE /api/me/linkwarden` → `204` (clears the caller's own URL + token; the
+  env fallback is unaffected).
+
+### 17.3 CLI
+
+`myogchat user setkey --username <name> [--serper <key>]
+[--linkwarden-url <url>] [--linkwarden-token <token>]` sets per-user secrets
+directly in the DB (no login), encrypting with `internal/secret` (key = the DB
+`encryption_key` setting). An empty value clears that field; omitted fields are
+untouched. Output is redacted (never the secret).

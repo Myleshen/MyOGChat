@@ -101,6 +101,9 @@ scripts/test-user.sh add --username uitest --email uitest@example.com --password
 scripts/test-user.sh rm  --username uitest
 scripts/test-user.sh list
 #   (same CLI on the Pi: ~/softwares/MyOGChat/myogchat user add|rm|list)
+# per-user secrets, no login (encrypted with internal/secret):
+#   myogchat user setkey --username <name> [--serper <key>] \
+#     [--linkwarden-url <url>] [--linkwarden-token <token>]
 ```
 
 ## Testing (UI/UX is a gate — use agent-browser)
@@ -140,7 +143,7 @@ fix, deploy.
 | 2.2 | Groups & shared keys | ✅ shipped |
 | 2.3 | Files & PDF attachments | ✅ shipped |
 | 2.4 | Tools + web search | ✅ shipped (**web_search** is provider-agnostic: Tavily → Brave → Serper → DuckDuckGo fallback; DuckDuckGo needs no key. Serper + Brave `llm/context` added in 2.12) |
-| 2.8 | URL summarization + Linkwarden | ✅ shipped (Linkwarden needs instance URL + token in Settings) |
+| 2.8 | URL summarization + Linkwarden | ✅ shipped (**Linkwarden is per-user** — each user sets their own instance URL + token in Settings; optional `LINKWARDEN_URL`/`LINKWARDEN_TOKEN` env fallback) |
 | 2.5 | OCR for images | ✅ shipped (`DockerTesseract`; needs `deploy/ocr-setup.sh` on the host) |
 | 2.6 | **Python sandbox** | ✅ shipped (`run_python`, hardened Docker sandbox; needs `deploy/sandbox-setup.sh` on the host) |
 | 2.7 | **Bash sandbox** | ✅ shipped (`run_bash`, same engine) |
@@ -164,7 +167,10 @@ limiter and a SQLite result cache. Not yet merged/deployed.
   setting) and a per-user Serper key give higher-quality results; the provider is
   selectable in Settings → Integrations (`search_provider`). Serper + Brave
   `llm/context` (2.12) are on branch `feat/search-providers2` (not merged).
-  `fetch_url` + Linkwarden are independent.
+  `fetch_url` + Linkwarden are independent; **Linkwarden is now per-user**
+  (`GET/PUT/DELETE /api/me/linkwarden`, `users.linkwarden_*` columns) with an
+  optional `LINKWARDEN_URL`/`LINKWARDEN_TOKEN` env fallback. Operators can set a
+  user's keys with `myogchat user setkey` (see `docs/2.8-linkwarden.md`).
 - **Group key-sharing** is unit-tested (`internal/server/keys_test.go`) but a full
   live "member uses the owner's key" round-trip hasn't been done.
 - **PDF** is unit-tested (+ a fixture) and the UI attach/send works; a real

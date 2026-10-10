@@ -155,6 +155,7 @@ const mySerperForm = document.getElementById("my-serper-form");
 const mySerperKey = document.getElementById("my-serper-key");
 const mySerperError = document.getElementById("my-serper-error");
 const mySerperClear = document.getElementById("my-serper-clear");
+/* Per-user Linkwarden block (2.8; visible to all users, not admin-only). */
 const linkwardenForm = document.getElementById("linkwarden-form");
 const linkwardenUrl = document.getElementById("linkwarden-url");
 const linkwardenToken = document.getElementById("linkwarden-token");
@@ -821,6 +822,7 @@ function showSettingsPage() {
   loadGroups().catch(() => {});
   loadUsage().catch(() => {}); /* usage & quotas (2.11) */
   loadMySearch().catch(() => {}); /* per-user web search (2.12) */
+  loadMyLinkwarden().catch(() => {}); /* per-user Linkwarden (2.8) */
   loadCalendarStatus().catch(() => {});
   loadMail().catch(() => {}); /* email (feature 3.2) — per-user, all users */
   if (isAdmin) {
@@ -1062,13 +1064,6 @@ function applyIntegrationSettings(s) {
   if (!s) return;
   if (settingToolsEnabled) settingToolsEnabled.checked = s.tools_enabled !== false;
   applySearchSettings(s);
-  if (linkwardenUrl) linkwardenUrl.value = s.linkwarden_url || "";
-  if (linkwardenToken) linkwardenToken.value = "";
-  if (linkwardenStatus) {
-    linkwardenStatus.textContent = s.linkwarden_configured
-      ? "Configured" + (s.linkwarden_token_hint ? " (token …" + s.linkwarden_token_hint + ")" : "") + "."
-      : "Not configured.";
-  }
 }
 
 /* Populate the self-contained web search block. */
@@ -1691,6 +1686,23 @@ async function toggleEmailEnabled() {
 }
 /* ==== END email ==== */
 
+/* ==== BEGIN per-user Linkwarden (2.8) — self-contained, safe to relocate ==== */
+/* Populate the per-user Linkwarden block from GET /api/me/linkwarden (all users). */
+async function loadMyLinkwarden() {
+  if (!linkwardenStatus) return;
+  try {
+    const s = await api("/api/me/linkwarden");
+    if (linkwardenUrl) linkwardenUrl.value = s.url || "";
+    if (linkwardenToken) linkwardenToken.value = "";
+    linkwardenStatus.textContent = s.configured
+      ? "Configured" + (s.token_hint ? " (token …" + s.token_hint + ")" : "") + "."
+      : "Not configured.";
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    linkwardenStatus.textContent = "Linkwarden: " + err.message;
+  }
+}
+
 async function saveLinkwarden(e) {
   if (e) e.preventDefault();
   setFormError(linkwardenError, "");
@@ -1700,47 +1712,40 @@ async function saveLinkwarden(e) {
     setFormError(linkwardenError, "Enter the Linkwarden instance URL.");
     return;
   }
-  const body = { linkwarden_url: url };
+  const body = { url };
   // Only send the token when provided so saving the URL keeps the stored one.
-  if (token) body.linkwarden_token = token;
+  if (token) body.token = token;
   const btn = linkwardenForm.querySelector('button[type="submit"]');
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   try {
-    const s = await api("/api/settings", {
-      method: "PATCH",
+    await api("/api/me/linkwarden", {
+      method: "PUT",
       headers: JSON_HEADERS,
       body: JSON.stringify(body),
     });
-    applyIntegrationSettings(s);
     toast("Linkwarden saved");
+    await loadMyLinkwarden();
   } catch (err) {
     if (err instanceof AuthError) return;
-    if (isForbidden(err)) {
-      toast("Admin access required");
-      return;
-    }
     setFormError(linkwardenError, err.message);
   } finally {
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   }
 }
 
 async function clearLinkwarden() {
-  if (!confirm("Clear the Linkwarden URL and token?")) return;
+  if (!confirm("Disconnect Linkwarden and clear your stored URL and token?")) return;
   setFormError(linkwardenError, "");
   try {
-    const s = await api("/api/settings", {
-      method: "PATCH",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ linkwarden_url: "", linkwarden_token: "" }),
-    });
-    applyIntegrationSettings(s);
-    toast("Linkwarden cleared");
+    await api("/api/me/linkwarden", { method: "DELETE" });
+    toast("Linkwarden disconnected");
+    await loadMyLinkwarden();
   } catch (err) {
     if (err instanceof AuthError) return;
-    toast(isForbidden(err) ? "Admin access required" : err.message);
+    setFormError(linkwardenError, err.message);
   }
 }
+/* ==== END per-user Linkwarden ==== */
 
 /* ===== Image generation (feature 3.1) — self-contained settings block ===== */
 /* Populate the admin Image generation block from GET /api/settings. */
