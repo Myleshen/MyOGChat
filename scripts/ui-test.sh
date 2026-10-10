@@ -118,6 +118,9 @@ assert "about section present" "document.getElementById('app-version').textConte
 assert "web search section present (all users)" "!!document.getElementById('my-search-section')"
 assert "calendar section present (all users)" "!!document.getElementById('calendar-section')"
 assert "email section present (all users)" "!!document.getElementById('email-section')"
+assert "settings category nav present" "!!document.querySelector('.settings-nav-item[data-cat=account]')"
+ab click ".settings-nav-item[data-cat=ai]" >/dev/null 2>&1; sleep 1
+assert "category switch shows key + groups" "!document.getElementById('key-section').classList.contains('cat-hidden') && !document.getElementById('groups-section').classList.contains('cat-hidden')"
 shot 07a-settings-top.png
 ab fill "#group-name" "UI Test Group" >/dev/null 2>&1
 ab click "#group-form button[type=submit]" >/dev/null 2>&1; sleep 1
@@ -125,6 +128,8 @@ assert "group created & listed" "document.getElementById('groups-list').textCont
 ab scrollintoview "#groups-section" >/dev/null 2>&1; sleep 1
 shot 07-settings.png
 cleanup "/api/groups" "UI Test Group"
+ab eval "document.querySelector('.settings-nav-item[data-cat=integrations]').click();'ok'" >/dev/null 2>&1; sleep 1
+assert "integrations category shows web search" "!document.getElementById('my-search-section').classList.contains('cat-hidden')"
 # In-page back affordance returns to the previous view.
 ab click "#settings-back" >/dev/null 2>&1; sleep 1
 assert "back button returns to chat" "document.getElementById('settings-page').hidden && !document.getElementById('app').hidden"
@@ -169,6 +174,7 @@ assert "code sandbox section visible for admin" "!document.getElementById('tools
 assert "ocr section visible for admin" "!document.getElementById('ocr-section').hidden"
 assert "usage section present" "!!document.getElementById('usage-section')"
 assert "voice section visible for admin" "!document.getElementById('voice-section').hidden"
+ab eval "document.querySelector('.settings-nav-item[data-cat=users]').click();'ok'" >/dev/null 2>&1; sleep 1
 ab scrollintoview "#users-section" >/dev/null 2>&1; sleep 1
 shot 10-admin.png
 ab click "#settings-back" >/dev/null 2>&1; sleep 1

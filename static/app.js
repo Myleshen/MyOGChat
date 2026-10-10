@@ -812,6 +812,116 @@ function applyRoute() {
   else hideSettingsPage();
 }
 
+/* ============================== Settings categories (4.4) ============================== */
+/* Group the settings sections into categories. Navigation is a left rail on
+   desktop/tablet and a horizontal chip bar on mobile; only the active category
+   is shown. Role visibility still uses the [hidden] attribute and is evaluated
+   separately, so a section shows only when it is both role-visible AND in the
+   active category. */
+const SETTINGS_CATEGORIES = [
+  { id: "account", label: "Account", icon: "👤", sections: ["account-section"] },
+  { id: "appearance", label: "Appearance", icon: "🎨", sections: ["appearance-section"] },
+  { id: "ai", label: "AI & access", icon: "🔑", sections: ["key-section", "groups-section"] },
+  {
+    id: "integrations",
+    label: "Integrations",
+    icon: "🔌",
+    sections: ["my-search-section", "linkwarden-section", "calendar-section", "email-section"],
+  },
+  {
+    id: "tools",
+    label: "Tools",
+    icon: "🧰",
+    sections: ["tools-section", "integrations-section", "ocr-section"],
+  },
+  { id: "voice", label: "Voice", icon: "🗣️", sections: ["voice-section"] },
+  { id: "usage", label: "Usage", icon: "📊", sections: ["usage-section"] },
+  { id: "users", label: "Users", icon: "👥", sections: ["users-section"] },
+  { id: "about", label: "About", icon: "ℹ️", sections: ["about-section"] },
+];
+
+let settingsCategory = "account";
+let settingsNavBuilt = false;
+
+/* Build the nav + content wrapper once, moving the existing sections into the
+   content pane so their ids and BEGIN/END blocks stay intact. */
+function buildSettingsNav() {
+  if (settingsNavBuilt) return;
+  const body = settingsPage.querySelector(".settings-body");
+  if (!body) return;
+  const nav = el("nav", "settings-nav");
+  nav.setAttribute("aria-label", "Settings categories");
+  const content = el("div", "settings-content");
+  body.querySelectorAll(":scope > .settings-section").forEach((s) => content.appendChild(s));
+  for (const cat of SETTINGS_CATEGORIES) {
+    const btn = el("button", "settings-nav-item");
+    btn.type = "button";
+    btn.dataset.cat = cat.id;
+    const icon = el("span", "settings-nav-icon");
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = cat.icon;
+    const label = el("span", "settings-nav-label");
+    label.textContent = cat.label;
+    btn.append(icon, label);
+    btn.addEventListener("click", () => selectSettingsCategory(cat.id));
+    nav.appendChild(btn);
+  }
+  body.append(nav, content);
+  for (const cat of SETTINGS_CATEGORIES) {
+    for (const id of cat.sections) {
+      const node = document.getElementById(id);
+      if (node) node.dataset.cat = cat.id;
+    }
+  }
+  settingsNavBuilt = true;
+}
+
+/* A category is navigable when at least one of its sections is role-visible. */
+function categoryHasVisibleSection(id) {
+  const cat = SETTINGS_CATEGORIES.find((c) => c.id === id);
+  if (!cat) return false;
+  return cat.sections.some((sid) => {
+    const n = document.getElementById(sid);
+    return n && !n.hidden;
+  });
+}
+
+/* Hide nav entries whose sections are all role-hidden (admin-only for others). */
+function refreshSettingsNav() {
+  for (const cat of SETTINGS_CATEGORIES) {
+    const btn = settingsPage.querySelector('.settings-nav-item[data-cat="' + cat.id + '"]');
+    if (btn) btn.hidden = !categoryHasVisibleSection(cat.id);
+  }
+}
+
+/* Show only the chosen category's sections. */
+function selectSettingsCategory(id) {
+  if (!categoryHasVisibleSection(id)) {
+    const first = SETTINGS_CATEGORIES.find((c) => categoryHasVisibleSection(c.id));
+    if (first) id = first.id;
+  }
+  settingsCategory = id;
+  settingsPage.querySelectorAll(".settings-nav-item").forEach((b) => {
+    const on = b.dataset.cat === id;
+    b.classList.toggle("active", on);
+    if (on) b.setAttribute("aria-current", "true");
+    else b.removeAttribute("aria-current");
+  });
+  settingsPage.querySelectorAll(".settings-section").forEach((s) => {
+    s.classList.toggle("cat-hidden", s.dataset.cat !== id);
+  });
+  const activeBtn = settingsPage.querySelector('.settings-nav-item[data-cat="' + id + '"]');
+  if (activeBtn && activeBtn.scrollIntoView) {
+    try {
+      activeBtn.scrollIntoView({ block: "nearest", inline: "center" });
+    } catch (e) {
+      /* scrollIntoView options unsupported — ignore */
+    }
+  }
+  const body = settingsPage.querySelector(".settings-body");
+  if (body) body.scrollTop = 0;
+}
+
 function showSettingsPage() {
   applySettingsToUI();
   renderAccount();
@@ -824,8 +934,9 @@ function showSettingsPage() {
   usageAdmin.hidden = !isAdmin; /* usage & quotas (2.11) */
   voiceSection.hidden = !isAdmin; /* voice / speech (3.5/3.6) */
   settingsPage.hidden = false;
-  const body = settingsPage.querySelector(".settings-body");
-  if (body) body.scrollTop = 0;
+  buildSettingsNav();
+  refreshSettingsNav();
+  selectSettingsCategory(settingsCategory);
   loadKeyStatus().catch(() => {});
   loadGroups().catch(() => {});
   loadUsage().catch(() => {}); /* usage & quotas (2.11) */
@@ -1087,7 +1198,7 @@ function applySearchSettings(s) {
     "DuckDuckGo: always available",
   ];
   const active = s.search_active ? s.search_active : "none";
-  searchStatus.textContent = "Active provider: " + active + " · " + providers.join(" · ");
+  searchStatus.textContent = "Server — active provider: " + active + " · " + providers.join(" · ");
 }
 
 /* Populate the self-contained maps block (3.4). */

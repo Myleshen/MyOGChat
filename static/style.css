@@ -1082,8 +1082,85 @@ button { font: inherit; }
   -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
+}
+
+/* ---- Settings categories / navigation (4.4) ---- */
+.settings-nav {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.settings-nav::-webkit-scrollbar { display: none; }
+.settings-nav-item {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.settings-nav-icon { font-size: 1rem; line-height: 1; }
+.settings-nav-item.active {
+  background: var(--accent-em);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.settings-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
   gap: 28px;
   padding: 20px 16px calc(32px + env(safe-area-inset-bottom, 0px));
+}
+.settings-section.cat-hidden { display: none; }
+
+@media (min-width: 768px) {
+  .settings-body { flex-direction: row; align-items: flex-start; }
+  .settings-nav {
+    align-self: flex-start;
+    flex: 0 0 210px;
+    width: 210px;
+    max-height: 100%;
+    flex-direction: column;
+    gap: 4px;
+    padding: 16px 12px;
+    border-bottom: none;
+    border-right: 1px solid var(--border);
+    overflow: visible;
+    overflow-y: auto;
+  }
+  .settings-nav-item {
+    width: 100%;
+    justify-content: flex-start;
+    border-radius: 8px;
+    border-color: transparent;
+    background: transparent;
+  }
+  .settings-content {
+    flex: 1;
+    min-width: 0;
+    padding: 24px 24px calc(40px + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 .settings-section {

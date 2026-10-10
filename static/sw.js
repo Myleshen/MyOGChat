@@ -2,7 +2,7 @@
    Cache-first for the static shell only; /api/* is always network-only. */
 "use strict";
 
-const CACHE = "myogchat-shell-v13";
+const CACHE = "myogchat-shell-v15";
 
 const SHELL = [
   "./",

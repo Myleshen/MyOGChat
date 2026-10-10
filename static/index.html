@@ -478,7 +478,11 @@
         <p id="tavily-status" class="settings-subtitle-sm">Tavily: loading…</p>
         <!-- web-search:start — self-contained web search block (safe to relocate) -->
         <div id="web-search-block" class="web-search-block">
-          <p class="settings-subtitle settings-subtitle-sm">Web search</p>
+          <p class="settings-subtitle settings-subtitle-sm">Server web search (admin)</p>
+          <p class="settings-subtitle-sm">
+            Server-wide provider and Brave key. Each user's own Serper key is set
+            under <strong>Integrations → Web search</strong>.
+          </p>
           <p id="search-status" class="settings-subtitle-sm">Web search: loading…</p>
           <label class="field">
             <span class="field-label">Provider</span>
@@ -486,7 +490,7 @@
               <option value="auto">Auto (Tavily → Brave → Serper → DuckDuckGo)</option>
               <option value="tavily">Tavily</option>
               <option value="brave">Brave</option>
-              <option value="serper">Serper (Google)</option>
+              <option value="serper">Serper (Google) — uses each user's key</option>
               <option value="ddg">DuckDuckGo</option>
             </select>
           </label>
