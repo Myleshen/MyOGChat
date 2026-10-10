@@ -1,8 +1,10 @@
 // Package extract turns an uploaded file into the plain text folded into a
 // model request (feature 2.3). Text/code/JSON/CSV/Markdown are decoded as UTF-8;
-// PDFs are parsed with the pure-Go github.com/ledongthuc/pdf library. Images are
-// handled by OCR (feature 2.5): the extractor stays Docker-free by delegating
-// to an injected ocr.OCRFunc.
+// PDFs are parsed with the pure-Go github.com/ledongthuc/pdf library.
+// Documents (Phase 4.5) are handled by documents.go: OOXML (.docx/.xlsx/.pptx),
+// Open Document (.odt/.ods/.odp), EPUB, and RTF, all via the standard library.
+// Images are handled by OCR (feature 2.5): the extractor stays Docker-free by
+// delegating to an injected ocr.OCRFunc.
 package extract
 
 import (
@@ -83,12 +85,15 @@ func Extract(name, mimeType string, data []byte) (string, error) {
 func ExtractWith(name, mimeType string, data []byte, ocrFn ocr.OCRFunc) (string, error) {
 	base := baseMime(mimeType)
 	ext := strings.ToLower(filepath.Ext(name))
+	kind := detectDocument(base, ext, data)
 
 	switch {
 	case isPDF(base, ext, data):
 		return extractPDF(data)
 	case isImage(base, ext):
 		return extractImage(data, ocrFn)
+	case kind != "":
+		return extractDocument(kind, data)
 	case isText(base, ext, data):
 		return extractText(data)
 	default:
