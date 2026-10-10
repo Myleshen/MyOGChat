@@ -211,7 +211,7 @@ merges sequentially and resolves the small additive conflicts in shared files
   `internal/server/{chat,users,server}.go`, `main.go`, `static/*`, tests, docs.
   Full notes: `docs/2.10-2.11-tool-activity-usage.md`.
 
-### 2.12 Search providers — Serper + Brave `llm/context` — ✅ done (branch `feat/search-providers2`)
+### 2.12 Search providers — Serper + Brave `llm/context` — ✅ done (deployed)
 - The `SearchProvider` interface (`internal/tools/search.go`) makes this small.
 - **Serper.dev** (`POST https://google.serper.dev/search`, header `X-API-KEY`,
   response `organic[].{title,link,snippet}` — `link`, not `url`) added as the 4th
