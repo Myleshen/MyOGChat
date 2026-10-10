@@ -2981,10 +2981,23 @@ function renderMessages() {
   state.currentMessages.forEach((m, i) => {
     if (m.role === "assistant") lastAssistant = i;
   });
+  const last = state.currentMessages.length - 1;
   state.currentMessages.forEach((m, i) => {
-    messagesEl.appendChild(
-      m.role === "user" ? buildUserMessage(m) : buildAssistantMessage(m, i === lastAssistant)
-    );
+    if (m.role === "user") {
+      const node = buildUserMessage(m);
+      // A conversation that ends on a user message (e.g. a restart interrupted
+      // the reply) gets a Retry affordance so the turn is recoverable.
+      if (i === last && lastAssistant < i) {
+        const footer = el("div", "msg-footer");
+        const actions = el("span", "msg-actions");
+        actions.appendChild(actionButton("Retry", () => regenerate()));
+        footer.appendChild(actions);
+        node.querySelector(".msg-bubble").appendChild(footer);
+      }
+      messagesEl.appendChild(node);
+    } else {
+      messagesEl.appendChild(buildAssistantMessage(m, i === lastAssistant));
+    }
   });
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }

@@ -289,6 +289,12 @@ empty:
   (`.mp3`, `.wav`, `.m4a`, `.ogg`, `.opus`, `.flac`, and `.mp4`, `.mov`, `.webm`,
   `.mkv`, …) are transcribed via the configured speech-to-text service (4.5).
   Legacy `.doc`/`.xls`/`.ppt` and `.msg` are reported as unsupported.
+  **Audio/video are transcribed asynchronously:** `POST /api/attachments` returns
+  `202` with `{"status":"pending"}`; the SPA polls `GET /api/attachments/{id}`
+  until `status` is `"ready"` (with `chars`/transcript) or `"error"` (with an
+  `error` message). A send (`POST /api/conversations/{id}/messages`) that
+  references a still-`pending` or `error` attachment returns `409`. Documents and
+  images are extracted synchronously and are always `"ready"` on return.
 - `tools` — assistant messages: `[{name,status,summary,args,output,error,duration_ms,truncated}]`
   tool activity (`status` ∈ `running` | `done` | `error`), so the inline tool block
   survives a reload. The server collects `event: tool` frames during a reply and

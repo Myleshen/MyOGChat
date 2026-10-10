@@ -176,7 +176,7 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 | 4.3b | `generate_image` model tool | ✅ done — the model calls `generate_image` mid-conversation; the image is stored owner-scoped and attached to the assistant message (`messages.images`), so it renders in chat and survives a reload. Live-verified: prompt written by the model, PNG served via `GET /api/images/{id}` |
 | 4.4 | Settings IA/UX overhaul | ✅ done — settings categorized (left nav rail ≥768px, horizontal chip bar on mobile) into Account / Appearance / AI & access / Integrations / Tools / Voice / Usage / Users / About; admin web-search block relabelled "Server web search (admin)"; per-user Serper under Integrations → Web search; UI battery 45/45 on mobile |
 | 4.5a | Document extraction | ✅ done — `internal/extract` handles `.docx/.xlsx/.pptx` (OOXML), `.odt/.ods/.odp` (ODF), `.epub`, `.rtf` with the standard library only (no new deps) |
-| 4.5b | Media transcription | ✅ done — audio/video attachments (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) transcribed via the configured speech-to-text service (`internal/extract.Options{OCR,Transcribe}`); **synchronous** (long media may exceed the tunnel timeout — async is future work) |
+| 4.5b | Media transcription | ✅ done — audio/video attachments (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) are transcribed via the configured speech-to-text service. **Asynchronous**: the upload returns `202 pending` and a bounded background worker fills in the transcript (so long clips never hit the tunnel timeout); the SPA polls until ready. Live-verified. |
 
 ## Known gaps / caveats (be honest)
 

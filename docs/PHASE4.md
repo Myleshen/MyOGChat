@@ -25,7 +25,7 @@
 | 4.3b | **`generate_image` model tool** | ✅ done | Mid-conversation generation with context over the 2.4 tool loop: the model calls `generate_image`, the bytes are stored owner-scoped and attached to the assistant message (`messages.images`). Registered only when tools are enabled + a ComfyUI backend is configured. |
 | 4.4 | **Settings IA + UX overhaul** | ✅ done | Categorized into ~9 sections with desktop/tablet nav rail + mobile chip bar; admin web-search block relabelled "Server web search (admin)"; per-user Serper under Integrations → Web search. UI battery 45/45 on mobile. |
 | 4.5a | **Document extraction** | ✅ done | `internal/extract` dispatcher: OOXML (`.docx/.xlsx/.pptx`), ODF (`.odt/.ods/.odp`), `.epub`, `.rtf` — stdlib only (no new deps). |
-| 4.5b | **Media transcription** | ✅ done | Audio/video (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) via the configured STT service (`internal/extract.Options{OCR,Transcribe}`). **Synchronous** — long media may exceed the tunnel timeout; async is future work. |
+| 4.5b | **Media transcription** | ✅ done | Audio/video (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) via the configured STT service. **Asynchronous**: upload returns `202 pending`, a bounded background worker writes the transcript, the SPA polls until ready (no tunnel-timeout limit). |
 
 > **Status:** Phase 4 is complete — 4.1, 4.2, 4.3a, 4.3b, 4.4, 4.5a, 4.5b are all
 > **done** (merged to `main` and deployed).
