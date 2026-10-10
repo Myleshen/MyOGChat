@@ -196,8 +196,8 @@ func TestPiperTTSSuccess(t *testing.T) {
 	if body["text"] != "hello" || body["voice"] != "en_US-ryan-low" {
 		t.Errorf("body = %v", body)
 	}
-	if path != "/" {
-		t.Errorf("path = %q, want /", path)
+	if path != "/synthesize" {
+		t.Errorf("path = %q, want /synthesize", path)
 	}
 }
 
