@@ -235,6 +235,8 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		ToolsEnabled      *bool   `json:"tools_enabled"`
 		LinkwardenURL     *string `json:"linkwarden_url"`
 		LinkwardenToken   *string `json:"linkwarden_token"`
+		SearchProvider    *string `json:"search_provider"`
+		BraveKey          *string `json:"brave_key"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -278,6 +280,20 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.setLinkwarden(r.Context(), rawURL, req.LinkwardenToken); err != nil {
 			s.log.Error("set linkwarden settings", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.SearchProvider != nil {
+		if err := s.setSearchProvider(r.Context(), *req.SearchProvider); err != nil {
+			s.log.Error("set search_provider", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.BraveKey != nil {
+		if err := s.setBraveKey(r.Context(), *req.BraveKey); err != nil {
+			s.log.Error("set brave_key", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
 		}

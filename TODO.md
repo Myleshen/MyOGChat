@@ -97,7 +97,12 @@ key when sharing is allowed.
   → feed results back → repeat (bounded iterations). Chat dialect uses `tools`
   (function calling); Responses dialect uses `tools` too — both need parsing +
   execution + re-send.
-- **Web search** via Tavily (`TAVILY_API_KEY` is already in the owner's env).
+- **Web search** is now provider-agnostic: a pluggable layer with a fallback
+  chain **Tavily → Brave → DuckDuckGo** (`docs/2.4-search-providers.md`).
+  Tavily (`TAVILY_API_KEY`) and Brave (`BRAVE_API_KEY`) are keyed; DuckDuckGo is
+  keyless best-effort, so `web_search` works with zero configuration. Provider is
+  selectable via `MYOGCHAT_SEARCH_PROVIDER` / the `search_provider` DB setting
+  (Brave key settable from the admin UI, encrypted at rest).
 - Later tools reuse the same loop (calculator, fetch-url, python via 2.6).
 
 ### 2.5 OCR for images
