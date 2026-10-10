@@ -4,9 +4,9 @@
 > approach, dependency list, effort estimate, and open questions. Full research
 > reports are archived in `docs/research/`.
 >
-> Owner decisions: build **2.10, 2.11, 2.12, 2.13, 3.2, 3.3, 3.4**.
-> **3.1 image generation** is de-scoped (no external provider) — a self-hosted
-> path on the Proxmox box is documented below for a future go/no-go.
+> Owner decisions: build **2.10, 2.11, 2.12, 2.13, 3.1, 3.2, 3.3, 3.4**.
+> **3.1 image generation** is now **in** — self-hosted on the Proxmox GTX 1650 Ti
+> (ComfyUI in an LXC), pending a one-time timing gate.
 
 ## Build plan (batches, sequential merges off `main`)
 
@@ -15,6 +15,7 @@
 | **3** | 2.10 · 2.12 · 2.13 | quick wins + tools polish |
 | **4** | 2.11 | usage & quotas (touches chat + settings) |
 | **5** | 3.2 · 3.3 · 3.4 | personal tools (mail, calendar, maps) |
+| **6** | 3.1 | self-hosted image gen (Proxmox ComfyUI + OpenAI shim) |
 
 Land order within a batch matters only for shared-file conflicts
 (`internal/server/server.go` routes, `internal/store/store.go` schema,
@@ -80,7 +81,9 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
   body `{q,num,gl,hl,tbs,page,type}`; response `organic[]` = `{title,link,snippet,
   position}` (**`link`, not `url`**). 10 results = 1 credit, >10 doubles it;
   2,500 free queries. Chain: **Tavily → Brave → Serper → DDG** (`maxSearchChain` 3→4).
-  Config: `SERPER_API_KEY` env + encrypted DB `serper_key`.
+  Config: `SERPER_API_KEY` env + encrypted DB `serper_key`. **Key: sign up at
+  serper.dev → dashboard → API key (2,500 free one-time queries, no card).**
+  Optional — Brave/DDG already work.
 - **Brave `llm/context`:** a **mode flag on the existing Brave provider**
   (`MYOGCHAT_BRAVE_MODE=web|context`, DB `brave_mode`) — not a separate provider
   (shares key/host/identity). `GET|POST /res/v1/llm/context`, response
@@ -111,25 +114,30 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
   base64 size, JPEG/PNG/GIF/WebP only, short timeouts, single-shot enforcement,
   `extract.ErrOCR` mapping.
 
-## 3.1 Image generation — DE-SCOPED (self-host path documented)
+## 3.1 Image generation — IN (self-hosted on the Proxmox GPU)
 
 - **External providers** (OpenAI Images, Replicate/fal.ai) are **out** — owner
-  isn't getting one. OpenCode Go has no image-output model.
-- **Self-host on the Proxmox box (`asus-rog`):** GPU is a **GTX 1650 Ti Mobile
-  (Turing, CC 7.5, 4 GB)** — not a 1050. Driver `615.71.09` installed
-  (`/dev/nvidia0`+`nvidiactl` present; no `nvidia-smi`/CUDA toolkit yet),
-  `intel_iommu=on`, `vfio-pci` available, GPU in IOMMU group 2.
-- **Verdict:** fits **SD 1.5 / SD 2.1 / SD-Turbo at 512²** (~3–8 s SD-Turbo,
-  ~20–45 s SD1.5). **SDXL/SD3/Flux do not fit 4 GB.** Turing keeps current
-  CUDA/PyTorch support and gets a 2× FP16 speedup (the report's "pin cu126 /
-  Pascal limits" caveat does **not** apply).
-- **Runtime:** **ComfyUI**, in an **LXC with device passthrough** (host driver
-  shared; simplest) or a VFIO VM (isolated). Front it with a tiny
-  **OpenAI-compatible shim** (`POST /v1/images/generations`, bearer token, LAN-only;
-  don't tunnel it).
-- **App side:** `POST /api/images` + a **binary store** — `attachments` is
-  text-only today, so generated images need a new blob store + `GET /api/images/{id}`.
-- **Gate:** time one SD-Turbo 512² image; **< 15 s → proceed**.
+  isn't getting one. OpenCode Go has no image-output model. **Instead we
+  self-host** on the Proxmox box.
+- **GPU (confirmed):** NVIDIA **GTX 1650 Ti Mobile** (`TU117`, **Turing**, CC 7.5,
+  **4 GB GDDR6**), driver **615.71.09**. Turing is fully supported by **current
+  CUDA 13 / PyTorch cu128** (the earlier "pin cu126 / CUDA 12.x max" advice was a
+  **Pascal** artifact — ignore it). **FP16 = 2× FP32** here, so `--force-fp16`
+  both halves VRAM and speeds things up.
+- **Verdict: GO.** Fits **SD-Turbo** (~8–12 s @512²), **LCM-LoRA** (~6–12 s),
+  **SD 1.5/2.1** (~18–35 s). SDXL/SD3/Flux do **not** fit 4 GB. Default:
+  **SD-Turbo**.
+- **Runtime:** **ComfyUI** (`--force-fp16 --reserve-vram 0.5`), in an **LXC with
+  device passthrough** (host driver already loaded → no VFIO; bind `/dev/nvidia*`
+  incl. `nvidia-uvm`/`nvidia-caps`, match userspace 615.71.09). VFIO VM is the
+  isolated alternative.
+- **Integration:** a tiny **OpenAI-compatible shim** (`POST /v1/images/generations`,
+  bearer token, LAN-only; don't tunnel it) in front of ComfyUI. App side:
+  `POST /api/images`, `GET /api/images/{id}` (bytes), `DELETE`, a new **binary
+  `images` table** (owner-scoped BLOB; `attachments` is text-only), settings via
+  `internal/secret`, janitor wiring, and a chat "generate image" UI.
+- **Gate:** time one SD-Turbo 512² image (cold + warm); **< 15 s warm → proceed**
+  (benchmarks predict ~10 s).
 
 ## 3.2 IMAP email — medium (~2–4 days)
 
@@ -137,8 +145,10 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
   7-day refresh tokens in Testing mode; iCloud has no third-party OAuth).
   - Gmail `imap.gmail.com:993` TLS / `smtp.gmail.com:465|587`; 2SV required.
   - iCloud `imap.mail.me.com:993` / `smtp.mail.me.com:587` STARTTLS; app-specific password.
-  - Zoho `imap.zoho.com:993` / `smtp.zoho.com:465|587`; app password — **⚠️ verify the
-    plan includes IMAP/SMTP (free plans no longer do)**.
+  - Zoho (owner: **Pro**, confirmed IMAP/SMTP) — India region:
+    `imappro.zoho.in:993` (custom domain) / `smtppro.zoho.in:465|587`; personal
+    `@zohomail.in` → `imap.zoho.in`/`smtp.zoho.in`. Region-aware presets
+    (`.in`/`.com`/`.eu`); app-specific password.
 - **Libs:** `emersion/go-imap/v2` + `go-message` + `go-sasl` (no XOAUTH2 type — use
   OAUTHBEARER or a ~15-line custom client if ever needed) + stdlib `net/smtp`.
 - **Design:** per-user encrypted credential blob (`auth_type`, host/port/TLS,
@@ -153,54 +163,65 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
 ## 3.3 Calendar — medium (~4–6 days)
 
 - **Split by auth:** Apple/iCloud + Zoho are **CalDAV-only** (Basic: app-specific
-  password); Google is better via **REST v3** (OAuth2 only — Basic rejected since
-  2025-03-14).
+  password). **Google → Calendar REST v3 with a *service account*** — **no user
+  OAuth consent screen**: the owner shares their calendar with the SA's
+  `client_email` ("Make changes to events"); the app signs an RS256 JWT with
+  stdlib (`crypto/rsa`/`crypto/sha256`/`net/http`) and exchanges it for a ~1h
+  token (re-sign on expiry, no refresh token). Read-only alt: the per-calendar
+  **"secret address" ICS URL** (unauthenticated, no setup). (Google CalDAV still
+  requires OAuth2 — not an escape hatch.)
   - iCloud `caldav.icloud.com` → `.well-known/caldav` → `pNN-caldav.icloud.com` (cache the partition).
   - Zoho `calendar.zoho.com/.well-known/caldav` (region variants).
   - Google `www.googleapis.com/calendar/v3` with hand-rolled OAuth2 refresh
     (avoid `google.golang.org/api` — drags in grpc/protobuf/OTel).
 - **Libs:** `emersion/go-webdav` (CalDAV) + `go-ical` (MIT, pure Go).
-- **Design:** per-user encrypted creds in a new `calendar_accounts` table
-  (mirrors `users.api_key_enc`); tools **`calendar_list` / `calendar_create` /
-  `calendar_update` / `calendar_delete`**; normalized `Event{uid, calendar_id,
-  title, start, end, tz, all_day, recurrence, attendees, reminders, etag}`.
-- **Pitfalls:** Google Testing-mode refresh tokens expire in 7 days (publish the
-  consent screen "In production"); server-side recurrence expansion
-  (`singleEvents=true` / `<C:expand>`); always send ETags on CalDAV writes; all-day
-  `DATE` vs timed `DATE-TIME`/`VTIMEZONE`; ICS folding/escaping. v1 = whole-series
-  edits only.
+- **Design:** per-user encrypted creds in a new `calendar_accounts` table with a
+  **`kind` discriminator** (`oauth` | `service_account` | `ics`) + encrypted
+  `credential` blob (refresh token / SA JSON key / ICS URL) + `calendar_id`
+  (mirrors `users.api_key_enc`; SA access tokens cached in memory only). Tools
+  **`calendar_list` / `calendar_create` / `calendar_update` / `calendar_delete`**;
+  normalized `Event{uid, calendar_id, title, start, end, tz, all_day, recurrence,
+  attendees, reminders, etag}`.
+- **Pitfalls:** a service account **cannot invite attendees**
+  (`forbiddenForServiceAccounts`) without domain-wide delegation, and sees only
+  calendars explicitly shared with it; secret-ICS is read-only and lags
+  (~12–24 h); server-side recurrence expansion (`singleEvents=true` /
+  `<C:expand>`); always send ETags on CalDAV writes; all-day `DATE` vs timed
+  `DATE-TIME`/`VTIMEZONE`; ICS folding/escaping. v1 = whole-series edits only.
+- **Bonus (zero-OAuth):** a Google **Apps Script Web App** can read/write the
+  owner's own calendar entirely inside Google's cloud — noted as an alternative.
 
 ## 3.4 Maps — medium (~3–4 days)
 
-- **`GeoProvider` abstraction** (mirrors `SearchProvider`): `Geocode` / `Reverse` /
-  `Directions` / `Places`, with:
-  - **`osmProvider` (keyless, default):** Nominatim (geocode/reverse), OSRM
-    (directions), Photon/Overpass (places).
-  - **`googleProvider` (keyed):** Geocoding, Routes `computeRoutes`, Places Text
-    Search (New).
-  - `auto` = Google when a key is set, else OSM (never empty).
+- **OSM-only (owner decision — no Google Maps billing).** A `GeoProvider`
+  abstraction (mirrors `SearchProvider`) with a single **keyless `osmProvider`**:
+  Nominatim (geocode/reverse), OSRM (directions), Photon/Overpass (places).
+  No API key, no billing, no signup.
 - **Tools:** `maps_geocode` / `maps_reverse` / `maps_directions` / `maps_places`.
   No new deps (stdlib + JSON; request OSRM `geojson` to skip polyline decoding).
 - **Two policy must-dos:** a global **1 req/s limiter** for the OSM stack and a
   **SQLite result cache** (TTL 7–30 days; also satisfies Google's 30-day cap).
-- **Config:** env + DB `maps_provider` / `google_maps_key` (encrypted) +
-  `maps_region` / `maps_units`, in `GET/PATCH /api/settings`.
-- **Pitfalls:** Google requires billing + key restrictions (per-SKU free tiers —
-  the pooled $200 credit was retired Mar 2025); Places/Routes "New" need
-  `X-Goog-FieldMask`; lon/lat ordering differs per provider (centralize + test);
-  OSM ODbL attribution; transit is Google-only; IP-restricting a key behind the
-  Cloudflare Tunnel is awkward (restrict to APIs + low quota).
+- **Config:** env + DB `maps_provider` (only `osm` for now) + `maps_region` /
+  `maps_units`, in `GET/PATCH /api/settings`.
+- **Pitfalls:** lon/lat ordering differs per endpoint (centralize + test); OSM
+  ODbL attribution ("© OpenStreetMap contributors"); Nominatim forbids
+  autocomplete and the OSRM demo server is not for production (self-host later if
+  needed).
 
 ---
 
-## Open questions / decisions needed before building
+## Resolved decisions
 
-1. **Zoho plan** — does it include IMAP/SMTP (free plans no longer do)?
-2. **Google Calendar** — willing to create an OAuth client + publish the consent
-   screen ("In production") for a personal app?
-3. **Google Maps** — willing to enable billing + create a restricted key? (OSM
-   works with zero config as the default.)
-4. **Image gen (3.1)** — is a self-hosted ComfyUI on the Proxmox box wanted, and
-   should we run the SD-Turbo timing gate? (Otherwise stays de-scoped.)
-5. **Serper** — do you have/want a Serper key? (Brave/DDG already work; Serper is
-   additive.)
+- **Zoho** — owner is on **Pro**; IMAP/SMTP confirmed (India-region endpoints).
+- **Google Maps** — **dropped**; 3.4 is **OSM-only** (keyless, no billing).
+- **Google Calendar** — use a **service account** (no consent screen) for
+  read/write, or the **secret ICS URL** for read-only.
+- **Serper** — optional; key from serper.dev (2,500 free one-time queries).
+
+## Still open
+
+1. **Google Calendar auth choice** — service account (read/write; needs a GCP
+   project + SA key) vs secret ICS (read-only; zero setup). We can support both.
+2. **Serper key** — get one, or ship without it?
+3. **Image-gen gate** — run the SD-Turbo timing test on the Proxmox box before
+   committing to batch 6.

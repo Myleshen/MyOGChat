@@ -235,18 +235,19 @@ merges sequentially and resolves the small additive conflicts in shared files
 
 ## Phase 3 (scoped — exploratory, not scheduled)
 
-### 3.1 Image generation — DE-SCOPED (self-host path documented)
-- **Key finding:** **OpenCode Go does not provide image generation** (text-only
-  models; `gpt-6-luna` accepts image *input* but returns text). External providers
-  (OpenAI Images, Replicate/fal.ai) are out — the owner isn't getting one.
-- **Self-host option (Proxmox box `asus-rog`):** GPU is a **GTX 1650 Ti Mobile
-  (Turing, CC 7.5, 4 GB)** — driver installed, `intel_iommu=on`, `vfio-pci`
-  available. Fits **SD 1.5 / SD-Turbo at 512²** via **ComfyUI** in an LXC (device
-  passthrough) behind a tiny OpenAI-compatible shim; SDXL/Flux do **not** fit 4 GB.
-  App side needs a new **binary store** (`attachments` is text-only) +
-  `POST /api/images` + `GET /api/images/{id}`.
-- **Gate:** time one SD-Turbo 512² image; **< 15 s → proceed**.
-- **See `docs/SCOPING.md` §3.1 and `docs/research/3.1-imagegen-proxmox.md`.**
+### 3.1 Image generation — IN (self-hosted on the Proxmox GPU)
+- **External providers out** (owner isn't getting one; OpenCode Go has no
+  image-output model) → **self-host** on the Proxmox box.
+- **GPU:** GTX 1650 Ti Mobile (Turing, CC 7.5, 4 GB), driver 615.71.09 — fully
+  supported by **current CUDA 13 / PyTorch cu128** (the earlier "Pascal/CUDA
+  12.x" caveat does not apply). **Verdict: GO** — SD-Turbo ~8–12 s @512², SD1.5
+  ~18–35 s; SDXL/Flux don't fit 4 GB.
+- **Runtime:** **ComfyUI** (`--force-fp16`) in an **LXC with device passthrough**;
+  front it with a tiny **OpenAI-compatible shim** (`POST /v1/images/generations`).
+- **App side:** new **binary `images` table** + `POST /api/images` +
+  `GET /api/images/{id}` + a chat "generate image" UI.
+- **Gate:** time one SD-Turbo 512² image; **< 15 s warm → proceed**.
+- **See `docs/SCOPING.md` §3.1 and `docs/research/3.1-imagegen-recheck.md`.**
 
 ### 3.2 IMAP email
 - Read/search/send mail from a connected mailbox. **Needs:** IMAP + SMTP
