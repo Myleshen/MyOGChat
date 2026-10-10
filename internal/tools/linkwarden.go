@@ -75,6 +75,23 @@ func NormalizeBaseURL(raw string) (string, error) {
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
+// Check verifies the instance URL and token with a lightweight authenticated
+// request (a no-op search). It returns nil when the instance accepts the
+// credentials, or an error describing the failure.
+func (c *LinkwardenClient) Check(ctx context.Context) error {
+	q := url.Values{}
+	q.Set("searchQueryString", "linkwarden")
+	endpoint := c.baseURL + "/api/v1/search?" + q.Encode()
+	body, status, err := c.do(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status > 299 {
+		return fmt.Errorf("linkwarden rejected the credentials: HTTP %d: %s", status, firstLine(body))
+	}
+	return nil
+}
+
 // Search queries the instance's search endpoint and returns matching links.
 func (c *LinkwardenClient) Search(ctx context.Context, query string) ([]LinkwardenLink, error) {
 	q := url.Values{}

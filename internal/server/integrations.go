@@ -16,9 +16,7 @@ import (
 
 // Settings keys for the tools/integrations feature (Phase 2.4 / 2.8 / 2.6-2.7).
 const (
-	settingToolsEnabled    = "tools_enabled"
-	settingLinkwardenURL   = "linkwarden_url"
-	settingLinkwardenToken = "linkwarden_token"
+	settingToolsEnabled = "tools_enabled"
 	// Web-search provider selection + Brave key (Phase 2.4).
 	settingSearchProvider = "search_provider"
 	settingBraveKey       = "brave_key"
@@ -174,29 +172,46 @@ func (s *Server) setSandboxEnabled(ctx context.Context, enabled bool) error {
 	return s.st.SetSetting(ctx, settingSandboxEnabled, v)
 }
 
-// linkwardenConfig returns the configured instance URL and decrypted token.
-// ok is false when either is missing or the token cannot be decrypted.
-func (s *Server) linkwardenConfig(ctx context.Context) (rawURL, token string, ok bool) {
-	rawURL, _, _ = s.st.GetSetting(ctx, settingLinkwardenURL)
-	enc, _, _ := s.st.GetSetting(ctx, settingLinkwardenToken)
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" || enc == "" {
+// userLinkwardenConfig returns the caller's own stored Linkwarden URL and
+// decrypted token (2.8). ok is false when the user has not configured both.
+func (s *Server) userLinkwardenConfig(u store.User) (rawURL, token string, ok bool) {
+	if u.LinkwardenURL == nil || strings.TrimSpace(*u.LinkwardenURL) == "" {
 		return "", "", false
 	}
-	raw, err := secret.Decrypt(s.encKey, enc)
+	if u.LinkwardenTokenEnc == nil || *u.LinkwardenTokenEnc == "" {
+		return "", "", false
+	}
+	raw, err := secret.Decrypt(s.encKey, *u.LinkwardenTokenEnc)
 	if err != nil {
 		return "", "", false
 	}
-	token = strings.TrimSpace(string(raw))
-	if token == "" {
+	tok := strings.TrimSpace(string(raw))
+	if tok == "" {
 		return "", "", false
 	}
-	return rawURL, token, true
+	return strings.TrimSpace(*u.LinkwardenURL), tok, true
 }
 
-// linkwardenClient builds a client when the integration is configured.
-func (s *Server) linkwardenClient(ctx context.Context) (*tools.LinkwardenClient, bool) {
-	rawURL, token, ok := s.linkwardenConfig(ctx)
+// linkwardenConfigFor resolves the effective Linkwarden configuration for a
+// caller: the user's own stored instance first, then the optional server-wide
+// env fallback (LINKWARDEN_URL + LINKWARDEN_TOKEN, both required). ok is false
+// when neither is usable.
+func (s *Server) linkwardenConfigFor(ctx context.Context, u store.User) (rawURL, token string, ok bool) {
+	if url, tok, ok := s.userLinkwardenConfig(u); ok {
+		return url, tok, true
+	}
+	envURL := strings.TrimSpace(s.linkwardenURL)
+	envToken := strings.TrimSpace(s.linkwardenToken)
+	if envURL != "" && envToken != "" {
+		return envURL, envToken, true
+	}
+	return "", "", false
+}
+
+// linkwardenClientFor builds a client for the caller when Linkwarden is
+// configured (their own instance or the env fallback).
+func (s *Server) linkwardenClientFor(ctx context.Context, u store.User) (*tools.LinkwardenClient, bool) {
+	rawURL, token, ok := s.linkwardenConfigFor(ctx, u)
 	if !ok {
 		return nil, false
 	}
@@ -206,6 +221,25 @@ func (s *Server) linkwardenClient(ctx context.Context) (*tools.LinkwardenClient,
 		return nil, false
 	}
 	return c, true
+}
+
+// setUserLinkwarden persists the caller's per-user Linkwarden instance (2.8).
+// An empty url (with nil token) clears both fields; a non-empty token is
+// encrypted before storage.
+func (s *Server) setUserLinkwarden(ctx context.Context, u store.User, rawURL string, token *string, now int64) error {
+	url := strings.TrimSpace(rawURL)
+	var enc *string
+	if token != nil {
+		plain := strings.TrimSpace(*token)
+		if plain != "" {
+			e, err := secret.Encrypt(s.encKey, []byte(plain))
+			if err != nil {
+				return err
+			}
+			enc = &e
+		}
+	}
+	return s.st.SetUserLinkwarden(ctx, u.ID, url, enc, now)
 }
 
 // toolRegistry builds the per-request set of tools. It is empty when tools are
@@ -234,7 +268,9 @@ func (s *Server) toolRegistry(ctx context.Context, u store.User) *tools.Registry
 		reg.Add(tools.NewDirectionsTool(providers, geo.Options()))
 		reg.Add(tools.NewPlacesTool(providers, geo.Options()))
 	}
-	if c, ok := s.linkwardenClient(ctx); ok {
+	// Linkwarden (2.8) is per-user: registered from the caller's own instance
+	// (or the optional env fallback).
+	if c, ok := s.linkwardenClientFor(ctx, u); ok {
 		reg.Add(tools.NewLinkwardenSearchTool(c))
 		reg.Add(tools.NewLinkwardenSaveTool(c))
 	}
@@ -303,27 +339,19 @@ func toolSummary(result string) string {
 
 // integrationSettings returns the admin-facing tools/integrations state.
 func (s *Server) integrationSettings(ctx context.Context) map[string]any {
-	rawURL, token, configured := s.linkwardenConfig(ctx)
-	hint := ""
-	if configured {
-		hint = keyHint(token)
-	}
 	cfg := s.searchConfig(ctx)
 	_, braveConfigured := s.braveKey(ctx)
 	sandboxAvailable := s.sbx != nil && s.sbx.Available(ctx)
 	return map[string]any{
-		"tools_enabled":         s.toolsEnabled(ctx),
-		"tavily_configured":     strings.TrimSpace(cfg.TavilyKey) != "",
-		"brave_configured":      braveConfigured,
-		"serper_configured":     strings.TrimSpace(cfg.SerperKey) != "",
-		"search_provider":       tools.NormalizeProvider(cfg.Provider),
-		"search_active":         tools.SearchActive(cfg),
-		"brave_mode":            braveMode(cfg.BraveContext),
-		"linkwarden_url":        rawURL,
-		"linkwarden_configured": configured,
-		"linkwarden_token_hint": hint,
-		"sandbox_enabled":       s.sandboxEnabled(ctx),
-		"sandbox_available":     sandboxAvailable,
+		"tools_enabled":     s.toolsEnabled(ctx),
+		"tavily_configured": strings.TrimSpace(cfg.TavilyKey) != "",
+		"brave_configured":  braveConfigured,
+		"serper_configured": strings.TrimSpace(cfg.SerperKey) != "",
+		"search_provider":   tools.NormalizeProvider(cfg.Provider),
+		"search_active":     tools.SearchActive(cfg),
+		"brave_mode":        braveMode(cfg.BraveContext),
+		"sandbox_enabled":   s.sandboxEnabled(ctx),
+		"sandbox_available": sandboxAvailable,
 	}
 }
 
@@ -342,27 +370,6 @@ func (s *Server) setToolsEnabled(ctx context.Context, enabled bool) error {
 		v = "1"
 	}
 	return s.st.SetSetting(ctx, settingToolsEnabled, v)
-}
-
-// setLinkwarden persists the instance URL and (when token is non-nil) the
-// encrypted API token. A nil token leaves the stored token untouched; an empty
-// string clears it.
-func (s *Server) setLinkwarden(ctx context.Context, rawURL string, token *string) error {
-	if err := s.st.SetSetting(ctx, settingLinkwardenURL, strings.TrimSpace(rawURL)); err != nil {
-		return err
-	}
-	if token == nil {
-		return nil
-	}
-	plain := strings.TrimSpace(*token)
-	if plain == "" {
-		return s.st.SetSetting(ctx, settingLinkwardenToken, "")
-	}
-	enc, err := secret.Encrypt(s.encKey, []byte(plain))
-	if err != nil {
-		return err
-	}
-	return s.st.SetSetting(ctx, settingLinkwardenToken, enc)
 }
 
 // handleGetMySerper reports the caller's per-user Serper key status plus a

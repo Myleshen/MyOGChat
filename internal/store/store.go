@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS users (
   status        TEXT NOT NULL DEFAULT 'active',
   api_key_enc   TEXT,
   serper_key_enc TEXT,
+  linkwarden_url TEXT,
+  linkwarden_token_enc TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -155,8 +157,12 @@ type User struct {
 	DailyTokenLimit  *int64  `json:"daily_token_limit,omitempty"`
 	MonthlyCostLimit *int64  `json:"monthly_cost_limit,omitempty"`
 	SerperKeyEnc     *string `json:"-"` // encrypted per-user Serper key (2.12)
-	CreatedAt        int64   `json:"created_at"`
-	UpdatedAt        int64   `json:"updated_at"`
+	// Per-user Linkwarden instance (2.8): the URL is not secret, the token is
+	// encrypted with internal/secret. Both nil when unconfigured.
+	LinkwardenURL      *string `json:"-"`
+	LinkwardenTokenEnc *string `json:"-"`
+	CreatedAt          int64   `json:"created_at"`
+	UpdatedAt          int64   `json:"updated_at"`
 }
 
 // Conversation mirrors a row of the conversations table.
@@ -351,6 +357,8 @@ func (s *Store) migrate() error {
 		{"users", "daily_token_limit", `ALTER TABLE users ADD COLUMN daily_token_limit INTEGER`},
 		{"users", "monthly_cost_limit", `ALTER TABLE users ADD COLUMN monthly_cost_limit INTEGER`},
 		{"users", "serper_key_enc", `ALTER TABLE users ADD COLUMN serper_key_enc TEXT`},
+		{"users", "linkwarden_url", `ALTER TABLE users ADD COLUMN linkwarden_url TEXT`},
+		{"users", "linkwarden_token_enc", `ALTER TABLE users ADD COLUMN linkwarden_token_enc TEXT`},
 		{"messages", "images", `ALTER TABLE messages ADD COLUMN images TEXT`},
 	}
 	cache := map[string]map[string]bool{}
@@ -423,6 +431,15 @@ func nullString(p *string) any {
 	return *p
 }
 
+// nullText maps an empty string to SQL NULL (used for the non-secret per-user
+// Linkwarden URL, so a cleared field reads back as nil).
+func nullText(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 func nullInt(p *int64) any {
 	if p == nil {
 		return nil
@@ -448,15 +465,15 @@ func optInt(n sql.NullInt64) *int64 {
 
 // ---------- users ----------
 
-const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, daily_token_limit, monthly_cost_limit, serper_key_enc, created_at, updated_at"
+const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, daily_token_limit, monthly_cost_limit, serper_key_enc, linkwarden_url, linkwarden_token_enc, created_at, updated_at"
 
 func scanUser(sc scanner) (User, error) {
 	var u User
 	var admin int
 	var keyEnc sql.NullString
 	var daily, monthly sql.NullInt64
-	var serperEnc sql.NullString
-	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &daily, &monthly, &serperEnc, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	var serperEnc, linkURL, linkTokenEnc sql.NullString
+	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &daily, &monthly, &serperEnc, &linkURL, &linkTokenEnc, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return User{}, err
 	}
 	u.IsAdmin = admin != 0
@@ -464,6 +481,8 @@ func scanUser(sc scanner) (User, error) {
 	u.DailyTokenLimit = optInt(daily)
 	u.MonthlyCostLimit = optInt(monthly)
 	u.SerperKeyEnc = optString(serperEnc)
+	u.LinkwardenURL = optString(linkURL)
+	u.LinkwardenTokenEnc = optString(linkTokenEnc)
 	return u, nil
 }
 
@@ -471,9 +490,10 @@ func scanUser(sc scanner) (User, error) {
 // driver error (the caller maps it to 409).
 func (s *Store) InsertUser(ctx context.Context, u *User) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.Username, u.Email, u.PasswordHash, boolToInt(u.IsAdmin), u.Status, nullString(u.APIKeyEnc),
-		nullInt(u.DailyTokenLimit), nullInt(u.MonthlyCostLimit), nullString(u.SerperKeyEnc), u.CreatedAt, u.UpdatedAt)
+		nullInt(u.DailyTokenLimit), nullInt(u.MonthlyCostLimit), nullString(u.SerperKeyEnc),
+		nullString(u.LinkwardenURL), nullString(u.LinkwardenTokenEnc), u.CreatedAt, u.UpdatedAt)
 	return err
 }
 
@@ -566,6 +586,16 @@ func (s *Store) SetUserLimits(ctx context.Context, id string, daily, monthly *in
 func (s *Store) SetUserSerperKey(ctx context.Context, id string, enc *string, now int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET serper_key_enc = ?, updated_at = ? WHERE id = ?`, nullString(enc), now, id)
+	return err
+}
+
+// SetUserLinkwarden stores (or clears) a user's per-user Linkwarden instance
+// (2.8). An empty url clears the URL; a nil tokenEnc clears the token. Both
+// fields are always written together so callers should pass the desired state.
+func (s *Store) SetUserLinkwarden(ctx context.Context, id, url string, tokenEnc *string, now int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET linkwarden_url = ?, linkwarden_token_enc = ?, updated_at = ? WHERE id = ?`,
+		nullText(url), nullString(tokenEnc), now, id)
 	return err
 }
 

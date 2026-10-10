@@ -55,6 +55,11 @@ type Server struct {
 	// override the URL/token.
 	imagegenURL   string
 	imagegenToken string
+
+	// Per-user Linkwarden (2.8) env fallback (LINKWARDEN_URL + LINKWARDEN_TOKEN,
+	// both required). Each user can override with their own stored instance.
+	linkwardenURL   string
+	linkwardenToken string
 }
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
@@ -65,14 +70,19 @@ type Server struct {
 // be nil; ocrEngineName is the configured OCR engine mode and ocrVisionAvailable
 // reports whether vision OCR is usable; speechDefaults configures the speech
 // engines (features 3.5 / 3.6); imagegenURL/imagegenToken are the env defaults
-// for self-hosted image generation (feature 3.1, both may be empty).
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool, speechDefaults SpeechDefaults, imagegenURL, imagegenToken string) *Server {
+// for self-hosted image generation (feature 3.1, both may be empty);
+// linkwardenURL/linkwardenToken are the optional env fallback for the per-user
+// Linkwarden integration (feature 2.8, both must be set to apply).
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool, speechDefaults SpeechDefaults, imagegenURL, imagegenToken, linkwardenURL, linkwardenToken string) *Server {
 	s := &Server{
 		st: st, up: up, auth: a, static: staticFS, log: log,
 		encKey: encKey, serverKey: serverKey, search: search, geo: geo, sbx: sbx,
 		ocrEngine: ocrEngine, ocrEngineName: ocrEngineName, ocrVisionAvailable: ocrVisionAvailable,
-		speechCfg:   speechDefaults,
-		imagegenURL: imagegenURL, imagegenToken: imagegenToken,
+		speechCfg:       speechDefaults,
+		imagegenURL:     imagegenURL,
+		imagegenToken:   imagegenToken,
+		linkwardenURL:   linkwardenURL,
+		linkwardenToken: linkwardenToken,
 	}
 	// Build engines per request so DB URL/voice overrides take effect live.
 	s.newSTT = func(cfg speech.STTConfig) speech.Transcriber { return speech.NewOpenAISTT(cfg) }
@@ -106,6 +116,10 @@ func (s *Server) Handler() http.Handler {
 	// Per-user Serper search key (2.12).
 	mux.HandleFunc("GET /api/me/serper", s.handleGetMySerper)
 	mux.HandleFunc("PUT /api/me/serper", s.handlePutMySerper)
+	// Per-user Linkwarden (2.8).
+	mux.HandleFunc("GET /api/me/linkwarden", s.handleGetMyLinkwarden)
+	mux.HandleFunc("PUT /api/me/linkwarden", s.handlePutMyLinkwarden)
+	mux.HandleFunc("DELETE /api/me/linkwarden", s.handleDeleteMyLinkwarden)
 	// Calendar (per-user, 3.3).
 	mux.HandleFunc("GET /api/me/calendar", s.handleGetCalendar)
 	mux.HandleFunc("PUT /api/me/calendar", s.handlePutCalendar)
