@@ -11,6 +11,7 @@ import (
 	"myogchat/internal/imagegen"
 	"myogchat/internal/secret"
 	"myogchat/internal/store"
+	"myogchat/internal/upstream"
 )
 
 // Settings keys for self-hosted image generation (feature 3.1).
@@ -22,10 +23,50 @@ const (
 const (
 	// maxImagePromptChars caps a generation prompt.
 	maxImagePromptChars = 2000
+	// maxEnhancePromptChars caps the LLM-enhanced prompt.
+	maxEnhancePromptChars = 1200
+	// defaultEnhanceModel is a fast, cheap chat model used to rewrite an image
+	// brief into a rich diffusion prompt (4.3).
+	defaultEnhanceModel = "mimo-v2.6-flash"
 	// imageCacheControl is a long cache header for immutable image bytes (the id
 	// is a UUID and the bytes never change).
 	imageCacheControl = "private, max-age=31536000, immutable"
 )
+
+// enhanceSystemPrompt instructs the model to turn a short brief into a rich
+// SD-Turbo prompt. Named IP/characters are translated into visual descriptions
+// so the distilled model can render them, and the output is kept SFW.
+const enhanceSystemPrompt = `You are an expert prompt engineer for the SD-Turbo text-to-image diffusion model. ` +
+	`Rewrite the user's brief into ONE vivid, richly detailed English prompt (aim for 300-700 characters). ` +
+	`Include: the main subject(s) and their appearance, pose/action and expression; the setting and background; ` +
+	`art style and medium; lighting and color palette; camera angle and composition; and quality cues. ` +
+	`Translate any named characters, franchises, celebrities, or brands into concrete visual descriptions ` +
+	`(species, colors, clothing, art style) rather than using the name, so the model can actually render them. ` +
+	`Output ONLY the prompt: one paragraph, no quotes, no labels, no preamble, no explanation. ` +
+	`Keep it safe for work: never include nudity, sexual content, graphic violence, gore, hateful imagery, or real people's names.`
+
+// fallbackEnhancePrompt is a deterministic expansion used when no key is
+// available or the enhancer call fails, so generation always works.
+func fallbackEnhancePrompt(brief string) string {
+	return strings.TrimSpace(brief) +
+		", highly detailed, vivid colors, soft cinematic lighting, sharp focus, " +
+		"clean composition, appealing, high quality, 4k"
+}
+
+// sanitizeImagePrompt cleans an LLM prompt: strips surrounding quotes and a
+// leading label/preamble, collapses whitespace, and caps the length.
+func sanitizeImagePrompt(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "\"'“”‘’ \n\t")
+	for _, p := range []string{"enhanced prompt:", "here is the prompt:", "prompt:"} {
+		if strings.HasPrefix(strings.ToLower(s), p) {
+			s = strings.Trim(strings.TrimSpace(s[len(p):]), "\"'“”‘’ \n\t")
+			break
+		}
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	return truncateRunes(s, maxEnhancePromptChars)
+}
 
 // imagegenConfig resolves the effective image backend config: the DB URL/token
 // (token decrypted) overlaid on the env defaults. ok is false when no URL is
@@ -274,6 +315,65 @@ func (s *Server) handleDeleteImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleEnhanceImagePrompt rewrites a short image brief into a detailed
+// diffusion-model prompt using the caller's key (4.3). It never fails hard: if
+// no key is available or the model errors, it returns a deterministic template
+// expansion with enhanced=false so the UI can still generate.
+func (s *Server) handleEnhanceImagePrompt(w http.ResponseWriter, r *http.Request) {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Brief          string `json:"brief"`
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := decodeJSON(w, r, &req, 16*1024); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	brief := strings.TrimSpace(req.Brief)
+	if brief == "" {
+		writeError(w, http.StatusBadRequest, "brief is required")
+		return
+	}
+	brief = truncateRunes(brief, maxImagePromptChars)
+
+	fail := func() {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"prompt":   fallbackEnhancePrompt(brief),
+			"original": brief,
+			"enhanced": false,
+		})
+	}
+
+	apiKey, err := s.resolveKey(r.Context(), u)
+	if err != nil {
+		fail()
+		return
+	}
+	out, err := s.up.ChatOnce(r.Context(), apiKey, "img-enhance-"+u.ID, defaultEnhanceModel,
+		[]upstream.Message{
+			{Role: "system", Content: enhanceSystemPrompt},
+			{Role: "user", Content: brief},
+		}, 400)
+	if err != nil {
+		s.log.Warn("image prompt enhance failed", "error", err)
+		fail()
+		return
+	}
+	enhanced := sanitizeImagePrompt(out)
+	if enhanced == "" {
+		fail()
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"prompt":   enhanced,
+		"original": brief,
+		"enhanced": true,
+	})
 }
 
 // imagegenMessage maps a client error to a user-facing message.

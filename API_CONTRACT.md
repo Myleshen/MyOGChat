@@ -973,6 +973,15 @@ CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id);
 - `GET /api/images/{id}` — raw bytes with the stored `Content-Type` and a long
   `Cache-Control`; owner-scoped `404`.
 - `DELETE /api/images/{id}` — `204`; owner-scoped `404`.
+- `POST /api/images/enhance` (4.3) — body `{"brief": string, "conversation_id"?: string}`.
+  Rewrites a short brief into a detailed SD-Turbo prompt with one non-streaming
+  chat call (model `mimo-v2.6-flash`) using the caller's key. Never fails hard:
+  with no key or an upstream error it returns a deterministic template expansion
+  with `"enhanced": false`. Returns `200`
+  `{"prompt":"…","original":"…","enhanced":bool}`; `400` on an empty brief.
+
+  The SPA opens a **preview & edit** modal: it shows the enhanced prompt in an
+  editable textarea (with "Enhance again"), then commits via `POST /api/images`.
 
 ### 16.3 Config
 

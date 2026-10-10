@@ -74,6 +74,14 @@ const imageBar = document.getElementById("image-bar");
 const imagePrompt = document.getElementById("image-prompt");
 const imageGenerate = document.getElementById("image-generate");
 const imageCancel = document.getElementById("image-cancel");
+/* Prompt preview & edit modal (feature 4.3). */
+const imageModal = document.getElementById("image-modal");
+const imageModalPrompt = document.getElementById("image-modal-prompt");
+const imageModalNote = document.getElementById("image-modal-note");
+const imageModalError = document.getElementById("image-modal-error");
+const imageModalGenerate = document.getElementById("image-modal-generate");
+const imageModalReenhance = document.getElementById("image-modal-reenhance");
+const imageModalClose = document.getElementById("image-modal-close");
 
 const toastEl = document.getElementById("toast");
 
@@ -4086,9 +4094,78 @@ function setImageBar(open) {
   }
 }
 
+/* ===== Prompt enhancement + preview (feature 4.3) ===== */
+let imageGenConv = null;
+
+/* Open the preview modal: ensure a conversation, enhance the brief, and let the
+   user edit the resulting prompt before generating. */
+async function openImageGen(brief) {
+  brief = (brief || "").trim();
+  if (!brief) {
+    toast("Enter an image prompt");
+    return;
+  }
+  if (state.streaming) {
+    toast("Wait for the current reply to finish");
+    return;
+  }
+  try {
+    imageGenConv = await ensureConversation();
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message);
+    return;
+  }
+  setImageBar(false);
+  if (imageModalPrompt) imageModalPrompt.value = brief;
+  setFormError(imageModalError, "");
+  openModal(imageModal);
+  await enhanceImagePrompt(brief);
+}
+
+/* Ask the server to rewrite a brief into a rich diffusion prompt (4.3). */
+async function enhanceImagePrompt(brief) {
+  if (!imageModalPrompt) return;
+  const b = (brief || imageModalPrompt.value || "").trim();
+  if (!b) {
+    setFormError(imageModalError, "Enter an image prompt.");
+    return;
+  }
+  if (imageModalNote) imageModalNote.textContent = "Enhancing the prompt for the image model…";
+  setFormError(imageModalError, "");
+  if (imageModalGenerate) imageModalGenerate.disabled = true;
+  if (imageModalReenhance) imageModalReenhance.disabled = true;
+  try {
+    const res = await api("/api/images/enhance", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        brief: b,
+        conversation_id: imageGenConv ? imageGenConv.id : "",
+      }),
+    });
+    if (res && res.prompt) imageModalPrompt.value = res.prompt;
+    if (imageModalNote) {
+      imageModalNote.textContent =
+        res && res.enhanced
+          ? "Prompt enhanced for the image model — edit it if you like, then generate."
+          : "Using a basic prompt (enhancer unavailable) — edit it if you like, then generate.";
+    }
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    setFormError(imageModalError, err.message);
+    if (imageModalNote) {
+      imageModalNote.textContent =
+        "Could not enhance the prompt — edit it and generate anyway.";
+    }
+  } finally {
+    if (imageModalGenerate) imageModalGenerate.disabled = false;
+    if (imageModalReenhance) imageModalReenhance.disabled = false;
+  }
+}
+
 /* Generate an image into the open conversation. The server persists the prompt
    and the resulting image as messages, so a refresh renders them. */
-async function generateImage(prompt) {
+async function runImageGeneration(prompt) {
   prompt = (prompt || "").trim();
   if (!prompt) {
     toast("Enter an image prompt");
@@ -4099,13 +4176,16 @@ async function generateImage(prompt) {
     return;
   }
 
-  let conv;
-  try {
-    conv = await ensureConversation();
-  } catch (err) {
-    if (!(err instanceof AuthError)) toast(err.message);
-    return;
+  let conv = imageGenConv;
+  if (!conv) {
+    try {
+      conv = await ensureConversation();
+    } catch (err) {
+      if (!(err instanceof AuthError)) toast(err.message);
+      return;
+    }
   }
+  imageGenConv = null;
 
   setImageBar(false);
   if (imageGenerate) imageGenerate.disabled = true;
@@ -4569,16 +4649,32 @@ function wireEvents() {
   if (micBtn) micBtn.addEventListener("click", toggleMic);
   if (audioInput) audioInput.addEventListener("change", onAudioFileSelected);
 
-  /* Image generation (feature 3.1): the image button toggles the prompt bar. */
+  /* Image generation (feature 3.1/4.3): the image button toggles the prompt bar;
+     Generate opens the enhance + preview modal. */
   if (imageBtn) imageBtn.addEventListener("click", () => setImageBar(imageBar.hidden));
   if (imageCancel) imageCancel.addEventListener("click", () => setImageBar(false));
-  if (imageGenerate) imageGenerate.addEventListener("click", () => generateImage(imagePrompt.value));
+  if (imageGenerate) imageGenerate.addEventListener("click", () => openImageGen(imagePrompt.value));
   if (imagePrompt) {
     imagePrompt.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.isComposing) {
         e.preventDefault();
-        generateImage(imagePrompt.value);
+        openImageGen(imagePrompt.value);
       }
+    });
+  }
+  if (imageModalClose) imageModalClose.addEventListener("click", () => closeModal(imageModal));
+  if (imageModalReenhance) {
+    imageModalReenhance.addEventListener("click", () => enhanceImagePrompt(imageModalPrompt.value));
+  }
+  if (imageModalGenerate) {
+    imageModalGenerate.addEventListener("click", () => {
+      const p = imageModalPrompt.value.trim();
+      if (!p) {
+        setFormError(imageModalError, "Enter an image prompt.");
+        return;
+      }
+      closeModal(imageModal);
+      runImageGeneration(p);
     });
   }
 }

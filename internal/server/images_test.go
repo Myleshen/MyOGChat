@@ -352,3 +352,49 @@ func TestSettingsPatchImagegen(t *testing.T) {
 }
 
 func strptr(s string) *string { return &s }
+
+// TestImageEnhanceFallsBackWithoutKey checks the enhancer degrades gracefully:
+// with no usable key it returns a template expansion (enhanced:false) so the UI
+// can still generate.
+func TestImageEnhanceFallsBackWithoutKey(t *testing.T) {
+	srv, st := newImageTestServer(t, "")
+	seedActiveUser(t, st, "u-alice", "alice", false)
+	h := srv.Handler()
+	cookie := login(t, h, "alice")
+
+	rr := doJSON(t, h, cookie, http.MethodPost, "/api/images/enhance", map[string]any{
+		"brief": "a cat on a roof at sunset",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("enhance status = %d, body %s", rr.Code, rr.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["enhanced"] != false {
+		t.Errorf("enhanced = %v, want false (no key)", out["enhanced"])
+	}
+	p, _ := out["prompt"].(string)
+	if !strings.Contains(p, "a cat on a roof at sunset") || !strings.Contains(p, "highly detailed") {
+		t.Errorf("fallback prompt = %q, want brief + template", p)
+	}
+
+	// An empty brief is rejected.
+	if rr := doJSON(t, h, cookie, http.MethodPost, "/api/images/enhance", map[string]any{"brief": "  "}); rr.Code != http.StatusBadRequest {
+		t.Errorf("empty brief status = %d, want 400", rr.Code)
+	}
+}
+
+func TestSanitizeImagePrompt(t *testing.T) {
+	cases := map[string]string{
+		"  \"Prompt: a red  fox\nin snow\"  ": "a red fox in snow",
+		"Here is the prompt: a wooden boat":   "a wooden boat",
+		"a lone lighthouse at dusk":           "a lone lighthouse at dusk",
+	}
+	for in, want := range cases {
+		if got := sanitizeImagePrompt(in); got != want {
+			t.Errorf("sanitizeImagePrompt(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

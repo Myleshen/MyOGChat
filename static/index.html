@@ -790,6 +790,30 @@
     </form>
   </div>
 
+  <!-- ===== Image generation prompt preview (feature 4.3) — self-contained ===== -->
+  <div id="image-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="image-modal-title">
+      <div class="modal-head">
+        <h2 id="image-modal-title">Generate image</h2>
+        <button id="image-modal-close" class="icon-btn modal-close" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="image-modal-note" class="settings-subtitle-sm">Enhancing your prompt…</p>
+        <label class="field">
+          <span class="field-label">Image prompt</span>
+          <textarea id="image-modal-prompt" class="image-modal-prompt" rows="6"
+                    maxlength="2000" placeholder="Describe the image…"></textarea>
+        </label>
+        <p id="image-modal-error" class="login-error" role="alert" hidden></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" id="image-modal-reenhance" class="btn btn-ghost">Enhance again</button>
+        <button type="button" id="image-modal-generate" class="btn btn-primary">Generate</button>
+      </div>
+    </div>
+  </div>
+  <!-- ===== end image generation prompt preview ===== -->
+
   <div id="toast" class="toast" role="alert" hidden></div>
 
 </body>

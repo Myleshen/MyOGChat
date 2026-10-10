@@ -161,6 +161,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/me/mail/test", s.handleTestMyMail)
 	// Image generation (per-user, 3.1).
 	mux.HandleFunc("POST /api/images", s.handleCreateImage)
+	mux.HandleFunc("POST /api/images/enhance", s.handleEnhanceImagePrompt)
 	mux.HandleFunc("GET /api/images/{id}", s.handleGetImage)
 	mux.HandleFunc("DELETE /api/images/{id}", s.handleDeleteImage)
 
