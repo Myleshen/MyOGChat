@@ -99,11 +99,13 @@ key when sharing is allowed.
   (function calling); Responses dialect uses `tools` too — both need parsing +
   execution + re-send.
 - **Web search** is now provider-agnostic: a pluggable layer with a fallback
-  chain **Tavily → Brave → DuckDuckGo** (`docs/2.4-search-providers.md`).
-  Tavily (`TAVILY_API_KEY`) and Brave (`BRAVE_API_KEY`) are keyed; DuckDuckGo is
-  keyless best-effort, so `web_search` works with zero configuration. Provider is
-  selectable via `MYOGCHAT_SEARCH_PROVIDER` / the `search_provider` DB setting
-  (Brave key settable from the admin UI, encrypted at rest).
+  chain **Tavily → Brave → Serper → DuckDuckGo** (`docs/2.4-search-providers.md`;
+  Serper + Brave `llm/context` added in 2.12). Tavily (`TAVILY_API_KEY`), Brave
+  (`BRAVE_API_KEY`) and Serper (per-user key, optional `SERPER_API_KEY`) are
+  keyed; DuckDuckGo is keyless best-effort, so `web_search` works with zero
+  configuration. Provider is selectable via `MYOGCHAT_SEARCH_PROVIDER` / the
+  `search_provider` DB setting (Brave key settable from the admin UI, encrypted
+  at rest).
 - Later tools reuse the same loop (calculator, fetch-url, python via 2.6).
 
 ### 2.5 OCR for images — ✅ done (deployed)
@@ -209,16 +211,26 @@ merges sequentially and resolves the small additive conflicts in shared files
   `internal/server/{chat,users,server}.go`, `main.go`, `static/*`, tests, docs.
   Full notes: `docs/2.10-2.11-tool-activity-usage.md`.
 
-### 2.12 Search providers — Serper + Brave `llm/context`
+### 2.12 Search providers — Serper + Brave `llm/context` — ✅ done (branch `feat/search-providers2`)
 - The `SearchProvider` interface (`internal/tools/search.go`) makes this small.
-- **Serper.dev** (`SERPER_API_KEY`, `POST https://google.serper.dev/search`,
-  header `X-API-KEY`) → Google-grade results; add to the chain
-  (Tavily → Brave → Serper → DDG, order configurable). **Brave `llm/context`**
-  (`GET /res/v1/llm/context`, same `X-Subscription-Token`) returns RAG-ready
-  snippets — an optional "search+context" mode.
-- **UI:** Serper key field + provider list in Settings → Integrations.
+- **Serper.dev** (`POST https://google.serper.dev/search`, header `X-API-KEY`,
+  response `organic[].{title,link,snippet}` — `link`, not `url`) added as the 4th
+  provider; chain is **Tavily → Brave → Serper → DDG** (`maxSearchChain` 3→4).
+  `num` is capped at 10 to stay at 1 credit.
+- **Serper key is per-user** (owner request): each user sets their own key in
+  Settings → Web search (`GET/PUT /api/me/serper`, encrypted with
+  `internal/secret` in `users.serper_key_enc`), resolved per request: own key →
+  optional server `SERPER_API_KEY`. Visible to all users, not admin-only.
+- **Brave `llm/context`** is a **mode flag on the existing Brave provider**
+  (`MYOGCHAT_BRAVE_MODE=web|context`, DB `brave_mode`), not a separate provider;
+  `grounding.generic[].snippets[]` are joined into `Result.Snippet`. The
+  model-facing `web_search` tool is unchanged.
+- **UI:** per-user Serper key field + provider list (`#my-search-section`) +
+  Serper option and Brave mode in the admin Web search block.
 - **Files:** `internal/tools/search.go`, `internal/server/integrations.go`,
-  `main.go`, `static/app.js`, docs. **Effort:** small–medium.
+  `internal/server/{server,users,chat}.go`, `internal/store/store.go`, `main.go`,
+  `static/{index.html,app.js,sw.js}`, `docs/2.4-search-providers.md`,
+  `API_CONTRACT.md`. **Effort:** small–medium.
 
 ### 2.13 Vision-model OCR (alternative engine) — ✅ done (branch `feat/vision-ocr`)
 - **Finding:** OpenCode Go exposes vision **input** models — `gpt-6-luna`

@@ -364,19 +364,35 @@ Required UI:
 ### 8.9 Web search providers
 
 `web_search` is provider-agnostic (tool name + `{"query"}` schema unchanged).
-An ordered fallback chain **Tavily → Brave → DuckDuckGo** answers the query;
-DuckDuckGo needs no key, so the chain is never empty and the tool is registered
-whenever any provider is usable. See `docs/2.4-search-providers.md`.
+An ordered fallback chain **Tavily → Brave → Serper → DuckDuckGo** answers the
+query; DuckDuckGo needs no key, so the chain is never empty and the tool is
+registered whenever any provider is usable. See `docs/2.4-search-providers.md`.
 
 Env vars (read once at startup): `TAVILY_API_KEY`, `BRAVE_API_KEY`,
-`MYOGCHAT_SEARCH_PROVIDER` (`tavily`|`brave`|`ddg`|`auto`, default `auto`),
-`MYOGCHAT_SEARCH_RESULTS` (default 5, clamped 1–20), `MYOGCHAT_SEARCH_REGION`
-(default `us-en`), `MYOGCHAT_SEARCH_SAFESEARCH` (`off`|`moderate`|`strict`,
-default `moderate`).
+`SERPER_API_KEY` (optional server-wide Serper key), `MYOGCHAT_SEARCH_PROVIDER`
+(`tavily`|`brave`|`serper`|`ddg`|`auto`, default `auto`), `MYOGCHAT_BRAVE_MODE`
+(`web`|`context`, default `web`), `MYOGCHAT_SEARCH_RESULTS` (default 5, clamped
+1–20), `MYOGCHAT_SEARCH_REGION` (default `us-en`), `MYOGCHAT_SEARCH_SAFESEARCH`
+(`off`|`moderate`|`strict`, default `moderate`).
 
-DB settings: `search_provider` (overrides the env default) and `brave_key`
-(encrypted at rest with `internal/secret`, takes precedence over `BRAVE_API_KEY`).
-Both are surfaced in `GET/PATCH /api/settings` (see §9.4).
+DB settings: `search_provider` (overrides the env default), `brave_key`
+(encrypted at rest with `internal/secret`, takes precedence over `BRAVE_API_KEY`),
+and `brave_mode` (`web`|`context`; `context` selects Brave's `llm/context` RAG
+endpoint instead of the SERP). These are surfaced in `GET/PATCH /api/settings`
+(see §9.4).
+
+**Serper key is per-user** (owner request), resolved per request like the
+OpenCode key: the caller's own stored key → the optional server `SERPER_API_KEY`.
+Each user manages their own key in Settings → Web search:
+
+- `GET /api/me/serper` → `200 {"has_key": bool, "key_hint": string,
+  "server_key_present": bool, "serper_configured": bool,
+  "tavily_configured": bool, "brave_configured": bool, "ddg_configured": true,
+  "search_active": "tavily"|"brave"|"serper"|"ddg"}` (any authenticated user).
+- `PUT /api/me/serper` `{"api_key": string}` → `200 {"has_key": bool,
+  "key_hint": string}`. Stored encrypted with `internal/secret`; `api_key: ""`
+  clears the caller's key (falls back to the server key). No upstream validation.
+
 
 ### 8.10 OCR for images (2.5)
 
@@ -519,8 +535,10 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
 - `GET /api/settings` → `200`:
   `{"allow_registration": bool, "pending_users": N, "share_server_key": bool,
    "server_key_present": bool, "tools_enabled": bool, "tavily_configured": bool,
-   "brave_configured": bool, "search_provider": "auto"|"tavily"|"brave"|"ddg",
-   "search_active": "tavily"|"brave"|"ddg", "linkwarden_url": string,
+   "brave_configured": bool, "serper_configured": bool,
+   "search_provider": "auto"|"tavily"|"brave"|"serper"|"ddg",
+   "search_active": "tavily"|"brave"|"serper"|"ddg",
+   "brave_mode": "web"|"context", "linkwarden_url": string,
    "linkwarden_configured": bool, "linkwarden_token_hint": string,
    "sandbox_enabled": bool, "sandbox_available": bool,
    "ocr_enabled": bool, "ocr_available": bool,
@@ -533,17 +551,19 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
 - `PATCH /api/settings` accepts any subset of
   `{"allow_registration"?: bool, "share_server_key"?: bool,
    "tools_enabled"?: bool, "linkwarden_url"?: string, "linkwarden_token"?: string,
-   "search_provider"?: "auto"|"tavily"|"brave"|"ddg", "brave_key"?: string,
-   "sandbox_enabled"?: bool, "ocr_enabled"?: bool,
+   "search_provider"?: "auto"|"tavily"|"brave"|"serper"|"ddg", "brave_key"?: string,
+   "brave_mode"?: "web"|"context", "sandbox_enabled"?: bool, "ocr_enabled"?: bool,
    "daily_token_limit"?: int, "monthly_cost_limit"?: int,
    "maps_provider"?: "osm"|"auto", "maps_region"?: string,
    "maps_units"?: "metric"|"imperial"}`
   → `200` (same shape as GET). Unknown `search_provider` values normalize to
-  `auto`; `brave_key: ""` clears the stored (encrypted) key; omitted
-  `linkwarden_token`/`brave_key` leave the stored value untouched; quota limits
-  must be `>= 0` (negative → `400`). Unknown `maps_provider` values normalize to
-  `auto` (which still resolves to OSM); `maps_units` normalizes to
-  `metric`|`imperial`; `maps_region: ""` clears it.
+  `auto`; unknown `brave_mode` values normalize to `web`; `brave_key: ""` clears
+  the stored (encrypted) key; omitted `linkwarden_token`/`brave_key` leave the
+  stored value untouched; quota limits must be `>= 0` (negative → `400`). Unknown
+  `maps_provider` values normalize to `auto` (which still resolves to OSM);
+  `maps_units` normalizes to `metric`|`imperial`; `maps_region: ""` clears it.
+  `serper_configured` in GET reflects only the server-wide `SERPER_API_KEY`; the
+  per-user key is exposed by `GET /api/me/serper` (§8.9).
 
 Non-admin callers of any of these get `403`.
 

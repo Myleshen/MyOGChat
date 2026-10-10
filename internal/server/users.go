@@ -261,6 +261,7 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		LinkwardenToken   *string `json:"linkwarden_token"`
 		SearchProvider    *string `json:"search_provider"`
 		BraveKey          *string `json:"brave_key"`
+		BraveMode         *string `json:"brave_mode"`
 		SandboxEnabled    *bool   `json:"sandbox_enabled"`
 		OCREnabled        *bool   `json:"ocr_enabled"` // feature 2.5
 		// Quota limits (2.11); 0 = off.
@@ -384,6 +385,13 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	if req.MapsUnits != nil {
 		if err := s.setMapsUnits(r.Context(), *req.MapsUnits); err != nil {
 			s.log.Error("set maps_units", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.BraveMode != nil {
+		if err := s.setBraveMode(r.Context(), *req.BraveMode); err != nil {
+			s.log.Error("set brave_mode", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
 		}

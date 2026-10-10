@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"myogchat/internal/store"
+	"myogchat/internal/tools"
 )
 
 func newSearchTestServer(t *testing.T, defaults SearchDefaults) *Server {
@@ -95,12 +96,118 @@ func TestIntegrationSettingsSearchFields(t *testing.T) {
 	if settings["search_active"] != "tavily" {
 		t.Errorf("search_active = %v, want tavily", settings["search_active"])
 	}
+	if settings["brave_mode"] != "web" {
+		t.Errorf("brave_mode = %v, want web", settings["brave_mode"])
+	}
+}
+
+func TestIntegrationSettingsSerperField(t *testing.T) {
+	// The server-wide Serper key (SERPER_API_KEY) surfaces in the admin view.
+	srv := newSearchTestServer(t, SearchDefaults{Provider: "auto", SerperKey: "serper-env"})
+	settings := srv.integrationSettings(context.Background())
+	if settings["serper_configured"] != true {
+		t.Errorf("serper_configured = %v, want true", settings["serper_configured"])
+	}
+	// With a Serper key and no Tavily/Brave keys, Serper answers first.
+	if settings["search_active"] != "serper" {
+		t.Errorf("search_active = %v, want serper", settings["search_active"])
+	}
+}
+
+func TestSearchConfigBraveMode(t *testing.T) {
+	srv := newSearchTestServer(t, SearchDefaults{Provider: "auto", BraveKey: "b"})
+	ctx := context.Background()
+	if srv.searchConfig(ctx).BraveContext {
+		t.Error("default Brave mode should be web")
+	}
+	if err := srv.setBraveMode(ctx, "context"); err != nil {
+		t.Fatalf("setBraveMode(context): %v", err)
+	}
+	if !srv.searchConfig(ctx).BraveContext {
+		t.Error("brave_mode=context should enable llm/context mode")
+	}
+	// Unknown values normalize back to web.
+	if err := srv.setBraveMode(ctx, "bogus"); err != nil {
+		t.Fatalf("setBraveMode(bogus): %v", err)
+	}
+	if srv.searchConfig(ctx).BraveContext {
+		t.Error("unknown brave_mode should normalize to web")
+	}
+}
+
+func TestSetUserSerperKeyEncryptedAndPrecedence(t *testing.T) {
+	srv := newSearchTestServer(t, SearchDefaults{Provider: "auto", SerperKey: "serper-env"})
+	ctx := context.Background()
+
+	u := store.User{ID: "u-serper", Username: "alice", Email: "a@example.com",
+		PasswordHash: "x", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := srv.st.InsertUser(ctx, &u); err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+
+	// Env fallback before any per-user key.
+	if cfg := srv.searchConfigFor(ctx, u); cfg.SerperKey != "serper-env" {
+		t.Fatalf("env serper = %q, want serper-env", cfg.SerperKey)
+	}
+
+	// A stored per-user key is encrypted at rest and takes precedence over env.
+	if err := srv.setUserSerperKey(ctx, u, "serper-db"); err != nil {
+		t.Fatalf("setUserSerperKey: %v", err)
+	}
+	stored, err := srv.st.GetUserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if stored.SerperKeyEnc == nil || *stored.SerperKeyEnc == "" || *stored.SerperKeyEnc == "serper-db" {
+		t.Fatalf("stored serper key = %v, want ciphertext", stored.SerperKeyEnc)
+	}
+	if cfg := srv.searchConfigFor(ctx, stored); cfg.SerperKey != "serper-db" {
+		t.Fatalf("per-user serper = %q, want serper-db", cfg.SerperKey)
+	}
+	// The admin/global view does not leak the per-user key.
+	if cfg := srv.searchConfig(ctx); cfg.SerperKey != "serper-env" {
+		t.Fatalf("global serper = %q, want serper-env", cfg.SerperKey)
+	}
+
+	// Clearing falls back to env again.
+	if err := srv.setUserSerperKey(ctx, u, ""); err != nil {
+		t.Fatalf("setUserSerperKey(clear): %v", err)
+	}
+	stored, _ = srv.st.GetUserByID(ctx, u.ID)
+	if stored.SerperKeyEnc != nil && *stored.SerperKeyEnc != "" {
+		t.Fatalf("serper key not cleared: %v", stored.SerperKeyEnc)
+	}
+	if cfg := srv.searchConfigFor(ctx, stored); cfg.SerperKey != "serper-env" {
+		t.Fatalf("serper after clear = %q, want serper-env", cfg.SerperKey)
+	}
+}
+
+func TestUserSerperKeyBuildsProviderChain(t *testing.T) {
+	srv := newSearchTestServer(t, SearchDefaults{Provider: "auto"})
+	ctx := context.Background()
+	u := store.User{ID: "u2", Username: "bob", Email: "b@example.com",
+		PasswordHash: "x", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := srv.st.InsertUser(ctx, &u); err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+	// With no keys anywhere, DDG answers.
+	if got := tools.SearchActive(srv.searchConfigFor(ctx, u)); got != "ddg" {
+		t.Fatalf("active = %q, want ddg", got)
+	}
+	// A per-user Serper key makes Serper the active provider for that user.
+	if err := srv.setUserSerperKey(ctx, u, "serper-db"); err != nil {
+		t.Fatalf("setUserSerperKey: %v", err)
+	}
+	stored, _ := srv.st.GetUserByID(ctx, u.ID)
+	if got := tools.SearchActive(srv.searchConfigFor(ctx, stored)); got != "serper" {
+		t.Fatalf("active = %q, want serper", got)
+	}
 }
 
 func TestToolRegistryRegistersWebSearchWithoutKeys(t *testing.T) {
 	// DuckDuckGo is keyless, so web_search must be registered even with no keys.
 	srv := newSearchTestServer(t, SearchDefaults{Provider: "auto"})
-	reg := srv.toolRegistry(context.Background())
+	reg := srv.toolRegistry(context.Background(), store.User{})
 	if _, ok := reg.Get("web_search"); !ok {
 		t.Fatal("web_search not registered with no keys configured")
 	}

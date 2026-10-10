@@ -25,6 +25,7 @@ const (
 	SearchProviderAuto   = "auto"
 	SearchProviderTavily = "tavily"
 	SearchProviderBrave  = "brave"
+	SearchProviderSerper = "serper"
 	SearchProviderDDG    = "ddg"
 )
 
@@ -33,8 +34,14 @@ const (
 const (
 	tavilyBaseURL = "https://api.tavily.com"
 	braveBaseURL  = "https://api.search.brave.com"
+	serperBaseURL = "https://google.serper.dev"
 	ddgBaseURL    = "https://html.duckduckgo.com"
 )
+
+// serperMaxNum caps the Serper "num" field at 10. Serper bills 10 results as
+// 1 credit but 11–20 results as 2 credits; the tool caps results at
+// maxSearchResults (20), so staying at 10 keeps every query at 1 credit.
+const serperMaxNum = 10
 
 // defaultSearchResults is the per-query result cap when none is configured.
 const defaultSearchResults = 5
@@ -51,7 +58,7 @@ const webSearchTimeout = 20 * time.Second
 const searchBudget = 25 * time.Second
 
 // maxSearchChain caps how many providers a single query will try.
-const maxSearchChain = 3
+const maxSearchChain = 4
 
 // ddgUserAgent is a realistic desktop browser UA; DuckDuckGo's HTML endpoint
 // serves an anomaly/block page to obviously non-browser clients.
@@ -80,12 +87,14 @@ type SearchProvider interface {
 
 // SearchConfig is the resolved web-search configuration (env + DB settings).
 type SearchConfig struct {
-	Provider   string // tavily | brave | ddg | auto
-	TavilyKey  string
-	BraveKey   string
-	MaxResults int
-	Region     string
-	SafeSearch string
+	Provider     string // tavily | brave | serper | ddg | auto
+	TavilyKey    string
+	BraveKey     string
+	SerperKey    string
+	BraveContext bool // Brave llm/context (RAG) mode instead of web/search
+	MaxResults   int
+	Region       string
+	SafeSearch   string
 }
 
 // Options derives the per-call Options from the resolved config.
@@ -105,6 +114,8 @@ func NormalizeProvider(p string) string {
 		return SearchProviderTavily
 	case SearchProviderBrave:
 		return SearchProviderBrave
+	case SearchProviderSerper:
+		return SearchProviderSerper
 	case SearchProviderDDG:
 		return SearchProviderDDG
 	default:
@@ -127,17 +138,22 @@ func BuildSearchProviders(cfg SearchConfig) []SearchProvider {
 		usable[SearchProviderTavily] = newTavilyProvider(cfg.TavilyKey)
 	}
 	if strings.TrimSpace(cfg.BraveKey) != "" {
-		usable[SearchProviderBrave] = newBraveProvider(cfg.BraveKey)
+		usable[SearchProviderBrave] = newBraveProvider(cfg.BraveKey, cfg.BraveContext)
+	}
+	if strings.TrimSpace(cfg.SerperKey) != "" {
+		usable[SearchProviderSerper] = newSerperProvider(cfg.SerperKey)
 	}
 
-	order := []string{SearchProviderTavily, SearchProviderBrave, SearchProviderDDG}
+	order := []string{SearchProviderTavily, SearchProviderBrave, SearchProviderSerper, SearchProviderDDG}
 	switch NormalizeProvider(cfg.Provider) {
 	case SearchProviderTavily:
-		order = []string{SearchProviderTavily, SearchProviderBrave, SearchProviderDDG}
+		order = []string{SearchProviderTavily, SearchProviderBrave, SearchProviderSerper, SearchProviderDDG}
 	case SearchProviderBrave:
-		order = []string{SearchProviderBrave, SearchProviderTavily, SearchProviderDDG}
+		order = []string{SearchProviderBrave, SearchProviderTavily, SearchProviderSerper, SearchProviderDDG}
+	case SearchProviderSerper:
+		order = []string{SearchProviderSerper, SearchProviderTavily, SearchProviderBrave, SearchProviderDDG}
 	case SearchProviderDDG:
-		order = []string{SearchProviderDDG, SearchProviderTavily, SearchProviderBrave}
+		order = []string{SearchProviderDDG, SearchProviderTavily, SearchProviderBrave, SearchProviderSerper}
 	}
 
 	out := make([]SearchProvider, 0, len(order))
@@ -233,22 +249,30 @@ func (p *tavilyProvider) Search(ctx context.Context, query string, opts Options)
 // ---------- Brave ----------
 
 type braveProvider struct {
-	apiKey  string
-	baseURL string
-	hc      *http.Client
+	apiKey     string
+	baseURL    string
+	useContext bool // llm/context (RAG) mode instead of web/search
+	hc         *http.Client
 }
 
-func newBraveProvider(apiKey string) *braveProvider {
+// newBraveProvider builds the Brave provider. useContext selects the
+// llm/context retrieval mode (extracted page chunks) instead of the classic
+// web/search SERP; both share the same key, host, and identity (2.12).
+func newBraveProvider(apiKey string, useContext bool) *braveProvider {
 	return &braveProvider{
-		apiKey:  strings.TrimSpace(apiKey),
-		baseURL: braveBaseURL,
-		hc:      &http.Client{Timeout: webSearchTimeout},
+		apiKey:     strings.TrimSpace(apiKey),
+		baseURL:    braveBaseURL,
+		useContext: useContext,
+		hc:         &http.Client{Timeout: webSearchTimeout},
 	}
 }
 
 func (p *braveProvider) Name() string { return SearchProviderBrave }
 
 func (p *braveProvider) Search(ctx context.Context, query string, opts Options) ([]Result, error) {
+	if p.useContext {
+		return p.searchContext(ctx, query, opts)
+	}
 	q := url.Values{}
 	q.Set("q", query)
 	q.Set("count", strconv.Itoa(clampResults(opts.MaxResults)))
@@ -295,6 +319,79 @@ func (p *braveProvider) Search(ctx context.Context, query string, opts Options) 
 	return results, nil
 }
 
+// braveContextMaxTokens bounds the llm/context token budget. Brave's default is
+// 8192 tokens, far too large for a single tool result; 4096 keeps the payload
+// useful without bloating the model context.
+const braveContextMaxTokens = 4096
+
+// searchContext queries the Brave llm/context (RAG) endpoint. Each
+// grounding.generic entry carries extracted page chunks (snippets[]) which are
+// joined into the provider-neutral Result.Snippet; the model-facing web_search
+// tool is unchanged. An empty grounding set is treated as a provider error so
+// the fallback chain continues (matching DuckDuckGo's zero-result contract).
+func (p *braveProvider) searchContext(ctx context.Context, query string, opts Options) ([]Result, error) {
+	q := url.Values{}
+	q.Set("q", query)
+	q.Set("count", strconv.Itoa(clampResults(opts.MaxResults)))
+	q.Set("maximum_number_of_tokens", strconv.Itoa(braveContextMaxTokens))
+	if country := countryFromRegion(opts.Region); country != "" {
+		q.Set("country", country)
+	}
+	if lang := langFromRegion(opts.Region); lang != "" {
+		q.Set("search_lang", lang)
+	}
+	if ss := strings.TrimSpace(opts.SafeSearch); ss != "" {
+		q.Set("safesearch", ss)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/res/v1/llm/context?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Subscription-Token", p.apiKey)
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("brave: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("brave: HTTP %d: %s", resp.StatusCode, firstLine(raw))
+	}
+	var out struct {
+		Grounding struct {
+			Generic []struct {
+				URL      string   `json:"url"`
+				Title    string   `json:"title"`
+				Snippets []string `json:"snippets"`
+			} `json:"generic"`
+		} `json:"grounding"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("brave: decode response: %w", err)
+	}
+	results := make([]Result, 0, len(out.Grounding.Generic))
+	for _, g := range out.Grounding.Generic {
+		// Clean each chunk individually so joining with "\n" survives (cleanText
+		// collapses whitespace, which would otherwise flatten the separator).
+		chunks := make([]string, 0, len(g.Snippets))
+		for _, sn := range g.Snippets {
+			if t := cleanText(sn); t != "" {
+				chunks = append(chunks, t)
+			}
+		}
+		results = append(results, Result{
+			Title:   cleanText(g.Title),
+			URL:     g.URL,
+			Snippet: strings.Join(chunks, "\n"),
+		})
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("brave: no results in grounding")
+	}
+	return results, nil
+}
+
 // countryFromRegion extracts a 2-letter country code from a region like "us-en"
 // (Brave wants country=us; DDG wants kl=us-en).
 func countryFromRegion(region string) string {
@@ -306,6 +403,95 @@ func countryFromRegion(region string) string {
 		return region[:i]
 	}
 	return region
+}
+
+// langFromRegion extracts the language code from a region like "us-en" (the
+// suffix after the first "-"/"_"); Serper wants hl and Brave context wants
+// search_lang. Defaults to "en" when no suffix is present.
+func langFromRegion(region string) string {
+	region = strings.TrimSpace(region)
+	if region == "" {
+		return "en"
+	}
+	if i := strings.IndexAny(region, "-_"); i >= 0 {
+		if i+1 < len(region) {
+			return region[i+1:]
+		}
+		return "en"
+	}
+	return region
+}
+
+// ---------- Serper ----------
+
+type serperProvider struct {
+	apiKey  string
+	baseURL string
+	hc      *http.Client
+}
+
+func newSerperProvider(apiKey string) *serperProvider {
+	return &serperProvider{
+		apiKey:  strings.TrimSpace(apiKey),
+		baseURL: serperBaseURL,
+		hc:      &http.Client{Timeout: webSearchTimeout},
+	}
+}
+
+func (p *serperProvider) Name() string { return SearchProviderSerper }
+
+func (p *serperProvider) Search(ctx context.Context, query string, opts Options) ([]Result, error) {
+	num := clampResults(opts.MaxResults)
+	if num > serperMaxNum {
+		// >10 results doubles the Serper credit cost; cap at 10.
+		num = serperMaxNum
+	}
+	payload := map[string]any{
+		"q":   query,
+		"num": num,
+	}
+	if gl := countryFromRegion(opts.Region); gl != "" {
+		payload["gl"] = gl
+	}
+	if hl := langFromRegion(opts.Region); hl != "" {
+		payload["hl"] = hl
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/search", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-API-KEY", p.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("serper: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("serper: HTTP %d: %s", resp.StatusCode, firstLine(raw))
+	}
+	var out struct {
+		Organic []struct {
+			Title    string `json:"title"`
+			Link     string `json:"link"` // Serper uses "link", not "url"
+			Snippet  string `json:"snippet"`
+			Position int    `json:"position"`
+		} `json:"organic"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("serper: decode response: %w", err)
+	}
+	results := make([]Result, 0, len(out.Organic))
+	for _, r := range out.Organic {
+		results = append(results, Result{Title: cleanText(r.Title), URL: r.Link, Snippet: cleanText(r.Snippet)})
+	}
+	return results, nil
 }
 
 // ---------- DuckDuckGo ----------

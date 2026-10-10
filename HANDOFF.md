@@ -138,7 +138,7 @@ fix, deploy.
 | 2.1 | Per-user keys (BYOK) | ✅ shipped |
 | 2.2 | Groups & shared keys | ✅ shipped |
 | 2.3 | Files & PDF attachments | ✅ shipped |
-| 2.4 | Tools + web search | ✅ shipped (**web_search** is provider-agnostic: Tavily → Brave → DuckDuckGo fallback; DuckDuckGo needs no key) |
+| 2.4 | Tools + web search | ✅ shipped (**web_search** is provider-agnostic: Tavily → Brave → Serper → DuckDuckGo fallback; DuckDuckGo needs no key. Serper + Brave `llm/context` added in 2.12) |
 | 2.8 | URL summarization + Linkwarden | ✅ shipped (Linkwarden needs instance URL + token in Settings) |
 | 2.5 | OCR for images | ✅ shipped (`DockerTesseract`; needs `deploy/ocr-setup.sh` on the host) |
 | 2.6 | **Python sandbox** | ✅ shipped (`run_python`, hardened Docker sandbox; needs `deploy/sandbox-setup.sh` on the host) |
@@ -160,8 +160,10 @@ limiter and a SQLite result cache. Not yet merged/deployed.
 
 - **web_search** now works with zero configuration (DuckDuckGo keyless fallback).
   Tavily/Brave keys (`TAVILY_API_KEY` / `BRAVE_API_KEY`, or the `brave_key` DB
-  setting) give higher-quality results; the provider is selectable in Settings →
-  Integrations (`search_provider`). `fetch_url` + Linkwarden are independent.
+  setting) and a per-user Serper key give higher-quality results; the provider is
+  selectable in Settings → Integrations (`search_provider`). Serper + Brave
+  `llm/context` (2.12) are on branch `feat/search-providers2` (not merged).
+  `fetch_url` + Linkwarden are independent.
 - **Group key-sharing** is unit-tested (`internal/server/keys_test.go`) but a full
   live "member uses the owner's key" round-trip hasn't been done.
 - **PDF** is unit-tested (+ a fixture) and the UI attach/send works; a real

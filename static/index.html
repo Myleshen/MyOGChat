@@ -321,6 +321,30 @@
         </form>
       </section>
 
+      <!-- ==== BEGIN per-user web search (2.12) — self-contained, safe to relocate ==== -->
+      <!-- Visible to all users (not admin-only): the per-user Serper key + provider list. -->
+      <section id="my-search-section" class="settings-section settings-search">
+        <h2 class="settings-heading">Web search</h2>
+        <p class="settings-subtitle-sm">
+          Optionally add your own Serper (Google) API key for higher-quality web
+          search. Brave and DuckDuckGo work without a key.
+        </p>
+        <p id="my-search-status" class="settings-subtitle-sm">Web search: loading…</p>
+        <form id="my-serper-form" class="add-user-form" autocomplete="off">
+          <label class="field">
+            <span class="field-label">Serper API key</span>
+            <input id="my-serper-key" type="password" autocomplete="off"
+                   placeholder="Leave blank to keep the stored key">
+          </label>
+          <p id="my-serper-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="submit" class="btn btn-primary">Save key</button>
+            <button type="button" id="my-serper-clear" class="btn btn-ghost">Clear key</button>
+          </div>
+        </form>
+      </section>
+      <!-- ==== END per-user web search ==== -->
+
       <!-- Integrations (admin only, Phase 2.4 / 2.8). Hidden for non-admins. -->
       <section id="integrations-section" class="settings-section settings-integrations" hidden>
         <h2 class="settings-heading">Integrations</h2>
@@ -339,9 +363,10 @@
           <label class="field">
             <span class="field-label">Provider</span>
             <select id="search-provider">
-              <option value="auto">Auto (Tavily → Brave → DuckDuckGo)</option>
+              <option value="auto">Auto (Tavily → Brave → Serper → DuckDuckGo)</option>
               <option value="tavily">Tavily</option>
               <option value="brave">Brave</option>
+              <option value="serper">Serper (Google)</option>
               <option value="ddg">DuckDuckGo</option>
             </select>
           </label>
@@ -349,6 +374,13 @@
             <span class="field-label">Brave API key</span>
             <input id="search-brave-key" type="password" autocomplete="off"
                    placeholder="Leave blank to keep the stored key">
+          </label>
+          <label class="field">
+            <span class="field-label">Brave mode</span>
+            <select id="search-brave-mode">
+              <option value="web">Web search (SERP)</option>
+              <option value="context">Context / RAG (llm/context)</option>
+            </select>
           </label>
           <p id="search-error" class="login-error" role="alert" hidden></p>
           <div class="key-actions">

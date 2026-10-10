@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
   is_admin      INTEGER NOT NULL DEFAULT 0,
   status        TEXT NOT NULL DEFAULT 'active',
   api_key_enc   TEXT,
+  serper_key_enc TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -113,10 +114,11 @@ type User struct {
 	Status       string  `json:"status"` // active | pending | disabled
 	APIKeyEnc    *string `json:"-"`      // encrypted per-user OpenCode Go key (§2.1)
 	// Per-user quota overrides (2.11); nil = inherit the global admin setting.
-	DailyTokenLimit  *int64 `json:"daily_token_limit,omitempty"`
-	MonthlyCostLimit *int64 `json:"monthly_cost_limit,omitempty"`
-	CreatedAt        int64  `json:"created_at"`
-	UpdatedAt        int64  `json:"updated_at"`
+	DailyTokenLimit  *int64  `json:"daily_token_limit,omitempty"`
+	MonthlyCostLimit *int64  `json:"monthly_cost_limit,omitempty"`
+	SerperKeyEnc     *string `json:"-"` // encrypted per-user Serper key (2.12)
+	CreatedAt        int64   `json:"created_at"`
+	UpdatedAt        int64   `json:"updated_at"`
 }
 
 // Conversation mirrors a row of the conversations table.
@@ -266,6 +268,7 @@ func (s *Store) migrate() error {
 		{"users", "api_key_enc", `ALTER TABLE users ADD COLUMN api_key_enc TEXT`},
 		{"users", "daily_token_limit", `ALTER TABLE users ADD COLUMN daily_token_limit INTEGER`},
 		{"users", "monthly_cost_limit", `ALTER TABLE users ADD COLUMN monthly_cost_limit INTEGER`},
+		{"users", "serper_key_enc", `ALTER TABLE users ADD COLUMN serper_key_enc TEXT`},
 	}
 	cache := map[string]map[string]bool{}
 	for _, st := range steps {
@@ -362,20 +365,22 @@ func optInt(n sql.NullInt64) *int64 {
 
 // ---------- users ----------
 
-const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, daily_token_limit, monthly_cost_limit, created_at, updated_at"
+const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, daily_token_limit, monthly_cost_limit, serper_key_enc, created_at, updated_at"
 
 func scanUser(sc scanner) (User, error) {
 	var u User
 	var admin int
 	var keyEnc sql.NullString
 	var daily, monthly sql.NullInt64
-	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &daily, &monthly, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	var serperEnc sql.NullString
+	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &daily, &monthly, &serperEnc, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return User{}, err
 	}
 	u.IsAdmin = admin != 0
 	u.APIKeyEnc = optString(keyEnc)
 	u.DailyTokenLimit = optInt(daily)
 	u.MonthlyCostLimit = optInt(monthly)
+	u.SerperKeyEnc = optString(serperEnc)
 	return u, nil
 }
 
@@ -383,9 +388,9 @@ func scanUser(sc scanner) (User, error) {
 // driver error (the caller maps it to 409).
 func (s *Store) InsertUser(ctx context.Context, u *User) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.Username, u.Email, u.PasswordHash, boolToInt(u.IsAdmin), u.Status, nullString(u.APIKeyEnc),
-		nullInt(u.DailyTokenLimit), nullInt(u.MonthlyCostLimit), u.CreatedAt, u.UpdatedAt)
+		nullInt(u.DailyTokenLimit), nullInt(u.MonthlyCostLimit), nullString(u.SerperKeyEnc), u.CreatedAt, u.UpdatedAt)
 	return err
 }
 
@@ -470,6 +475,14 @@ func (s *Store) SetUserLimits(ctx context.Context, id string, daily, monthly *in
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET daily_token_limit = ?, monthly_cost_limit = ?, updated_at = ? WHERE id = ?`,
 		nullInt(daily), nullInt(monthly), now, id)
+	return err
+}
+
+// SetUserSerperKey stores (or clears, when nil) a user's encrypted Serper key
+// (2.12).
+func (s *Store) SetUserSerperKey(ctx context.Context, id string, enc *string, now int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET serper_key_enc = ?, updated_at = ? WHERE id = ?`, nullString(enc), now, id)
 	return err
 }
 

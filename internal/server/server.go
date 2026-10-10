@@ -73,6 +73,9 @@ func (s *Server) Handler() http.Handler {
 	// Usage & quotas (2.11).
 	mux.HandleFunc("GET /api/me/usage", s.handleMyUsage)
 	mux.HandleFunc("GET /api/users/usage", s.handleUsersUsage)
+	// Per-user Serper search key (2.12).
+	mux.HandleFunc("GET /api/me/serper", s.handleGetMySerper)
+	mux.HandleFunc("PUT /api/me/serper", s.handlePutMySerper)
 	// Groups & shared keys (§2.2).
 	mux.HandleFunc("GET /api/groups", s.handleListGroups)
 	mux.HandleFunc("POST /api/groups", s.handleCreateGroup)
