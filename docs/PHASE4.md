@@ -42,7 +42,7 @@ overhaul last so it wraps the finished sections; media last as the heaviest).
 ## Acceptance criteria
 
 - `go build ./...`, `go vet ./...`, `go test ./...`, `node --check static/app.js`
-  all green; `sw.js` cache bumped per release.
+  all green; deploys are cache-busted automatically (content-hash `?v=`).
 - `scripts/ui-test-run.sh` passes; pwa battery green on the tunnel.
 - Every new UI surface audited on phone / iPad / desktop.
 - No secrets in tool outputs/logs; additive migrations only.

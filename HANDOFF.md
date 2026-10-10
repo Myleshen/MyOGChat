@@ -74,7 +74,11 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2
   `github.com/ledongthuc/pdf` (pure Go, for PDF text). Both CGO-free.
 - Must build with `CGO_ENABLED=0` and cross-compile to `linux/arm64`.
 - Frontend: vanilla JS, **no build step**, mobile-first; everything served from
-  Go `embed.FS`. Bump the `static/sw.js` cache version on asset changes.
+  Go `embed.FS`. The SPA shell is **auto cache-busted**: the server hashes the
+  shell files at startup and serves `index.html` with `?v=<hash>` on
+  `app.js`/`style.css`/`manifest` + a versioned service-worker registration, so
+  an edge/CDN cache can never serve a stale shell after a deploy (no manual
+  version bump).
 - DB changes are **additive migrations** (`CREATE TABLE IF NOT EXISTS` /
   `ALTER TABLE ADD COLUMN`) in `internal/store.migrate()`; never drop data.
 - Upstream requests need `x-opencode-session` (conversation UUID) and a non-generic
@@ -215,8 +219,10 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 ## Gotchas / tips
 
 - **Service-worker cache** can mask new assets during testing: start a fresh
-  browser session (`agent-browser close --all`) or hard-refresh. `sw.js` version
-  is bumped per release (currently v8).
+  browser session (`agent-browser close --all`) or hard-refresh. Deploys are
+  cache-busted automatically (content-hash `?v=` on the shell + a versioned SW),
+  so a normal reload picks up a new build; if a client was on an old SW (pre
+  cache-busting) it self-heals when the edge cache for `/sw.js` expires.
 - **`pkill -f <pattern>`** can match your own shell command and kill it — use
   `pkill -x <name>` or a pattern that won't match the command line.
 - **`/zen/go/v1/models` is public** (200 with no auth); only completions
