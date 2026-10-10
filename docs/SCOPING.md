@@ -191,8 +191,7 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
   as a future upgrade.
   - iCloud `caldav.icloud.com` → `.well-known/caldav` → `pNN-caldav.icloud.com` (cache the partition).
   - Zoho `calendar.zoho.com/.well-known/caldav` (region variants).
-  - Google `www.googleapis.com/calendar/v3` with hand-rolled OAuth2 refresh
-    (avoid `google.golang.org/api` — drags in grpc/protobuf/OTel).
+  - Google → the per-calendar **secret ICS URL** (`.../ical/<id>/private-<hash>/basic.ics`).
 - **Libs:** `emersion/go-webdav` (CalDAV) + `go-ical` (MIT, pure Go).
 - **Design:** per-user encrypted creds in a new `calendar_accounts` table with a
   **`kind` discriminator** (`caldav` | `ics`) + encrypted `credential` blob
@@ -226,6 +225,21 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
   ODbL attribution ("© OpenStreetMap contributors"); Nominatim forbids
   autocomplete and the OSRM demo server is not for production (self-host later if
   needed).
+
+---
+
+## 3.5 Speech-to-text (STT) — scoped, research pending
+
+- Transcribe voice input. **Ollama does *not* serve STT** (it's LLMs + embeddings
+  only) — the realistic runtimes are **whisper.cpp** / **faster-whisper** (Pi 4B
+  CPU, or CUDA on the Proxmox GTX 1650 Ti). Design: `POST /api/stt` + a PWA mic
+  button (`MediaRecorder`). Full report in `docs/research/` (TTS/STT).
+
+## 3.6 Text-to-speech (TTS) — scoped, research pending
+
+- Speak assistant replies. Likely **Piper** (ONNX, real-time on a Pi 4), with a
+  Proxmox-GPU option for heavier voices. Design: `POST /api/tts` + a speaker
+  button on messages. Ollama does **not** do TTS.
 
 ---
 
