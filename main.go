@@ -318,6 +318,13 @@ func run(cfg config, log *slog.Logger) error {
 	if _, err := st.EnsureSetting(ctx, "ocr_enabled", "1"); err != nil {
 		return err
 	}
+	// Usage quotas default to off (0 = unlimited) (2.11).
+	if _, err := st.EnsureSetting(ctx, "daily_token_limit", "0"); err != nil {
+		return err
+	}
+	if _, err := st.EnsureSetting(ctx, "monthly_cost_limit", "0"); err != nil {
+		return err
+	}
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {

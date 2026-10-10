@@ -133,6 +133,20 @@ const ocrSection = document.getElementById("ocr-section");
 const settingOcrEnabled = document.getElementById("setting-ocr-enabled");
 const ocrStatus = document.getElementById("ocr-status");
 
+/* ===== Usage & quotas (2.11) — self-contained, safe to relocate ===== */
+const usageSection = document.getElementById("usage-section");
+const usageRange = document.getElementById("usage-range");
+const usageTotals = document.getElementById("usage-totals");
+const usageByModel = document.getElementById("usage-by-model");
+const usageQuotaStatus = document.getElementById("usage-quota-status");
+const usageAdmin = document.getElementById("usage-admin");
+const settingDailyTokenLimit = document.getElementById("setting-daily-token-limit");
+const settingMonthlyCostLimit = document.getElementById("setting-monthly-cost-limit");
+const usageError = document.getElementById("usage-error");
+const usageSave = document.getElementById("usage-save");
+const usageUsersList = document.getElementById("usage-users-list");
+/* ===== end Usage & quotas (2.11) ===== */
+
 const projectModal = document.getElementById("project-modal");
 const projectForm = document.getElementById("project-form");
 const projectModalTitle = document.getElementById("project-modal-title");
@@ -710,14 +724,17 @@ function showSettingsPage() {
   integrationsSection.hidden = !isAdmin;
   toolsSection.hidden = !isAdmin; /* code-sandbox tools (2.6/2.7) */
   ocrSection.hidden = !isAdmin;
+  usageAdmin.hidden = !isAdmin; /* usage & quotas (2.11) */
   settingsPage.hidden = false;
   const body = settingsPage.querySelector(".settings-body");
   if (body) body.scrollTop = 0;
   loadKeyStatus().catch(() => {});
   loadGroups().catch(() => {});
+  loadUsage().catch(() => {}); /* usage & quotas (2.11) */
   if (isAdmin) {
     loadUsers().catch(() => {});
     loadSettingsInfo(false).catch(() => {});
+    loadAllUsersUsage().catch(() => {});
   }
   setTimeout(() => settingsBack.focus({ preventScroll: true }), 0);
 }
@@ -756,6 +773,7 @@ function renderUser() {
   userAdminBadge.hidden = !isAdmin;
   usersSection.hidden = !isAdmin;
   ocrSection.hidden = !isAdmin;
+  usageAdmin.hidden = !isAdmin;
 }
 
 /* ============================== Admin: users panel ============================== */
@@ -927,6 +945,7 @@ async function loadSettingsInfo(silent) {
     applyIntegrationSettings(s);
     applySandboxSettings(s); /* code-sandbox tools (2.6/2.7) */
     applyOCRSettings(s);
+    applyUsageSettings(s); /* usage & quotas (2.11) */
   } catch (err) {
     if (err instanceof AuthError) return;
     if (isForbidden(err)) {
@@ -934,6 +953,7 @@ async function loadSettingsInfo(silent) {
       integrationsSection.hidden = true;
       toolsSection.hidden = true; /* code-sandbox tools (2.6/2.7) */
       ocrSection.hidden = true;
+      usageAdmin.hidden = true; /* usage & quotas (2.11) */
       return;
     }
     if (!silent) toast(err.message);
@@ -1090,6 +1110,160 @@ async function saveOcrEnabled() {
     toast(isForbidden(err) ? "Admin access required" : err.message);
   }
 }
+
+/* ===== BEGIN Usage & quotas (2.11) — self-contained, safe to relocate ===== */
+
+/* Load the signed-in user's usage for the selected range. */
+async function loadUsage() {
+  if (!usageTotals) return;
+  const range = usageRange ? usageRange.value : "30d";
+  usageTotals.textContent = "Loading…";
+  try {
+    const data = await api("/api/me/usage?range=" + enc(range));
+    renderUsage(data);
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    usageTotals.textContent = "Could not load usage.";
+  }
+}
+
+function fmtTokens(n) {
+  return typeof n === "number" ? n.toLocaleString() : "0";
+}
+
+function fmtCost(micros) {
+  return "$" + ((typeof micros === "number" ? micros : 0) / 1e6).toFixed(4);
+}
+
+function renderUsage(data) {
+  if (!usageTotals) return;
+  const t = (data && data.totals) || {};
+  usageTotals.textContent =
+    fmtTokens(t.prompt_tokens) + " prompt · " +
+    fmtTokens(t.completion_tokens) + " completion · " +
+    fmtTokens(t.cached_tokens) + " cached · " +
+    fmtCost(t.cost_micros) + " · " +
+    fmtTokens(t.messages) + " replies";
+
+  if (usageByModel) {
+    usageByModel.innerHTML = "";
+    const rows = Array.isArray(data && data.by_model) ? data.by_model : [];
+    for (const m of rows) {
+      const line = el("div", "usage-model-line");
+      line.textContent =
+        (m.model || "unknown") + " · " +
+        fmtTokens((m.prompt_tokens || 0) + (m.completion_tokens || 0)) + " tokens · " +
+        fmtCost(m.cost_micros);
+      usageByModel.appendChild(line);
+    }
+  }
+
+  if (usageQuotaStatus) {
+    const q = (data && data.quota) || {};
+    const parts = [];
+    if (q.daily_token_limit > 0) {
+      parts.push(
+        "Daily tokens: " + fmtTokens(q.today_tokens) + " / " + fmtTokens(q.daily_token_limit) +
+        (q.daily_exceeded ? " (limit reached)" : "")
+      );
+    }
+    if (q.monthly_cost_limit > 0) {
+      parts.push(
+        "Monthly cost: " + fmtCost(q.month_cost_micros) + " / " + fmtCost(q.monthly_cost_limit) +
+        (q.monthly_exceeded ? " (limit reached)" : "")
+      );
+    }
+    usageQuotaStatus.textContent = parts.length ? parts.join(" · ") : "No quota limits set.";
+  }
+}
+
+/* Populate the admin quota controls from GET /api/settings. */
+function applyUsageSettings(s) {
+  if (!s) return;
+  if (settingDailyTokenLimit) {
+    settingDailyTokenLimit.value = typeof s.daily_token_limit === "number" ? s.daily_token_limit : 0;
+  }
+  if (settingMonthlyCostLimit) {
+    const micros = typeof s.monthly_cost_limit === "number" ? s.monthly_cost_limit : 0;
+    settingMonthlyCostLimit.value = (micros / 1e6).toString();
+  }
+}
+
+async function saveUsageLimits() {
+  setFormError(usageError, "");
+  const daily = parseInt(settingDailyTokenLimit ? settingDailyTokenLimit.value : "0", 10);
+  const monthlyDollars = parseFloat(settingMonthlyCostLimit ? settingMonthlyCostLimit.value : "0");
+  if (isNaN(daily) || daily < 0 || isNaN(monthlyDollars) || monthlyDollars < 0) {
+    setFormError(usageError, "Limits must be 0 or a positive number.");
+    return;
+  }
+  const body = {
+    daily_token_limit: daily,
+    monthly_cost_limit: Math.round(monthlyDollars * 1e6),
+  };
+  if (usageSave) usageSave.disabled = true;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    applyUsageSettings(s);
+    await loadUsage();
+    toast("Quota limits saved");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      toast("Admin access required");
+      return;
+    }
+    setFormError(usageError, err.message);
+  } finally {
+    if (usageSave) usageSave.disabled = false;
+  }
+}
+
+/* Admin: all users' usage for the selected range. */
+async function loadAllUsersUsage() {
+  if (!usageUsersList) return;
+  const range = usageRange ? usageRange.value : "30d";
+  try {
+    const data = await api("/api/users/usage?range=" + enc(range));
+    renderAllUsersUsage(data);
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      if (usageAdmin) usageAdmin.hidden = true;
+      return;
+    }
+    toast(err.message);
+  }
+}
+
+function renderAllUsersUsage(data) {
+  if (!usageUsersList) return;
+  usageUsersList.innerHTML = "";
+  const users = Array.isArray(data && data.users) ? data.users : [];
+  if (users.length === 0) {
+    const empty = el("li", "nav-empty");
+    empty.textContent = "No usage yet.";
+    usageUsersList.appendChild(empty);
+    return;
+  }
+  for (const u of users) {
+    const li = el("li", "usage-user-item");
+    const name = el("span", "usage-user-name");
+    name.textContent = u.username || u.user_id || "unknown";
+    const detail = el("span", "usage-user-detail");
+    detail.textContent =
+      fmtTokens((u.prompt_tokens || 0) + (u.completion_tokens || 0)) + " tokens · " +
+      fmtCost(u.cost_micros) + " · " + fmtTokens(u.messages) + " replies";
+    li.append(name, detail);
+    usageUsersList.appendChild(li);
+  }
+}
+
+/* ===== end Usage & quotas (2.11) ===== */
 
 async function saveLinkwarden(e) {
   if (e) e.preventDefault();
@@ -2555,7 +2729,9 @@ function finalizeStream(ui) {
     reasoning_tokens:
       typeof usage.reasoning_tokens === "number" ? usage.reasoning_tokens : null,
     duration_ms: ui.durationMs,
-    // Tool activity is session-local (not persisted server-side).
+    // Tool activity is persisted server-side (2.10) using the same
+    // running→done collapse, so this optimistic copy converges with the
+    // refresh below without a flicker.
     tools: ui.tools && ui.tools.length ? ui.tools.slice() : null,
   });
   // Rebuild so Copy/Retry + footers appear, then enrich with server fields.
@@ -3094,6 +3270,16 @@ function wireEvents() {
 
   /* Image OCR toggle (admin, feature 2.5). */
   settingOcrEnabled.addEventListener("change", saveOcrEnabled);
+
+  /* ===== Usage & quotas (2.11) — self-contained, safe to relocate ===== */
+  if (usageRange) {
+    usageRange.addEventListener("change", () => {
+      loadUsage().catch(() => {});
+      if (state.user && state.user.is_admin) loadAllUsersUsage().catch(() => {});
+    });
+  }
+  if (usageSave) usageSave.addEventListener("click", saveUsageLimits);
+  /* ===== end Usage & quotas (2.11) ===== */
 
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();

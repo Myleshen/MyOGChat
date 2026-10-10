@@ -93,6 +93,12 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Quota is enforced before the user message is persisted, so a rejection
+	// leaves no orphan row (2.11).
+	if err := s.checkQuota(r.Context(), u); err != nil {
+		writeError(w, http.StatusTooManyRequests, err.Error())
+		return
+	}
 	userMsg := store.Message{
 		ID:             newUUID(),
 		ConversationID: conv.ID,
@@ -132,6 +138,11 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	apiKey, err := s.resolveKey(r.Context(), u)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Quota is enforced before the trailing assistant row is deleted (2.11).
+	if err := s.checkQuota(r.Context(), u); err != nil {
+		writeError(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
 	if _, err := s.st.DeleteAssistantAfterLastUser(r.Context(), conv.ID); err != nil {
@@ -199,6 +210,7 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	}, s.toolExecutor(reg))
 
 	var content, reasoning strings.Builder
+	var tools []store.ToolActivity
 	var usage *upstream.Usage
 	var costMicros int64
 	var durationMs int64
@@ -261,6 +273,9 @@ stream:
 				return
 			case upstream.EventTool:
 				if ev.Tool != nil {
+					// Collect the same activity we stream so it survives a
+					// reload (2.10).
+					tools = mergeToolEvent(tools, ev.Tool)
 					writeSSE(w, flusher, "tool", toolEvent{
 						Name:    ev.Tool.Name,
 						Status:  ev.Tool.Status,
@@ -292,6 +307,7 @@ stream:
 		CostMicros:       &costMicros,
 		ReasoningTokens:  &reasoningTokens,
 		DurationMs:       &durationMs,
+		Tools:            tools,
 		CreatedAt:        time.Now().UnixMilli(),
 	}
 	if reasoningStr := reasoning.String(); reasoningStr != "" {
@@ -425,6 +441,24 @@ func truncateRunes(s string, n int) string {
 		return string(r[:n])
 	}
 	return s
+}
+
+// mergeToolEvent folds one upstream tool activity into the persisted list,
+// mirroring the SPA's updateToolActivity (2.10): a "running" event starts an
+// entry; a terminal event closes the most recent matching running entry, else
+// appends. Tools run sequentially (agent.go), so there is never true
+// concurrency to reconcile.
+func mergeToolEvent(list []store.ToolActivity, t *upstream.ToolActivity) []store.ToolActivity {
+	if t.Status == upstream.ToolRunning {
+		return append(list, store.ToolActivity{Name: t.Name, Status: t.Status})
+	}
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].Name == t.Name && list[i].Status == upstream.ToolRunning {
+			list[i].Status, list[i].Summary = t.Status, t.Summary
+			return list
+		}
+	}
+	return append(list, store.ToolActivity{Name: t.Name, Status: t.Status, Summary: t.Summary})
 }
 
 // writeSSE writes one SSE frame and flushes it immediately.

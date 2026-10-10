@@ -49,7 +49,8 @@
 - One shared `OPENCODE_API_KEY` for everyone (per-user keys = Phase 2.1).
 - Text only — no tools, no file/PDF attachments.
 - Responses-dialect reasoning is encrypted upstream (no visible thinking).
-- No usage/quota accounting per user.
+- ~~No usage/quota accounting per user.~~ **Shipped** in 2.11 (usage view +
+  optional admin quotas); retention caps the history the aggregates cover.
 
 ---
 
@@ -157,8 +158,9 @@ key when sharing is allowed.
   binaries). See `docs/2.5-ocr.md`, `docs/2.6-2.7-sandbox.md`.
 - **Secrets at rest:** encrypted with `internal/secret` (per-user keys, group
   keys, Linkwarden token, Brave key).
-- **Usage accounting:** still open — per-user token/cost tracking for quota
-  fairness once keys are shared (natural follow-on to 2.1/2.2).
+- **Usage accounting:** shipped (2.11) — per-user token/cost tracking plus
+  optional admin quotas (natural follow-on to 2.1/2.2). See
+  `docs/2.10-2.11-tool-activity-usage.md`.
 
 ## Parallelization plan (git worktrees)
 
@@ -170,43 +172,42 @@ merges sequentially and resolves the small additive conflicts in shared files
 - **Batch 1 (parallel, done):** 2.2 Groups · 2.3 Files/PDF · 2.4+2.8 Tools & web/URL/Linkwarden
 - **Batch 2 (parallel, done):** 2.6 Python sandbox · 2.7 Bash sandbox · 2.5 OCR · 2.9 Settings page
   · multi-provider web search (2.4 extension)
-- **Batch 3 (scoped, not started):** 2.10 tool activity · 2.11 usage/quotas ·
+- **Batch 3 (in progress):** 2.10 tool activity ✅ · 2.11 usage/quotas ✅ ·
   2.12 Serper + Brave llm/context · 2.13 vision-model OCR
 
 ---
 
-## Phase 2.x — polish & extensions (scoped, approved, not started)
+## Phase 2.x — polish & extensions
 
 > **Finalized scopes live in [`docs/SCOPING.md`](SCOPING.md);** full research
 > reports in [`docs/research/`](research/). Owner approved building
 > **2.10 · 2.11 · 2.12 · 2.13 · 3.2 · 3.3 · 3.4**; **3.1 is de-scoped** (a
-> self-host path is documented). Not implemented yet.
+> self-host path is documented).
 
-### 2.10 Persist tool activity
-- **Problem:** the inline tool block (`web_search · done · …`) is rendered live
-  from SSE `tool` events but never stored, so it disappears on reload/re-render.
-- **Plan:** add `messages.tools TEXT` (JSON array of `{name,status,summary}`),
-  mirroring `messages.attachments` (2.3). The server collects `EventTool` events
-  during a reply and saves them with the assistant message; the SPA's existing
-  `buildToolsBlock(m.tools)` then renders them after reload.
-- **Files:** `internal/store/store.go` (migration + struct), `internal/server/chat.go`
-  (collect + persist), `static/app.js` (merge live + persisted), docs.
-- **Effort:** small. **Value:** high (UX + testability).
+### 2.10 Persist tool activity — ✅ shipped
+- **Problem:** the inline tool block (`web_search · done · …`) was rendered live
+  from SSE `tool` events but never stored, so it disappeared on reload/re-render.
+- **Shipped:** `messages.tools TEXT` (JSON array of `{name,status,summary}`),
+  mirroring `messages.attachments` (2.3). `streamReply` collects `EventTool`
+  events via `mergeToolEvent` and saves them with the assistant message; the
+  SPA's existing `buildToolsBlock(m.tools)` renders them after reload.
+- **Files:** `internal/store/store.go`, `internal/server/chat.go`,
+  `static/app.js` (comment), `static/sw.js` (cache bump), tests, docs.
 
-### 2.11 Usage & quota accounting
+### 2.11 Usage & quota accounting — ✅ shipped
 - **Goal:** per-user token/cost visibility, plus optional admin-set caps.
-- **Data:** every message already stores `prompt_tokens`, `completion_tokens`,
-  `cached_tokens`, `cost_micros` — usage is an aggregate query (no new table at
-  personal scale; add an index on `conversations.user_id` if needed).
-- **API:** `GET /api/me/usage?range=7d|30d|all` → totals by day/model; admin
+- **Shipped:** usage is an aggregate over assistant `messages` joined to
+  `conversations` (no new table; `idx_messages_created` added).
+  `GET /api/me/usage?range=7d|30d|all` → totals by day/model; admin
   `GET /api/users/usage`. **Quotas:** admin settings `daily_token_limit` /
-  `monthly_cost_limit` (0 = off) enforced in `streamReply` before the upstream
-  call with a clear error; optional per-user overrides.
-- **UI:** a **Usage** section in Settings (own usage; admins see all users + the
-  quota controls).
-- **Files:** new `internal/server/usage.go`, store aggregates, settings fields,
-  `static/app.js`/`style.css`, docs. **Effort:** medium. **Value:** high once keys
-  are shared.
+  `monthly_cost_limit` (0 = off) enforced in `handlePostMessage` /
+  `handleRegenerate` after `resolveKey`, before the user message is persisted,
+  returning `429` (fail-open on DB error); optional per-user overrides.
+- **UI:** a self-contained **Usage** section in Settings (own usage; admins see
+  all users + the quota controls).
+- **Files:** `internal/server/usage.go`, `internal/store/store.go`,
+  `internal/server/{chat,users,server}.go`, `main.go`, `static/*`, tests, docs.
+  Full notes: `docs/2.10-2.11-tool-activity-usage.md`.
 
 ### 2.12 Search providers — Serper + Brave `llm/context`
 - The `SearchProvider` interface (`internal/tools/search.go`) makes this small.

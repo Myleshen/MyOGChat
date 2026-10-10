@@ -1068,6 +1068,55 @@ button { font: inherit; }
 
 .settings-ocr { display: flex; flex-direction: column; gap: 12px; }
 
+/* ---------- Settings: Usage & quotas (2.11) ---------- */
+
+.settings-usage { display: flex; flex-direction: column; gap: 12px; }
+.usage-totals {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.usage-by-model { display: flex; flex-direction: column; gap: 2px; }
+.usage-model-line {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.usage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.usage-user-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  min-width: 0;
+}
+.usage-user-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-user-detail {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
 /* ---------- Settings: Groups (shared keys, §2.2) ---------- */
 
 .settings-groups { display: flex; flex-direction: column; gap: 12px; }

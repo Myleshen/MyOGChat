@@ -12,7 +12,7 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 
 - **Live:** `https://chat.example.com` (also `http://raspberrypi.local:8787` on LAN)
 - **Repo:** `github.com/Myleshen/MyOGChat` — `main` is the source of truth
-- **Phase 1:** complete. **Phase 2:** 6 of 9 items shipped (see status below).
+- **Phase 1:** complete. **Phase 2:** core items shipped through 2.11 (see status below).
 
 ## Live deployment
 
@@ -60,7 +60,8 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2
 - `TODO.md` — roadmap with per-item status
 - `README.md` — user-facing overview
 - `docs/` — `2.2-groups.md`, `2.3-attachments.md`, `2.4-tools.md`,
-  `2.4-search-providers.md`, `2.8-linkwarden.md`
+  `2.4-search-providers.md`, `2.8-linkwarden.md`,
+  `2.10-2.11-tool-activity-usage.md`
 
 ## Conventions & hard constraints
 
@@ -143,8 +144,10 @@ fix, deploy.
 | 2.6 | **Python sandbox** | ✅ shipped (`run_python`, hardened Docker sandbox; needs `deploy/sandbox-setup.sh` on the host) |
 | 2.7 | **Bash sandbox** | ✅ shipped (`run_bash`, same engine) |
 | 2.9 | **Full settings page (not a popup)** | ✅ shipped — `#/settings` page replaces the modal; see `docs/2.9-settings-page.md` |
+| 2.10 | **Persist tool activity** | ✅ shipped — `messages.tools`; the inline tool block survives a reload |
+| 2.11 | **Usage & quota accounting** | ✅ shipped — `/api/me/usage`, admin all-users view, optional quotas; see `docs/2.10-2.11-tool-activity-usage.md` |
 
-All Phase 2 items (2.1–2.9) are implemented. Provision the host with
+All Phase 2 items (2.1–2.11) are implemented. Provision the host with
 `deploy/sandbox-setup.sh` and `deploy/ocr-setup.sh`.
 Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
@@ -164,7 +167,13 @@ Parallelize with git worktrees off `main` (see "Parallel workstreams").
   not in the `docker` group on the workstation). Build the image on the Pi with
   `bash deploy/ocr-setup.sh`, then `MYOGCHAT_OCR_LIVE=1 go test ./internal/ocr/
   -run LiveSmoke -v`.
-- No per-user **usage/quota accounting** yet (relevant once keys are shared).
+- **Usage/quota accounting** (2.11) is implemented: per-user token/cost view
+  (`GET /api/me/usage`), admin all-users view, and optional admin quotas
+  (`daily_token_limit` / `monthly_cost_limit`, 0 = off) with per-user overrides.
+  Note the retention janitor caps the history the aggregates cover (daily quotas
+  exact; monthly exact only when retention ≥ the window). **Tool activity**
+  (2.10) is now persisted on assistant messages (`messages.tools`) and survives a
+  reload.
 
 ## Gotchas / tips
 

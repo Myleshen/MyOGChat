@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -89,7 +90,7 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	if err != nil {
 		t.Fatalf("columns(messages): %v", err)
 	}
-	for _, col := range []string{"reasoning_tokens", "duration_ms", "attachments"} {
+	for _, col := range []string{"reasoning_tokens", "duration_ms", "attachments", "tools"} {
 		if !msgCols[col] {
 			t.Errorf("migration did not add messages.%s", col)
 		}
@@ -98,8 +99,10 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	if err != nil {
 		t.Fatalf("columns(users): %v", err)
 	}
-	if !userCols["status"] {
-		t.Error("migration did not add users.status")
+	for _, col := range []string{"status", "daily_token_limit", "monthly_cost_limit"} {
+		if !userCols[col] {
+			t.Errorf("migration did not add users.%s", col)
+		}
 	}
 
 	// The first admin claims the ownerless legacy rows.
@@ -398,6 +401,179 @@ func TestAttachmentsScopingAndMessageMetadata(t *testing.T) {
 	}
 	if _, err := s.GetAttachment(ctx, "att-1", alice.ID); err != ErrNotFound {
 		t.Errorf("attachment still present after delete: err=%v", err)
+	}
+}
+
+func TestMessageToolsRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	u := seedUser(t, s, "u1", "owner", false)
+	if err := s.InsertConversation(ctx, &Conversation{
+		ID: "c1", UserID: &u.ID, Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+	if err := s.InsertMessage(ctx, &Message{
+		ID: "a1", ConversationID: "c1", Role: "assistant", Content: "hi",
+		Tools: []ToolActivity{
+			{Name: "web_search", Status: "done", Summary: "3 results"},
+			{Name: "run_bash", Status: "error", Summary: "boom"},
+		},
+		CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertMessage(a1): %v", err)
+	}
+	// A message with no tools must round-trip as nil, not an empty slice.
+	if err := s.InsertMessage(ctx, &Message{
+		ID: "a2", ConversationID: "c1", Role: "assistant", Content: "plain", CreatedAt: 2,
+	}); err != nil {
+		t.Fatalf("InsertMessage(a2): %v", err)
+	}
+	msgs, err := s.ListMessages(ctx, "c1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	got := msgs[0].Tools
+	if len(got) != 2 ||
+		got[0].Name != "web_search" || got[0].Status != "done" || got[0].Summary != "3 results" ||
+		got[1].Name != "run_bash" || got[1].Status != "error" || got[1].Summary != "boom" {
+		t.Errorf("tools not round-tripped: %+v", got)
+	}
+	if msgs[1].Tools != nil {
+		t.Errorf("message with no tools = %+v, want nil", msgs[1].Tools)
+	}
+}
+
+func int64p(v int64) *int64 { return &v }
+
+// seedUsageMessage inserts an assistant message with the given counters.
+func seedUsageMessage(t *testing.T, s *Store, id, convID, model string, createdAt, prompt, completion, cached, reasoning, cost int64) {
+	t.Helper()
+	if err := s.InsertMessage(context.Background(), &Message{
+		ID: id, ConversationID: convID, Role: "assistant", Content: "x", Model: &model,
+		PromptTokens: int64p(prompt), CompletionTokens: int64p(completion),
+		CachedTokens: int64p(cached), ReasoningTokens: int64p(reasoning),
+		CostMicros: int64p(cost), CreatedAt: createdAt,
+	}); err != nil {
+		t.Fatalf("InsertMessage(%s): %v", id, err)
+	}
+}
+
+func TestUsageAggregates(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-alice", "alice", false)
+	bob := seedUser(t, s, "u-bob", "bob", false)
+
+	for _, c := range []struct {
+		id  string
+		uid string
+	}{{"c-alice", alice.ID}, {"c-bob", bob.ID}} {
+		uid := c.uid
+		if err := s.InsertConversation(ctx, &Conversation{
+			ID: c.id, UserID: &uid, Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+		}); err != nil {
+			t.Fatalf("InsertConversation(%s): %v", c.id, err)
+		}
+	}
+
+	day1 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	day2 := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC).UnixMilli()
+
+	// A user message (nil tokens) must be ignored by every aggregate.
+	if err := s.InsertMessage(ctx, &Message{
+		ID: "u1", ConversationID: "c-alice", Role: "user", Content: "q", CreatedAt: day1,
+	}); err != nil {
+		t.Fatalf("InsertMessage(user): %v", err)
+	}
+	seedUsageMessage(t, s, "a1", "c-alice", "model-a", day1, 100, 50, 10, 5, 1000)
+	seedUsageMessage(t, s, "a2", "c-alice", "model-b", day2, 200, 100, 20, 10, 2000)
+	seedUsageMessage(t, s, "b1", "c-bob", "model-a", day1, 7, 7, 0, 0, 70)
+
+	totals, err := s.UserUsageTotals(ctx, alice.ID, 0)
+	if err != nil {
+		t.Fatalf("UserUsageTotals: %v", err)
+	}
+	want := UsageTotals{PromptTokens: 300, CompletionTokens: 150, CachedTokens: 30, ReasoningTokens: 15, CostMicros: 3000, Messages: 2}
+	if totals != want {
+		t.Errorf("UserUsageTotals = %+v, want %+v", totals, want)
+	}
+
+	// Cutoff filtering excludes day1 (alice's day1 cost 1000).
+	totals, err = s.UserUsageTotals(ctx, alice.ID, day2)
+	if err != nil {
+		t.Fatalf("UserUsageTotals(cutoff): %v", err)
+	}
+	if totals.CostMicros != 2000 || totals.Messages != 1 {
+		t.Errorf("cutoff totals = %+v, want cost 2000 / 1 message", totals)
+	}
+
+	byDay, err := s.UserUsageByDay(ctx, alice.ID, 0)
+	if err != nil {
+		t.Fatalf("UserUsageByDay: %v", err)
+	}
+	if len(byDay) != 2 || byDay[0].Day != "2026-05-01" || byDay[1].Day != "2026-05-02" {
+		t.Fatalf("by day = %+v, want two ordered buckets", byDay)
+	}
+	if byDay[0].CostMicros != 1000 || byDay[1].CostMicros != 2000 {
+		t.Errorf("by day cost = %d, %d; want 1000, 2000", byDay[0].CostMicros, byDay[1].CostMicros)
+	}
+
+	byModel, err := s.UserUsageByModel(ctx, alice.ID, 0)
+	if err != nil {
+		t.Fatalf("UserUsageByModel: %v", err)
+	}
+	if len(byModel) != 2 || byModel[0].Model != "model-b" || byModel[1].Model != "model-a" {
+		t.Fatalf("by model = %+v, want model-b (costlier) first", byModel)
+	}
+
+	// All-users view includes both, and excludes the user message.
+	all, err := s.AllUsersUsage(ctx, 0)
+	if err != nil {
+		t.Fatalf("AllUsersUsage: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all users = %+v, want 2", all)
+	}
+	byUser := map[string]UserUsage{}
+	for _, uu := range all {
+		byUser[uu.UserID] = uu
+	}
+	if byUser[alice.ID].CostMicros != 3000 || byUser[bob.ID].CostMicros != 70 {
+		t.Errorf("all users cost = %+v", byUser)
+	}
+	if byUser[bob.ID].Username != "bob" {
+		t.Errorf("all users username = %q, want bob", byUser[bob.ID].Username)
+	}
+}
+
+func TestUserLimitsRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	u := seedUser(t, s, "u1", "owner", false)
+	if u.DailyTokenLimit != nil || u.MonthlyCostLimit != nil {
+		t.Fatalf("fresh user limits = %v, %v; want nil, nil", u.DailyTokenLimit, u.MonthlyCostLimit)
+	}
+	if err := s.SetUserLimits(ctx, u.ID, int64p(1000), int64p(2000), 2); err != nil {
+		t.Fatalf("SetUserLimits: %v", err)
+	}
+	got, err := s.GetUserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if got.DailyTokenLimit == nil || *got.DailyTokenLimit != 1000 || got.MonthlyCostLimit == nil || *got.MonthlyCostLimit != 2000 {
+		t.Errorf("limits after set = %v, %v", got.DailyTokenLimit, got.MonthlyCostLimit)
+	}
+	// nil clears back to inherit.
+	if err := s.SetUserLimits(ctx, u.ID, nil, nil, 3); err != nil {
+		t.Fatalf("SetUserLimits(clear): %v", err)
+	}
+	got, _ = s.GetUserByID(ctx, u.ID)
+	if got.DailyTokenLimit != nil || got.MonthlyCostLimit != nil {
+		t.Errorf("limits after clear = %v, %v; want nil, nil", got.DailyTokenLimit, got.MonthlyCostLimit)
 	}
 }
 

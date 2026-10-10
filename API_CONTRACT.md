@@ -272,6 +272,15 @@ Assistant messages gain `reasoning_tokens` (int|null) and `duration_ms`
 (int|null — measured from first streamed token to the end of the stream, used
 for tokens/sec).
 
+Messages (2.3/2.10) also gain two JSON columns, each an array omitted when
+empty:
+- `attachments` — user messages: `[{id,name,mime,size}]` display metadata of the
+  files attached (the extracted text lives in the `attachments` table).
+- `tools` — assistant messages: `[{name,status,summary}]` tool activity
+  (`status` ∈ `running` | `done` | `error`), so the inline tool block survives a
+  reload. The server collects `event: tool` frames during a reply and collapses
+  each `running`→terminal pair (see §3). The SSE wire format is unchanged.
+
 ### 8.5 Regenerate endpoint
 
 `POST /api/conversations/{id}/regenerate` → same SSE wire format as
@@ -460,9 +469,11 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
   (pending users included so the admin can approve them).
 - `POST /api/users` `{"username","email","password","is_admin"?}` → `201`
   (created `status = "active"`).
-- `PATCH /api/users/{id}` `{"password"?, "is_admin"?, "status"?}` → `200`
+- `PATCH /api/users/{id}` `{"password"?, "is_admin"?, "status"?,
+  "daily_token_limit"?, "monthly_cost_limit"?}` → `200`
   (`status` ∈ `active` | `pending` | `disabled`; setting `active` approves a
-  pending registration).
+  pending registration). The two quota overrides are nullable numbers — omitted
+  = unchanged, `null` = clear/inherit, number = override (§11.2).
 - `DELETE /api/users/{id}` → `204` (cannot delete yourself → `400`)
 - `GET /api/settings` → `200`:
   `{"allow_registration": bool, "pending_users": N, "share_server_key": bool,
@@ -471,17 +482,20 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "search_active": "tavily"|"brave"|"ddg", "linkwarden_url": string,
    "linkwarden_configured": bool, "linkwarden_token_hint": string,
    "sandbox_enabled": bool, "sandbox_available": bool,
-   "ocr_enabled": bool, "ocr_available": bool}`
+   "ocr_enabled": bool, "ocr_available": bool,
+   "daily_token_limit": int, "monthly_cost_limit": int}`
   (`share_server_key` §2.1; tools/Linkwarden §2.4/2.8; search §8.9; sandbox §10;
-   OCR §8.10)
+   OCR §8.10; quotas §11)
 - `PATCH /api/settings` accepts any subset of
   `{"allow_registration"?: bool, "share_server_key"?: bool,
    "tools_enabled"?: bool, "linkwarden_url"?: string, "linkwarden_token"?: string,
    "search_provider"?: "auto"|"tavily"|"brave"|"ddg", "brave_key"?: string,
-   "sandbox_enabled"?: bool, "ocr_enabled"?: bool}`
+   "sandbox_enabled"?: bool, "ocr_enabled"?: bool,
+   "daily_token_limit"?: int, "monthly_cost_limit"?: int}`
   → `200` (same shape as GET). Unknown `search_provider` values normalize to
   `auto`; `brave_key: ""` clears the stored (encrypted) key; omitted
-  `linkwarden_token`/`brave_key` leave the stored value untouched.
+  `linkwarden_token`/`brave_key` leave the stored value untouched; quota limits
+  must be `>= 0` (negative → `400`).
 
 Non-admin callers of any of these get `403`.
 
@@ -549,3 +563,68 @@ container and return stdout/stderr. Full design: `docs/2.6-2.7-sandbox.md`.
   `MYOGCHAT_SANDBOX_MAX_OUTPUT`.
 - `GET`/`PATCH /api/settings` gain `sandbox_enabled` (admin) and
   `sandbox_available` (read-only status).
+
+## 11. Usage & quota accounting (2.11)
+
+Per-user token/cost visibility plus optional admin-set caps. Usage is an
+**aggregate over assistant `messages` joined to `conversations`** for owner
+scoping — **no new table**. `created_at` is unix **millis**; days bucket with
+`strftime('%Y-%m-%d', created_at/1000, 'unixepoch')`. An additive index
+`idx_messages_created` supports range scans.
+
+### 11.1 Endpoints
+
+- `GET /api/me/usage?range=7d|30d|all` (any user) → `200`:
+  ```json
+  {"range":"30d",
+   "totals":{"prompt_tokens":0,"completion_tokens":0,"cached_tokens":0,
+             "reasoning_tokens":0,"cost_micros":0,"messages":0},
+   "by_day":[{"day":"2026-05-01","prompt_tokens":0,"...":0}],
+   "by_model":[{"model":"glm-5.3-flash","prompt_tokens":0,"...":0}],
+   "quota":{"daily_token_limit":0,"monthly_cost_limit":0,"today_tokens":0,
+            "month_cost_micros":0,"daily_exceeded":false,"monthly_exceeded":false}}
+  ```
+  `range` defaults to `30d`; `all` means no cutoff. `by_day` is oldest-first;
+  `by_model` is costliest-first. User messages (nil token columns) are ignored.
+- `GET /api/users/usage?range=7d|30d|all` (admin) → `200`:
+  `{"range":"30d","users":[{"user_id","username","prompt_tokens",…,"cost_micros","messages"}]}`
+  — aggregates only; admins never see other users' chats (§9.5). Non-admins
+  get `403`.
+
+### 11.2 Quotas
+
+Admin settings (`0` = off), stored as decimal strings, default `0`:
+- `daily_token_limit` — prompt+completion tokens per **UTC day**.
+- `monthly_cost_limit` — `cost_micros` per **UTC calendar month**.
+
+`GET /api/settings` gains `daily_token_limit` and `monthly_cost_limit` (ints);
+`PATCH /api/settings` accepts them (`>= 0`; negative → `400`).
+
+Optional **per-user overrides** on `users` (`daily_token_limit` /
+`monthly_cost_limit` INTEGER, NULL = inherit the global setting).
+`PATCH /api/users/{id}` accepts both as nullable numbers: **omitted = unchanged,
+`null` = clear/inherit, a number = override** (`< 0` → `400`). A per-user `0`
+means "inherit" (it cannot force "unlimited" while a global limit is set).
+
+**Enforcement:** `checkQuota` runs in `POST /api/conversations/{id}/messages`
+and `/regenerate` **after `resolveKey`, before the user message is persisted**.
+On a hit it returns `429` with a clear message (`"daily token limit reached
+(N tokens); resets at 00:00 UTC"` / `"monthly cost limit reached ($X.XX);
+contact an admin"`). It skips all queries when both limits are `0` and **fails
+open** on a DB error (logs a warning) so a transient fault cannot lock users
+out. Free models (`cost_micros == 0`) never trip the cost limit, but the token
+limit still applies.
+
+**Retention caveat:** the janitor caps history by `updated_at`, so `all`/`30d`
+only cover retained data. A **daily** quota is always exact; a **monthly** quota
+is exact only when retention ≥ the current month (with a shorter window it
+undercounts). Active conversations keep all messages regardless of age.
+
+### 11.3 Frontend
+
+A self-contained `#usage-section` in the Settings page (`#/settings`), visible to
+everyone: a range selector (`#usage-range`), totals (`#usage-totals`), by-model
+lines (`#usage-by-model`), and a quota status line. Admins additionally see
+`#usage-admin` with the limit controls (`#setting-daily-token-limit` in tokens,
+`#setting-monthly-cost-limit` in USD, saved via `#usage-save`) and an all-users
+table (`#usage-users-list`). Cost is displayed as `cost_micros / 1e6`.
