@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"myogchat/internal/auth"
+	"myogchat/internal/sandbox"
 	"myogchat/internal/server"
 	"myogchat/internal/store"
 	"myogchat/internal/upstream"
@@ -52,6 +53,8 @@ type config struct {
 	port             string
 	dbPath           string
 	retentionDays    int
+	sandboxEnabled   bool           // MYOGCHAT_SANDBOX hard kill switch (default on)
+	sandbox          sandbox.Config // code-sandbox container parameters (2.6/2.7)
 }
 
 func main() {
@@ -194,6 +197,8 @@ func loadConfig() (config, error) {
 		port:             envOr("MYOGCHAT_PORT", "8787"),
 		dbPath:           os.Getenv("MYOGCHAT_DB"),
 		retentionDays:    30,
+		sandboxEnabled:   sandbox.EnabledFromEnv(),
+		sandbox:          sandbox.ConfigFromEnv(),
 	}
 	if cfg.dbPath == "" {
 		p, err := resolveDBPath()
@@ -266,10 +271,21 @@ func run(cfg config, log *slog.Logger) error {
 	if _, err := st.EnsureSetting(ctx, "share_server_key", "1"); err != nil {
 		return err
 	}
+	// The code sandbox (2.6/2.7) is on by default; an admin can turn it off.
+	if _, err := st.EnsureSetting(ctx, "sandbox_enabled", "1"); err != nil {
+		return err
+	}
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return err
+	}
+
+	// The sandbox runner is nil when disabled by env; tools are then never
+	// registered even if the DB setting is on.
+	var sbx *sandbox.Runner
+	if cfg.sandboxEnabled {
+		sbx = sandbox.NewRunner(cfg.sandbox)
 	}
 
 	srv := server.New(st, upstream.NewClient(), auth.New(st, secret), static, log, encKey, cfg.apiKey, server.SearchDefaults{
@@ -279,7 +295,7 @@ func run(cfg config, log *slog.Logger) error {
 		MaxResults: cfg.searchResults,
 		Region:     cfg.searchRegion,
 		SafeSearch: cfg.searchSafeSearch,
-	})
+	}, sbx)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -302,6 +318,9 @@ func run(cfg config, log *slog.Logger) error {
 		"brave_key", cfg.braveKey != "",
 		"search_provider", cfg.searchProvider,
 		"search_results", cfg.searchResults,
+		"sandbox", cfg.sandboxEnabled,
+		"sandbox_docker", cfg.sandbox.Docker,
+		"sandbox_network", cfg.sandbox.Network,
 	)
 
 	errc := make(chan error, 1)

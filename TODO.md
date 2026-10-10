@@ -110,16 +110,19 @@ key when sharing is allowed.
 - Extract text from images (Tesseract binary or a Go binding) → context. Depends
   on the file pipeline (2.3). Also enables image→text for pasted screenshots.
 
-### 2.6 Python sandbox (multi-purpose app)
+### 2.6 Python sandbox (multi-purpose app) — ✅ done
 
-- Run user/model code in a sandbox on the Pi (Docker container or `nsjail`):
-  CPU/mem limits, no network by default, ephemeral FS. Heaviest item — needs a
-  resource and security design; keep last.
+- `run_python` runs a script in a hardened, ephemeral **Docker** container
+  (`python:3.14-slim`): CPU/mem/pids limits, read-only rootfs + writable `/work`
+  tmpfs, non-root user, all caps dropped, dedicated bridge network, per-call
+  timeout with forced cleanup. Code goes in over stdin. Outbound network is
+  available (owner's choice); optional LAN-egress hardening via
+  `sudo deploy/sandbox-setup.sh --harden`. See `docs/2.6-2.7-sandbox.md`.
 
-### 2.7 Bash sandbox (lightweight tool runtime)
-- Run small shell commands in a sandbox (resource-limited, **no network by
-  default**, ephemeral working dir) so the model can do quick file/text/CLI tasks
-  without a full Python env. Shares the 2.4 tool loop; use Docker / `nsjail` / `bwrap`.
+### 2.7 Bash sandbox (lightweight tool runtime) — ✅ done
+- `run_bash` runs a script in the same sandbox engine (`bash:5.3`), sharing the
+  2.4 tool loop and the `internal/sandbox` runner. Files do not persist between
+  calls. See `docs/2.6-2.7-sandbox.md`.
 
 ### 2.8 URL summarization + Linkwarden integration — ✅ done (merged, pending deploy)
 - **Summarize a URL**: fetch → extract readable text → summarize (a `fetch_url`
