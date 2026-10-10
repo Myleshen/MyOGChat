@@ -4,6 +4,9 @@ go 1.27
 
 require (
 	github.com/emersion/go-ical v0.0.0-20250609112844-439c63cef608
+	github.com/emersion/go-imap/v2 v2.0.0-beta.8
+	github.com/emersion/go-message v0.18.2
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
 	github.com/emersion/go-webdav v0.7.0
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
 	modernc.org/sqlite v1.60.1
@@ -17,6 +20,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/teambition/rrule-go v1.8.2 // indirect
 	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
 	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

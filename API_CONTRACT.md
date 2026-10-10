@@ -843,3 +843,78 @@ the override and fall back to the env default.
   server TTS is configured).
 - **Settings → Voice** (admin): enable toggles, STT/TTS URLs, default voice,
   status line.
+
+## 15. Read-only email (IMAP, feature 3.2)
+
+Connect a mailbox with an **app-specific password** and expose three read-only
+tools — `email_folders`, `email_search`, `email_read`. There is **no
+`email_send` and no SMTP client**; the feature is read-only by construction
+(`docs/3.2-imap.md`). Credentials are **per-user** and encrypted at rest with
+`internal/secret` (mirrors `users.api_key_enc`).
+
+### 15.1 Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS mail_accounts (
+  user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  provider   TEXT NOT NULL,
+  email      TEXT NOT NULL,
+  imap_host  TEXT NOT NULL,
+  imap_port  INTEGER NOT NULL,
+  imap_tls   TEXT NOT NULL DEFAULT 'implicit',
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  secret_enc TEXT NOT NULL,          -- AES-256-GCM JSON {"auth_type","password"}
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+```
+
+One mailbox per user. `secret_enc` is never returned to the SPA.
+
+### 15.2 Per-user endpoints (authenticated, not admin-only)
+
+- `GET /api/me/mail` → `200`:
+  `{"connected": bool, "enabled": bool, "provider"?: string, "email"?: string,
+    "imap_host"?: string, "imap_port"?: int, "imap_tls"?: string,
+    "presets": [{"id","name","host","port","tls"}]}`.
+  `connected` is false (and the per-account fields absent) when no mailbox is
+  stored. `presets` is always present (region-aware Zoho variants + `custom`).
+- `PUT /api/me/mail` body
+  `{"provider": string, "email": string, "password": string,
+    "imap_host"?: string, "imap_port"?: int, "imap_tls"?: string,
+    "skip_test"?: bool}` → `200` (same shape as GET, `connected:true`).
+  Applies the provider preset when host/port are omitted; validates the config
+  and **tests the connection** unless `skip_test:true`. `400` on a bad
+  config/connection. The password is encrypted before storage.
+- `PATCH /api/me/mail` body `{"enabled": bool}` → `200` (same shape). Toggles
+  the per-user email tools. `404` when no mailbox is connected.
+- `DELETE /api/me/mail` → `204` (deletes the stored credential).
+- `POST /api/me/mail/test` body `{provider,email,password,imap_host?,imap_port?,imap_tls?}`
+  → `200 {"ok":true}` or `400` on failure; stores nothing.
+
+### 15.3 Tools
+
+Registered per request **only when the caller has an enabled mailbox** (like
+Linkwarden). Read-only by construction — layered guardrails in
+`docs/3.2-imap.md`:
+
+- `email_folders` `{}` → folder list (name + special-use).
+- `email_search` `{query?, from?, to?, subject?, since?, before?, unread_only?,
+  folder? (default INBOX), limit? (default 20, max 50)}` → message summaries
+  (`uid`, folder, from, subject, date, flags).
+- `email_read` `{uid (required), folder? (default INBOX), include_html?}` →
+  envelope + truncated text body (100 KB cap) + attachment metadata.
+
+Standard IMAP `SEARCH` keys are used (no Gmail `X-GM-RAW`). The mailbox is
+opened with `EXAMINE` and bodies fetched with `BODY.PEEK[]`; a transport command
+allowlist rejects any command outside
+`CAPABILITY, NOOP, LOGIN, AUTHENTICATE, LIST, LSUB, STATUS, EXAMINE, SELECT,
+FETCH, SEARCH, UID, IDLE, CLOSE, LOGOUT` (with `UID` narrowed to
+`FETCH`/`SEARCH`).
+
+### 15.4 Settings UI
+
+A self-contained **Email (read-only)** section on `#/settings`, visible to all
+users: provider preset, email, app-specific password, optional custom host/port,
+**Test connection** / **Save** / **Disconnect**, and an **Enable email tools**
+toggle. It never displays the stored password.

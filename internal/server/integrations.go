@@ -211,8 +211,10 @@ func (s *Server) linkwardenClient(ctx context.Context) (*tools.LinkwardenClient,
 // toolRegistry builds the per-request set of tools. It is empty when tools are
 // disabled. web_search is present whenever any search provider is usable
 // (DuckDuckGo needs no key, so it is always available); fetch_url is always
-// available; Linkwarden tools require the integration. u supplies the caller's
-// per-user search credentials (Serper key, 2.12) and connected calendar (3.3).
+// available; Linkwarden tools require the integration; the read-only email tools
+// require the user to have connected a mailbox (feature 3.2). u supplies the
+// caller's per-user search credentials (Serper key, 2.12) and connected calendar
+// (3.3).
 func (s *Server) toolRegistry(ctx context.Context, u store.User) *tools.Registry {
 	reg := tools.NewRegistry()
 	if !s.toolsEnabled(ctx) {
@@ -247,6 +249,12 @@ func (s *Server) toolRegistry(ctx context.Context, u store.User) *tools.Registry
 	if s.sbx != nil && s.sandboxEnabled(ctx) && s.sbx.Available(ctx) {
 		reg.Add(tools.NewRunBashTool(s.sbx))
 		reg.Add(tools.NewRunPythonTool(s.sbx))
+	}
+	// Read-only email (feature 3.2): only when the user has an enabled mailbox.
+	if connect, ok := s.mailConnector(ctx, u.ID); ok {
+		reg.Add(tools.NewEmailFoldersTool(connect))
+		reg.Add(tools.NewEmailSearchTool(connect))
+		reg.Add(tools.NewEmailReadTool(connect))
 	}
 	return reg
 }
