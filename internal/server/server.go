@@ -62,6 +62,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/me/key", s.handleGetMyKey)
 	mux.HandleFunc("PUT /api/me/key", s.handlePutMyKey)
+	// Calendar (per-user, 3.3).
+	mux.HandleFunc("GET /api/me/calendar", s.handleGetCalendar)
+	mux.HandleFunc("PUT /api/me/calendar", s.handlePutCalendar)
+	mux.HandleFunc("DELETE /api/me/calendar", s.handleDeleteCalendar)
 	// Groups & shared keys (§2.2).
 	mux.HandleFunc("GET /api/groups", s.handleListGroups)
 	mux.HandleFunc("POST /api/groups", s.handleCreateGroup)

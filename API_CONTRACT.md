@@ -549,3 +549,56 @@ container and return stdout/stderr. Full design: `docs/2.6-2.7-sandbox.md`.
   `MYOGCHAT_SANDBOX_MAX_OUTPUT`.
 - `GET`/`PATCH /api/settings` gain `sandbox_enabled` (admin) and
   `sandbox_available` (read-only status).
+
+## 11. Calendar (3.3)
+
+Per-user calendar connection: **Apple/iCloud + Zoho via CalDAV** (read/write,
+HTTP Basic with an app-specific password) and **Google via the per-calendar
+"secret address" ICS URL** (read-only, no OAuth). Full design:
+`docs/3.3-calendar.md`.
+
+### 11.1 Schema (additive)
+
+```sql
+CREATE TABLE IF NOT EXISTS calendar_accounts (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL,      -- caldav | ics
+  provider     TEXT,               -- apple | zoho | google | custom
+  calendar_id  TEXT,               -- default CalDAV collection path / ICS label
+  username     TEXT,               -- CalDAV username (not secret)
+  credential   TEXT,               -- AES-256-GCM: CalDAV password / ICS URL
+  endpoint     TEXT,               -- resolved CalDAV server URL
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+```
+
+One account per user. `credential` is encrypted with `internal/secret` and never
+returned to the client.
+
+### 11.2 Endpoints (session required, per-user)
+
+- `GET /api/me/calendar` → `200 {"connected":false}` or
+  `{"connected":true,"kind":"caldav"|"ics","provider":string,
+   "calendar_id":string,"username":string,"endpoint":string,"can_write":bool}`.
+- `PUT /api/me/calendar`:
+  - CalDAV: `{"kind":"caldav","provider"?,"endpoint","username","password","calendar_id"?}`
+  - ICS: `{"kind":"ics","provider"?:"google","url","calendar_id"?}`
+  Validates by connecting to the provider; on failure `400` with the provider
+  error. On success stores the (encrypted) credential and returns the status
+  object (CalDAV responses also include `"calendars":[{id,name,writable}]`).
+- `DELETE /api/me/calendar` → `204` (disconnect).
+
+### 11.3 Tools (registered per request only when the user has a connected calendar)
+
+| tool | parameters |
+|---|---|
+| `calendar_list` | `from` (req, RFC3339 or `YYYY-MM-DD`), `to` (req), `query?`, `calendar_id?`, `max?` (≤100) |
+| `calendar_create` | `title` (req), `start` (req), `end` (req), `description?`, `location?`, `all_day?`, `timezone?`, `attendees?:string[]`, `recurrence?` (RRULE), `reminders_minutes?:int[]`, `calendar_id?` |
+| `calendar_update` | `uid` (req) + any `calendar_create` field (partial; edits the whole series) |
+| `calendar_delete` | `uid` (req), `calendar_id?` |
+
+Write tools return a clear read-only error on an ICS backend. Recurrence is
+expanded server-side on CalDAV (`<C:expand>`) and client-side for ICS feeds;
+v1 edits whole series only.

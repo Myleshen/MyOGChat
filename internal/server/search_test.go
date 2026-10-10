@@ -100,7 +100,7 @@ func TestIntegrationSettingsSearchFields(t *testing.T) {
 func TestToolRegistryRegistersWebSearchWithoutKeys(t *testing.T) {
 	// DuckDuckGo is keyless, so web_search must be registered even with no keys.
 	srv := newSearchTestServer(t, SearchDefaults{Provider: "auto"})
-	reg := srv.toolRegistry(context.Background())
+	reg := srv.toolRegistry(context.Background(), "")
 	if _, ok := reg.Get("web_search"); !ok {
 		t.Fatal("web_search not registered with no keys configured")
 	}

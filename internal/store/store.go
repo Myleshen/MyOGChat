@@ -95,6 +95,19 @@ CREATE TABLE IF NOT EXISTS group_members (
 CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(owner_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id);
+CREATE TABLE IF NOT EXISTS calendar_accounts (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  kind          TEXT NOT NULL,      -- caldav | ics
+  provider      TEXT,               -- apple | zoho | google | custom
+  calendar_id   TEXT,               -- default CalDAV collection path / ICS label
+  username      TEXT,               -- CalDAV username (not secret)
+  credential    TEXT,               -- encrypted blob: CalDAV password / ICS URL
+  endpoint      TEXT,               -- CalDAV server URL / cached home set
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_calendar_accounts_user ON calendar_accounts(user_id);
 `
 
 // User mirrors a row of the users table (§9.1).
@@ -1053,6 +1066,87 @@ func (s *Store) DeleteAttachment(ctx context.Context, id, userID string) (int64,
 // ms) across all users, for the retention janitor.
 func (s *Store) DeleteAttachmentsOlderThan(ctx context.Context, cutoff int64) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM attachments WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ---------- calendar accounts (3.3) ----------
+
+// CalendarAccount is one connected calendar per user. Kind is "caldav" or
+// "ics"; CredentialEnc holds the encrypted secret (CalDAV password or the
+// secret ICS URL) and is never returned to the client.
+type CalendarAccount struct {
+	ID            string `json:"id"`
+	UserID        string `json:"-"`
+	Kind          string `json:"kind"`
+	Provider      string `json:"provider,omitempty"`
+	CalendarID    string `json:"calendar_id,omitempty"`
+	Username      string `json:"username,omitempty"`
+	CredentialEnc string `json:"-"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
+}
+
+const calendarAccountCols = "id, user_id, kind, provider, calendar_id, username, credential, endpoint, created_at, updated_at"
+
+func scanCalendarAccount(sc scanner) (CalendarAccount, error) {
+	var a CalendarAccount
+	var provider, calendarID, username, credential, endpoint sql.NullString
+	if err := sc.Scan(&a.ID, &a.UserID, &a.Kind, &provider, &calendarID, &username, &credential, &endpoint, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		return CalendarAccount{}, err
+	}
+	a.Provider = strOr(provider)
+	a.CalendarID = strOr(calendarID)
+	a.Username = strOr(username)
+	a.CredentialEnc = strOr(credential)
+	a.Endpoint = strOr(endpoint)
+	return a, nil
+}
+
+func strOr(n sql.NullString) string {
+	if n.Valid {
+		return n.String
+	}
+	return ""
+}
+
+// GetCalendarAccount loads a user's connected calendar, else ErrNotFound.
+func (s *Store) GetCalendarAccount(ctx context.Context, userID string) (CalendarAccount, error) {
+	a, err := scanCalendarAccount(s.db.QueryRowContext(ctx,
+		`SELECT `+calendarAccountCols+` FROM calendar_accounts WHERE user_id = ?`, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return CalendarAccount{}, ErrNotFound
+	}
+	return a, err
+}
+
+// UpsertCalendarAccount inserts or replaces the user's calendar account
+// (one per user). created_at is preserved on update.
+func (s *Store) UpsertCalendarAccount(ctx context.Context, a *CalendarAccount) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO calendar_accounts (`+calendarAccountCols+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+		   kind = excluded.kind,
+		   provider = excluded.provider,
+		   calendar_id = excluded.calendar_id,
+		   username = excluded.username,
+		   credential = excluded.credential,
+		   endpoint = excluded.endpoint,
+		   updated_at = excluded.updated_at`,
+		a.ID, a.UserID, a.Kind, nullString(&a.Provider), nullString(&a.CalendarID),
+		nullString(&a.Username), nullString(&a.CredentialEnc), nullString(&a.Endpoint),
+		a.CreatedAt, a.UpdatedAt)
+	return err
+}
+
+// DeleteCalendarAccount removes a user's connected calendar; returns rows
+// removed (0 when none).
+func (s *Store) DeleteCalendarAccount(ctx context.Context, userID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM calendar_accounts WHERE user_id = ?`, userID)
 	if err != nil {
 		return 0, err
 	}

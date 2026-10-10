@@ -152,8 +152,9 @@ func (s *Server) linkwardenClient(ctx context.Context) (*tools.LinkwardenClient,
 // toolRegistry builds the per-request set of tools. It is empty when tools are
 // disabled. web_search is present whenever any search provider is usable
 // (DuckDuckGo needs no key, so it is always available); fetch_url is always
-// available; Linkwarden tools require the integration.
-func (s *Server) toolRegistry(ctx context.Context) *tools.Registry {
+// available; Linkwarden tools require the integration. Calendar tools are
+// registered only when userID has a connected calendar (3.3).
+func (s *Server) toolRegistry(ctx context.Context, userID string) *tools.Registry {
 	reg := tools.NewRegistry()
 	if !s.toolsEnabled(ctx) {
 		return reg
@@ -166,6 +167,12 @@ func (s *Server) toolRegistry(ctx context.Context) *tools.Registry {
 	if c, ok := s.linkwardenClient(ctx); ok {
 		reg.Add(tools.NewLinkwardenSearchTool(c))
 		reg.Add(tools.NewLinkwardenSaveTool(c))
+	}
+	if b, ok := s.calendarBackend(ctx, userID); ok {
+		reg.Add(tools.NewCalendarListTool(b))
+		reg.Add(tools.NewCalendarCreateTool(b))
+		reg.Add(tools.NewCalendarUpdateTool(b))
+		reg.Add(tools.NewCalendarDeleteTool(b))
 	}
 	// Code sandbox (Phase 2.6 / 2.7): registered only when the DB toggle is on
 	// AND Docker is reachable. Missing images surface a clear error at call time.

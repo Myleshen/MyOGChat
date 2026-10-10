@@ -254,11 +254,15 @@ merges sequentially and resolves the small additive conflicts in shared files
   (India)**). Encrypted creds (`internal/secret`), TLS; a Settings section +
   `email_*` tools (send gated). **Effort:** ~2–4 d. See `docs/SCOPING.md` §3.2.
 
-### 3.3 Calendar
+### 3.3 Calendar — ✅ implemented (branch `feat/calendar`)
 - **Apple/iCloud + Zoho → CalDAV** (read/write, app-specific password).
   **Google → read-only via the secret ICS URL** (no OAuth/consent; owner decision).
-  A `calendar_*` tool + a Settings section. **Effort:** ~4–6 d.
-- See `docs/SCOPING.md` §3.3.
+  `calendar_list` / `calendar_create` / `calendar_update` / `calendar_delete`
+  tools (registered per-request only when the user connected a calendar) + a
+  self-contained Settings section. New `calendar_accounts` table (`kind`
+  discriminator + encrypted credential). Pure-Go `emersion/go-webdav` +
+  `go-ical`. See `docs/3.3-calendar.md` and `API_CONTRACT.md` §11.
+- v1 = whole-series edits; ICS is read-only (write tools return a clear error).
 
 ### 3.4 Maps
 - **OSM-only (keyless)** — Nominatim (geocode/reverse) + OSRM (directions) +
