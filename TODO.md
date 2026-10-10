@@ -250,16 +250,17 @@ merges sequentially and resolves the small additive conflicts in shared files
 - **See `docs/SCOPING.md` §3.1 and `docs/research/3.1-imagegen-recheck.md`.**
 
 ### 3.2 IMAP email
-- Read/search/send mail from a connected mailbox. **Needs:** IMAP + SMTP
-  credentials stored encrypted (`internal/secret`), TLS, app-passwords; a Settings
-  section + `email_*` tools.
-- **Effort:** medium–large. **Risk:** credential handling + provider quirks.
+- Read/search/send mail via **app-specific passwords** (Gmail/iCloud/**Zoho Pro
+  (India)**). Encrypted creds (`internal/secret`), TLS; a Settings section +
+  `email_*` tools (send gated). **Effort:** ~2–4 d. See `docs/SCOPING.md` §3.2.
 
 ### 3.3 Calendar
-- CalDAV client (Radicale / Nextcloud / Google) → list/create events; a
-  `calendar_*` tool + a Settings section. **Effort:** medium.
+- **Apple/iCloud + Zoho → CalDAV** (read/write, app-specific password).
+  **Google → read-only via the secret ICS URL** (no OAuth/consent; owner decision).
+  A `calendar_*` tool + a Settings section. **Effort:** ~4–6 d.
+- See `docs/SCOPING.md` §3.3.
 
 ### 3.4 Maps
-- Geocoding / directions / places via a provider (OpenStreetMap Nominatim + OSRM
-  are keyless; Mapbox/Google are keyed). A `maps_*` tool reusing the 2.4 loop.
-- **Effort:** small–medium.
+- **OSM-only (keyless)** — Nominatim (geocode/reverse) + OSRM (directions) +
+  Photon/Overpass (places). A `maps_*` tool reusing the 2.4 loop; global 1 req/s
+  limiter + a result cache (policy). **Effort:** ~3–4 d. See `docs/SCOPING.md` §3.4.

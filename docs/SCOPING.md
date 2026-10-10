@@ -163,23 +163,22 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
 ## 3.3 Calendar — medium (~4–6 days)
 
 - **Split by auth:** Apple/iCloud + Zoho are **CalDAV-only** (Basic: app-specific
-  password). **Google → Calendar REST v3 with a *service account*** — **no user
-  OAuth consent screen**: the owner shares their calendar with the SA's
-  `client_email` ("Make changes to events"); the app signs an RS256 JWT with
-  stdlib (`crypto/rsa`/`crypto/sha256`/`net/http`) and exchanges it for a ~1h
-  token (re-sign on expiry, no refresh token). Read-only alt: the per-calendar
-  **"secret address" ICS URL** (unauthenticated, no setup). (Google CalDAV still
-  requires OAuth2 — not an escape hatch.)
+  password; **read/write**). **Google → read-only via the per-calendar "secret
+  address" ICS URL** (owner decision: no OAuth/consent, no GCP project — the URL
+  *is* the credential, unauthenticated, resettable). Trade-off: **read-only** and
+  lags ~12–24 h (no push/incremental sync). The service-account route (read/write,
+  no consent screen) stays documented in `docs/research/3.3-google-calendar.md`
+  as a future upgrade.
   - iCloud `caldav.icloud.com` → `.well-known/caldav` → `pNN-caldav.icloud.com` (cache the partition).
   - Zoho `calendar.zoho.com/.well-known/caldav` (region variants).
   - Google `www.googleapis.com/calendar/v3` with hand-rolled OAuth2 refresh
     (avoid `google.golang.org/api` — drags in grpc/protobuf/OTel).
 - **Libs:** `emersion/go-webdav` (CalDAV) + `go-ical` (MIT, pure Go).
 - **Design:** per-user encrypted creds in a new `calendar_accounts` table with a
-  **`kind` discriminator** (`oauth` | `service_account` | `ics`) + encrypted
-  `credential` blob (refresh token / SA JSON key / ICS URL) + `calendar_id`
-  (mirrors `users.api_key_enc`; SA access tokens cached in memory only). Tools
-  **`calendar_list` / `calendar_create` / `calendar_update` / `calendar_delete`**;
+  **`kind` discriminator** (`caldav` | `ics`) + encrypted `credential` blob
+  (CalDAV password / ICS URL) + `calendar_id` (mirrors `users.api_key_enc`). Tools
+  **`calendar_list` / `calendar_create` / `calendar_update` / `calendar_delete`**
+  (write ops only where the backend supports them — ICS is read-only);
   normalized `Event{uid, calendar_id, title, start, end, tz, all_day, recurrence,
   attendees, reminders, etag}`.
 - **Pitfalls:** a service account **cannot invite attendees**
@@ -214,14 +213,12 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
 
 - **Zoho** — owner is on **Pro**; IMAP/SMTP confirmed (India-region endpoints).
 - **Google Maps** — **dropped**; 3.4 is **OSM-only** (keyless, no billing).
-- **Google Calendar** — use a **service account** (no consent screen) for
-  read/write, or the **secret ICS URL** for read-only.
+- **Google Calendar** — **read-only via the secret ICS URL** (no OAuth/consent/
+  GCP project). Apple/Zoho use CalDAV (read/write).
 - **Serper** — optional; key from serper.dev (2,500 free one-time queries).
 
 ## Still open
 
-1. **Google Calendar auth choice** — service account (read/write; needs a GCP
-   project + SA key) vs secret ICS (read-only; zero setup). We can support both.
-2. **Serper key** — get one, or ship without it?
-3. **Image-gen gate** — run the SD-Turbo timing test on the Proxmox box before
+1. **Serper key** — get one, or ship without it?
+2. **Image-gen gate** — run the SD-Turbo timing test on the Proxmox box before
    committing to batch 6.
