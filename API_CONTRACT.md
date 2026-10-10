@@ -337,6 +337,27 @@ Required UI:
    regenerate endpoint. **Copy**: copy a message's raw text, and copy code
    blocks (already required).
 
+### 8.9 OCR for images (2.5)
+
+Image uploads to `POST /api/attachments` are OCR'd to text and stored in
+`attachments.text` exactly like text/PDF attachments (2.3); the endpoint's
+request/response shapes are unchanged. Text/code and PDF behavior is unchanged.
+
+- OCR runs Tesseract in an ephemeral, hardened Docker container (stdin → stdout);
+  the host needs no `tesseract` (see `docs/2.5-ocr.md`).
+- Detection: MIME `image/*` or a known image extension (`.png .jpg .jpeg .gif
+  .bmp .tif .tiff .webp .pbm .pgm .ppm .pnm`).
+- With OCR enabled, an image returns recognized text (trimmed, capped at
+  `extract.MaxTextChars`). With OCR disabled/unavailable the upload is rejected
+  with the existing `400` "unsupported file type" message; a failed OCR run
+  returns `400 "could not read text from the image: …"`.
+- Config: `MYOGCHAT_OCR` (default on), `MYOGCHAT_OCR_IMAGE`,
+  `MYOGCHAT_OCR_LANGS` (default `eng`), `MYOGCHAT_DOCKER`, `MYOGCHAT_OCR_TIMEOUT`
+  (default 30s).
+- Global admin setting `ocr_enabled` (default `true`) gates OCR on top of the
+  env switch and is surfaced by `GET`/`PATCH /api/settings` (§9.4) as
+  `ocr_enabled` / `ocr_available`.
+
 ## 9. Users & authentication (replaces §1)
 
 Multi-user accounts with username/email/password. The shared-token login is
@@ -417,8 +438,15 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
   (`status` ∈ `active` | `pending` | `disabled`; setting `active` approves a
   pending registration).
 - `DELETE /api/users/{id}` → `204` (cannot delete yourself → `400`)
-- `GET /api/settings` → `{"allow_registration": bool, "pending_users": N}`
-- `PATCH /api/settings` `{"allow_registration"?: bool}` → `200` (same shape as GET)
+- `GET /api/settings` → `{"allow_registration": bool, "pending_users": N,
+  "share_server_key": bool, "server_key_present": bool, "tools_enabled": bool,
+  "tavily_configured": bool, "linkwarden_url": string,
+  "linkwarden_configured": bool, "linkwarden_token_hint": string,
+  "ocr_enabled": bool, "ocr_available": bool}`
+  (`share_server_key` §2.1; tools/Linkwarden §2.4/2.8; OCR §2.5)
+- `PATCH /api/settings` `{"allow_registration"?, "share_server_key"?,
+  "tools_enabled"?, "linkwarden_url"?, "linkwarden_token"?, "ocr_enabled"?}`
+  → `200` (same shape as GET)
 
 Non-admin callers of any of these get `403`.
 

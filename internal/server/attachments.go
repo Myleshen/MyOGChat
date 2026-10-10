@@ -77,7 +77,8 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		name = "file"
 	}
 	mimeType := header.Header.Get("Content-Type")
-	text, err := extract.Extract(name, mimeType, data)
+	// Images are OCR'd when enabled (feature 2.5); other types are unchanged.
+	text, err := extract.ExtractWith(name, mimeType, data, s.ocrFunc(r.Context()))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, extractMessage(err))
 		return
@@ -158,6 +159,8 @@ func extractMessage(err error) string {
 		return "file is not valid UTF-8 text"
 	case errors.Is(err, extract.ErrEmpty):
 		return "no text could be extracted from the file"
+	case errors.Is(err, extract.ErrOCR):
+		return "could not read text from the image: " + err.Error()
 	case errors.Is(err, extract.ErrUnsupported):
 		return err.Error()
 	default:

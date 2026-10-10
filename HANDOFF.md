@@ -43,11 +43,12 @@ internal/
   upstream/   OpenCode Go clients: chat + responses dialects, SSE parsing, agentic tool loop (agent.go)
   server/     HTTP routes, SSE streaming, auth middleware, per-user scoping
   tools/      tool registry + web_search (Tavily), fetch_url, Linkwarden
-  extract/    text + PDF extraction for attachments
+  extract/    text + PDF extraction for attachments (images → injected OCR)
+  ocr/        image OCR via Docker Tesseract (feature 2.5)
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
-deploy/       systemd unit + deploy.sh + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.8-linkwarden.md
+deploy/       systemd unit + deploy.sh + env.example + ocr/ (Dockerfile) + ocr-setup.sh
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.8-linkwarden.md
 ```
 
 ## Docs index
@@ -127,7 +128,7 @@ scripts/ui-test.sh <BASE_URL> <TEST_USER> <TEST_PASS>
 approval-gated registration, admin, per-user isolation), mobile visual-viewport
 fix, deploy.
 
-**Phase 2 — 5 of 9 shipped:**
+**Phase 2 — 6 of 9 shipped:**
 
 | # | Item | Status |
 |---|---|---|
@@ -136,13 +137,14 @@ fix, deploy.
 | 2.3 | Files & PDF attachments | ✅ shipped |
 | 2.4 | Tools + web search | ✅ shipped (**web_search needs `TAVILY_API_KEY`** in the Pi env) |
 | 2.8 | URL summarization + Linkwarden | ✅ shipped (Linkwarden needs instance URL + token in Settings) |
-| 2.5 | **OCR for images** | ❌ todo |
+| 2.5 | OCR for images | ✅ done on `feat/ocr` (pending merge); **needs `deploy/ocr-setup.sh` on the Pi** (Docker) |
 | 2.6 | **Python sandbox** | ❌ todo |
 | 2.7 | **Bash sandbox** | ❌ todo |
 | 2.9 | **Full settings page (not a popup)** | ❌ todo — *the settings modal is still a popup; promote it to a page* |
 
 Suggested order: **2.9 first** (frontend-only; the modal has grown large), then
-**2.7 + 2.6 together** (shared sandbox design), then **2.5** (builds on 2.3).
+**2.7 + 2.6 together** (shared sandbox design). **2.5 is done** on `feat/ocr`
+(pending merge) — it reuses the Docker sandbox pattern 2.6/2.7 will follow.
 Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
 ## Known gaps / caveats (be honest)
@@ -155,13 +157,18 @@ Parallelize with git worktrees off `main` (see "Parallel workstreams").
 - **PDF** is unit-tested (+ a fixture) and the UI attach/send works; a real
   multi-page PDF hasn't been pushed through the UI yet.
 - Linkwarden client is unit-tested (`httptest`); not exercised against a real instance.
+- **OCR (2.5)** is unit-tested (fake docker runner) and the extract path is
+  covered; the live Docker smoke test was **not run** here (no Docker daemon /
+  not in the `docker` group on the workstation). Build the image on the Pi with
+  `bash deploy/ocr-setup.sh`, then `MYOGCHAT_OCR_LIVE=1 go test ./internal/ocr/
+  -run LiveSmoke -v`.
 - No per-user **usage/quota accounting** yet (relevant once keys are shared).
 
 ## Gotchas / tips
 
 - **Service-worker cache** can mask new assets during testing: start a fresh
   browser session (`agent-browser close --all`) or hard-refresh. `sw.js` version
-  is bumped per release (currently v7).
+  is bumped per release (currently v8).
 - **`pkill -f <pattern>`** can match your own shell command and kill it — use
   `pkill -x <name>` or a pattern that won't match the command line.
 - **`/zen/go/v1/models` is public** (200 with no auth); only completions
@@ -190,7 +197,9 @@ After each merge: `go build/vet/test` + `node --check static/app.js` + run
 ## Immediate next steps
 
 1. (Optional) Add `TAVILY_API_KEY` to the Pi env to enable web search.
-2. Build **2.9 settings page**.
-3. Build **2.7 bash sandbox** + **2.6 python sandbox**.
-4. Build **2.5 OCR**.
+2. Merge **2.5 OCR** (`feat/ocr`); then on the Pi run `bash deploy/ocr-setup.sh`
+   (needs Docker + the `docker` group) and restart.
+3. Build **2.9 settings page**.
+4. Build **2.7 bash sandbox** + **2.6 python sandbox** (reuse the 2.5 Docker
+   hardening pattern).
 5. Keep `API_CONTRACT.md` / `TODO.md` current; add a `docs/2.x-*.md` per feature.

@@ -16,6 +16,7 @@ import (
 
 	"myogchat/internal/auth"
 	"myogchat/internal/models"
+	"myogchat/internal/ocr"
 	"myogchat/internal/store"
 	"myogchat/internal/upstream"
 )
@@ -28,16 +29,18 @@ type Server struct {
 	static fs.FS
 	log    *slog.Logger
 
-	encKey    []byte // AES-256 key for per-user API keys (§2.1)
-	serverKey string // optional shared OpenCode Go key (may be empty)
-	tavilyKey string // optional Tavily key for web_search (Phase 2.4)
+	encKey    []byte     // AES-256 key for per-user API keys (§2.1)
+	serverKey string     // optional shared OpenCode Go key (may be empty)
+	tavilyKey string     // optional Tavily key for web_search (Phase 2.4)
+	ocrEngine ocr.Engine // image OCR backend (feature 2.5); nil when disabled
 }
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
 // optional shared key (empty when the deployment is pure BYOK); tavilyKey
-// enables the web_search tool when non-empty.
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey, tavilyKey string) *Server {
-	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, tavilyKey: tavilyKey}
+// enables the web_search tool when non-empty; ocrEngine enables image OCR and
+// may be nil.
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey, tavilyKey string, ocrEngine ocr.Engine) *Server {
+	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, tavilyKey: tavilyKey, ocrEngine: ocrEngine}
 }
 
 // Handler returns the root handler: routes + auth + request logging.

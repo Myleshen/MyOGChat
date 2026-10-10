@@ -1001,6 +1001,10 @@ button { font: inherit; }
 .add-user-form { display: flex; flex-direction: column; gap: 12px; }
 .key-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* ---------- Settings: Image OCR (feature 2.5) ---------- */
+
+.settings-ocr { display: flex; flex-direction: column; gap: 12px; }
+
 /* ---------- Settings: Groups (shared keys, §2.2) ---------- */
 
 .settings-groups { display: flex; flex-direction: column; gap: 12px; }

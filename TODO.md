@@ -100,10 +100,16 @@ key when sharing is allowed.
 - **Web search** via Tavily (`TAVILY_API_KEY` is already in the owner's env).
 - Later tools reuse the same loop (calculator, fetch-url, python via 2.6).
 
-### 2.5 OCR for images
+### 2.5 OCR for images — ✅ done (branch `feat/ocr`, pending merge)
 
-- Extract text from images (Tesseract binary or a Go binding) → context. Depends
-  on the file pipeline (2.3). Also enables image→text for pasted screenshots.
+- Extract text from images → context. Depends on the file pipeline (2.3).
+- Runs **Tesseract in an ephemeral, hardened Docker container** (stdin→stdout),
+  so the Pi needs no host `tesseract` (and no sudo). Image built by
+  `deploy/ocr-setup.sh` from `deploy/ocr/Dockerfile` (`alpine:3.20` +
+  `tesseract-ocr` + `tesseract-ocr-data-eng`).
+- `internal/extract` delegates images to an injected `ocr.OCRFunc` (nil → the
+  old `ErrUnsupported` fallback). Env `MYOGCHAT_OCR*` + DB setting `ocr_enabled`
+  (admin toggle in Settings). See `docs/2.5-ocr.md`.
 
 ### 2.6 Python sandbox (multi-purpose app)
 
