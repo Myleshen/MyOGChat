@@ -354,6 +354,27 @@ DB settings: `search_provider` (overrides the env default) and `brave_key`
 (encrypted at rest with `internal/secret`, takes precedence over `BRAVE_API_KEY`).
 Both are surfaced in `GET/PATCH /api/settings` (see §9.4).
 
+### 8.10 OCR for images (2.5)
+
+Image uploads to `POST /api/attachments` are OCR'd to text and stored in
+`attachments.text` exactly like text/PDF attachments (2.3); the endpoint's
+request/response shapes are unchanged. Text/code and PDF behavior is unchanged.
+
+- OCR runs Tesseract in an ephemeral, hardened Docker container (stdin → stdout);
+  the host needs no `tesseract` (see `docs/2.5-ocr.md`).
+- Detection: MIME `image/*` or a known image extension (`.png .jpg .jpeg .gif
+  .bmp .tif .tiff .webp .pbm .pgm .ppm .pnm`).
+- With OCR enabled, an image returns recognized text (trimmed, capped at
+  `extract.MaxTextChars`). With OCR disabled/unavailable the upload is rejected
+  with the existing `400` "unsupported file type" message; a failed OCR run
+  returns `400 "could not read text from the image: …"`.
+- Config: `MYOGCHAT_OCR` (default on), `MYOGCHAT_OCR_IMAGE`,
+  `MYOGCHAT_OCR_LANGS` (default `eng`), `MYOGCHAT_DOCKER`, `MYOGCHAT_OCR_TIMEOUT`
+  (default 30s).
+- Global admin setting `ocr_enabled` (default `true`) gates OCR on top of the
+  env switch and is surfaced by `GET`/`PATCH /api/settings` (§9.4) as
+  `ocr_enabled` / `ocr_available`.
+
 ## 9. Users & authentication (replaces §1)
 
 Multi-user accounts with username/email/password. The shared-token login is
@@ -440,15 +461,18 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "brave_configured": bool, "search_provider": "auto"|"tavily"|"brave"|"ddg",
    "search_active": "tavily"|"brave"|"ddg", "linkwarden_url": string,
    "linkwarden_configured": bool, "linkwarden_token_hint": string,
-   "sandbox_enabled": bool, "sandbox_available": bool}`
+   "sandbox_enabled": bool, "sandbox_available": bool,
+   "ocr_enabled": bool, "ocr_available": bool}`
+  (`share_server_key` §2.1; tools/Linkwarden §2.4/2.8; search §8.9; sandbox §10;
+   OCR §8.10)
 - `PATCH /api/settings` accepts any subset of
   `{"allow_registration"?: bool, "share_server_key"?: bool,
    "tools_enabled"?: bool, "linkwarden_url"?: string, "linkwarden_token"?: string,
    "search_provider"?: "auto"|"tavily"|"brave"|"ddg", "brave_key"?: string,
-   "sandbox_enabled"?: bool}`
+   "sandbox_enabled"?: bool, "ocr_enabled"?: bool}`
   → `200` (same shape as GET). Unknown `search_provider` values normalize to
   `auto`; `brave_key: ""` clears the stored (encrypted) key; omitted
-  `linkwarden_token`/`brave_key` leave the stored value untouched. See §8.9.
+  `linkwarden_token`/`brave_key` leave the stored value untouched.
 
 Non-admin callers of any of these get `403`.
 

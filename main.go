@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"myogchat/internal/auth"
+	"myogchat/internal/ocr"
 	"myogchat/internal/sandbox"
 	"myogchat/internal/server"
 	"myogchat/internal/store"
@@ -55,6 +56,12 @@ type config struct {
 	retentionDays    int
 	sandboxEnabled   bool           // MYOGCHAT_SANDBOX hard kill switch (default on)
 	sandbox          sandbox.Config // code-sandbox container parameters (2.6/2.7)
+	// Image OCR (feature 2.5).
+	ocrEnabled bool
+	ocrImage   string
+	ocrLangs   string
+	ocrDocker  string
+	ocrTimeout time.Duration
 }
 
 func main() {
@@ -199,6 +206,20 @@ func loadConfig() (config, error) {
 		retentionDays:    30,
 		sandboxEnabled:   sandbox.EnabledFromEnv(),
 		sandbox:          sandbox.ConfigFromEnv(),
+		// Image OCR (feature 2.5). On by default; MYOGCHAT_OCR=0 disables it
+		// entirely (no engine is built, so images are always ErrUnsupported).
+		ocrEnabled: envOr("MYOGCHAT_OCR", "1") != "0",
+		ocrImage:   envOr("MYOGCHAT_OCR_IMAGE", ocr.DefaultImage),
+		ocrLangs:   envOr("MYOGCHAT_OCR_LANGS", ocr.DefaultLangs),
+		ocrDocker:  envOr("MYOGCHAT_DOCKER", ocr.DefaultDocker),
+		ocrTimeout: ocr.DefaultTimeout,
+	}
+	if v := os.Getenv("MYOGCHAT_OCR_TIMEOUT"); v != "" {
+		d, err := parseOCRDuration(v)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.ocrTimeout = d
 	}
 	if cfg.dbPath == "" {
 		p, err := resolveDBPath()
@@ -245,6 +266,24 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// parseOCRDuration accepts a Go duration ("30s") or a bare integer number of
+// seconds ("30") for MYOGCHAT_OCR_TIMEOUT.
+func parseOCRDuration(v string) (time.Duration, error) {
+	if d, err := time.ParseDuration(v); err == nil {
+		if d <= 0 {
+			return 0, errors.New("MYOGCHAT_OCR_TIMEOUT must be positive")
+		}
+		return d, nil
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		if n <= 0 {
+			return 0, errors.New("MYOGCHAT_OCR_TIMEOUT must be positive")
+		}
+		return time.Duration(n) * time.Second, nil
+	}
+	return 0, errors.New("MYOGCHAT_OCR_TIMEOUT must be a duration (e.g. 30s) or a number of seconds")
+}
+
 func run(cfg config, log *slog.Logger) error {
 	st, err := store.Open(cfg.dbPath)
 	if err != nil {
@@ -275,6 +314,10 @@ func run(cfg config, log *slog.Logger) error {
 	if _, err := st.EnsureSetting(ctx, "sandbox_enabled", "1"); err != nil {
 		return err
 	}
+	// Image OCR defaults to on; the admin can toggle it in Settings (2.5).
+	if _, err := st.EnsureSetting(ctx, "ocr_enabled", "1"); err != nil {
+		return err
+	}
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -288,6 +331,18 @@ func run(cfg config, log *slog.Logger) error {
 		sbx = sandbox.NewRunner(cfg.sandbox)
 	}
 
+	// Build the OCR engine only when enabled at startup (MYOGCHAT_OCR). The
+	// DB-backed ocr_enabled setting gates it per request on top of this.
+	var ocrEngine ocr.Engine
+	if cfg.ocrEnabled {
+		ocrEngine = ocr.NewDockerTesseract(ocr.Config{
+			Image:   cfg.ocrImage,
+			Langs:   cfg.ocrLangs,
+			Docker:  cfg.ocrDocker,
+			Timeout: cfg.ocrTimeout,
+		})
+	}
+
 	srv := server.New(st, upstream.NewClient(), auth.New(st, secret), static, log, encKey, cfg.apiKey, server.SearchDefaults{
 		Provider:   cfg.searchProvider,
 		TavilyKey:  cfg.tavilyKey,
@@ -295,7 +350,7 @@ func run(cfg config, log *slog.Logger) error {
 		MaxResults: cfg.searchResults,
 		Region:     cfg.searchRegion,
 		SafeSearch: cfg.searchSafeSearch,
-	}, sbx)
+	}, sbx, ocrEngine)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
 
@@ -321,6 +376,7 @@ func run(cfg config, log *slog.Logger) error {
 		"sandbox", cfg.sandboxEnabled,
 		"sandbox_docker", cfg.sandbox.Docker,
 		"sandbox_network", cfg.sandbox.Network,
+		"ocr", cfg.ocrEnabled,
 	)
 
 	errc := make(chan error, 1)

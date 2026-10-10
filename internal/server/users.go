@@ -238,6 +238,7 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		SearchProvider    *string `json:"search_provider"`
 		BraveKey          *string `json:"brave_key"`
 		SandboxEnabled    *bool   `json:"sandbox_enabled"`
+		OCREnabled        *bool   `json:"ocr_enabled"` // feature 2.5
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -275,6 +276,13 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	if req.SandboxEnabled != nil {
 		if err := s.setSandboxEnabled(r.Context(), *req.SandboxEnabled); err != nil {
 			s.log.Error("set sandbox_enabled", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.OCREnabled != nil {
+		if err := s.setOCREnabled(r.Context(), *req.OCREnabled); err != nil {
+			s.log.Error("set ocr_enabled", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
 		}
@@ -334,6 +342,10 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		"server_key_present": s.serverKey != "",
 	}
 	for k, v := range s.integrationSettings(r.Context()) {
+		out[k] = v
+	}
+	// Feature 2.5: image OCR (self-contained block).
+	for k, v := range s.ocrSettings(r.Context()) {
 		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)

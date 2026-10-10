@@ -44,11 +44,12 @@ internal/
   server/     HTTP routes, SSE streaming, auth middleware, per-user scoping
   tools/      tool registry + web_search (Tavily/Brave/DDG chain), fetch_url, Linkwarden, run_bash/run_python
   sandbox/    hardened ephemeral Docker code sandbox runner (2.6/2.7)
-  extract/    text + PDF extraction for attachments
+  extract/    text + PDF extraction for attachments (images → injected OCR)
+  ocr/        image OCR via Docker Tesseract (feature 2.5)
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
-deploy/       systemd unit + deploy.sh + sandbox-setup.sh + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md
+deploy/       systemd unit + deploy.sh + sandbox-setup.sh + ocr-setup.sh + ocr/ (Dockerfile) + env.example
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md
 ```
 
 ## Docs index
@@ -129,7 +130,7 @@ scripts/ui-test.sh <BASE_URL> <TEST_USER> <TEST_PASS>
 approval-gated registration, admin, per-user isolation), mobile visual-viewport
 fix, deploy.
 
-**Phase 2 — 5 of 9 shipped:**
+**Phase 2 — 6 of 9 shipped:**
 
 | # | Item | Status |
 |---|---|---|
@@ -138,14 +139,14 @@ fix, deploy.
 | 2.3 | Files & PDF attachments | ✅ shipped |
 | 2.4 | Tools + web search | ✅ shipped (**web_search** is provider-agnostic: Tavily → Brave → DuckDuckGo fallback; DuckDuckGo needs no key) |
 | 2.8 | URL summarization + Linkwarden | ✅ shipped (Linkwarden needs instance URL + token in Settings) |
-| 2.5 | **OCR for images** | ❌ todo |
+| 2.5 | OCR for images | ✅ shipped (`DockerTesseract`; needs `deploy/ocr-setup.sh` on the host) |
 | 2.6 | **Python sandbox** | ✅ shipped (`run_python`, hardened Docker sandbox; needs `deploy/sandbox-setup.sh` on the host) |
 | 2.7 | **Bash sandbox** | ✅ shipped (`run_bash`, same engine) |
-| 2.9 | **Full settings page (not a popup)** | ❌ todo — *the settings modal is still a popup; promote it to a page* |
+| 2.9 | **Full settings page (not a popup)** | ⏳ done on `feat/settings-page` (pending merge) — replaces the modal with `#/settings` |
 
-Suggested order: **2.9 first** (frontend-only; the modal has grown large), then
-**2.5** (builds on 2.3). **2.6/2.7 (sandbox) are done** — provision the host
-with `deploy/sandbox-setup.sh`.
+Suggested order: **2.9** is done on `feat/settings-page` (pending merge). **2.5**,
+**2.6/2.7** are done — provision the host with `deploy/sandbox-setup.sh` and
+`deploy/ocr-setup.sh`.
 Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
 ## Known gaps / caveats (be honest)
@@ -159,6 +160,11 @@ Parallelize with git worktrees off `main` (see "Parallel workstreams").
 - **PDF** is unit-tested (+ a fixture) and the UI attach/send works; a real
   multi-page PDF hasn't been pushed through the UI yet.
 - Linkwarden client is unit-tested (`httptest`); not exercised against a real instance.
+- **OCR (2.5)** is unit-tested (fake docker runner) and the extract path is
+  covered; the live Docker smoke test was **not run** here (no Docker daemon /
+  not in the `docker` group on the workstation). Build the image on the Pi with
+  `bash deploy/ocr-setup.sh`, then `MYOGCHAT_OCR_LIVE=1 go test ./internal/ocr/
+  -run LiveSmoke -v`.
 - No per-user **usage/quota accounting** yet (relevant once keys are shared).
 
 ## Gotchas / tips
@@ -194,9 +200,10 @@ After each merge: `go build/vet/test` + `node --check static/app.js` + run
 ## Immediate next steps
 
 1. (Optional) Add `TAVILY_API_KEY` to the Pi env to enable web search.
-2. Build **2.9 settings page**.
+2. Merge **2.5 OCR** (`feat/ocr`); then on the Pi run `bash deploy/ocr-setup.sh`
+   (needs Docker + the `docker` group) and restart.
 3. (Done) **2.7 bash sandbox** + **2.6 python sandbox** — run
    `deploy/sandbox-setup.sh` on the Pi to create the network and pull
    `bash:5.3` / `python:3.14-slim`; optional `sudo … --harden` blocks LAN egress.
-4. Build **2.5 OCR**.
+4. Merge **2.9 settings page** (`feat/settings-page`).
 5. Keep `API_CONTRACT.md` / `TODO.md` current; add a `docs/2.x-*.md` per feature.

@@ -1,7 +1,8 @@
 // Package extract turns an uploaded file into the plain text folded into a
 // model request (feature 2.3). Text/code/JSON/CSV/Markdown are decoded as UTF-8;
 // PDFs are parsed with the pure-Go github.com/ledongthuc/pdf library. Images are
-// intentionally unsupported (OCR arrives in 2.5).
+// handled by OCR (feature 2.5): the extractor stays Docker-free by delegating
+// to an injected ocr.OCRFunc.
 package extract
 
 import (
@@ -15,6 +16,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/ledongthuc/pdf"
+
+	"myogchat/internal/ocr"
 )
 
 const (
@@ -33,6 +36,8 @@ var (
 	ErrNotText = errors.New("file is not valid UTF-8 text")
 	// ErrEmpty marks files that parsed but yielded no text.
 	ErrEmpty = errors.New("no text could be extracted")
+	// ErrOCR marks images whose OCR run failed (engine error, timeout, ...).
+	ErrOCR = errors.New("OCR failed")
 )
 
 // textExtensions are filename extensions treated as UTF-8 text even when the
@@ -55,17 +60,35 @@ var textExtensions = map[string]bool{
 	".conf": true, ".cfg": true, ".properties": true, ".diff": true, ".patch": true,
 }
 
+// imageExtensions are filename extensions treated as images (OCR) even when the
+// browser reports a generic or empty MIME type.
+var imageExtensions = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".bmp": true,
+	".tif": true, ".tiff": true, ".webp": true, ".pbm": true, ".pgm": true,
+	".ppm": true, ".pnm": true,
+}
+
 // Extract returns the plain text of data given the upload's filename and MIME
-// type. It never returns both text and an error.
+// type. It never returns both text and an error. Images are rejected with
+// ErrUnsupported because no OCR function is supplied; use ExtractWith to OCR
+// them.
 func Extract(name, mimeType string, data []byte) (string, error) {
+	return ExtractWith(name, mimeType, data, nil)
+}
+
+// ExtractWith is Extract with an injected OCR function used for images. A nil
+// ocrFn keeps the pre-2.5 behavior: images are reported as unsupported. When
+// ocrFn is set, recognized text is trimmed, capped with MaxTextChars, and
+// returned like any other extractor output.
+func ExtractWith(name, mimeType string, data []byte, ocrFn ocr.OCRFunc) (string, error) {
 	base := baseMime(mimeType)
 	ext := strings.ToLower(filepath.Ext(name))
 
 	switch {
 	case isPDF(base, ext, data):
 		return extractPDF(data)
-	case strings.HasPrefix(base, "image/"):
-		return "", fmt.Errorf("%w: images are not supported yet (OCR is a later phase)", ErrUnsupported)
+	case isImage(base, ext):
+		return extractImage(data, ocrFn)
 	case isText(base, ext, data):
 		return extractText(data)
 	default:
@@ -93,6 +116,33 @@ func baseMime(m string) string {
 // isPDF detects PDFs by MIME type, extension, or the "%PDF" magic bytes.
 func isPDF(base, ext string, data []byte) bool {
 	return base == "application/pdf" || ext == ".pdf" || bytes.HasPrefix(data, []byte("%PDF"))
+}
+
+// isImage decides whether a non-PDF upload should be OCR'd. Images are matched
+// by MIME type or, when the browser sends a generic type, by extension.
+func isImage(base, ext string) bool {
+	return strings.HasPrefix(base, "image/") || imageExtensions[ext]
+}
+
+// extractImage OCRs an image. A nil OCR function (OCR disabled or unavailable)
+// yields ErrUnsupported so the HTTP layer can explain it; an OCR engine failure
+// yields ErrOCR; an image with no recognizable text yields ErrEmpty.
+func extractImage(data []byte, ocrFn ocr.OCRFunc) (string, error) {
+	if ocrFn == nil {
+		return "", fmt.Errorf("%w: images require OCR, which is disabled", ErrUnsupported)
+	}
+	if len(data) == 0 {
+		return "", ErrEmpty
+	}
+	text, err := ocrFn(data)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrOCR, err)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", ErrEmpty
+	}
+	return capText(text), nil
 }
 
 // isText decides whether a non-PDF upload should be decoded as UTF-8 text.

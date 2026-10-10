@@ -124,6 +124,11 @@ const settingSandboxEnabled = document.getElementById("setting-sandbox-enabled")
 const sandboxStatus = document.getElementById("sandbox-status");
 /* ==== END code-sandbox tools ==== */
 
+/* Image OCR (feature 2.5) — self-contained. */
+const ocrSection = document.getElementById("ocr-section");
+const settingOcrEnabled = document.getElementById("setting-ocr-enabled");
+const ocrStatus = document.getElementById("ocr-status");
+
 const projectModal = document.getElementById("project-modal");
 const projectForm = document.getElementById("project-form");
 const projectModalTitle = document.getElementById("project-modal-title");
@@ -642,6 +647,7 @@ function openSettings() {
   shareKeyRow.hidden = !isAdmin;
   integrationsSection.hidden = !isAdmin;
   toolsSection.hidden = !isAdmin; /* code-sandbox tools (2.6/2.7) */
+  ocrSection.hidden = !isAdmin;
   openModal(settingsModal);
   loadKeyStatus().catch(() => {});
   loadGroups().catch(() => {});
@@ -675,6 +681,7 @@ function renderUser() {
   const isAdmin = !!(user && user.is_admin);
   userAdminBadge.hidden = !isAdmin;
   usersSection.hidden = !isAdmin;
+  ocrSection.hidden = !isAdmin;
 }
 
 /* ============================== Admin: users panel ============================== */
@@ -845,12 +852,14 @@ async function loadSettingsInfo(silent) {
     setPendingCount(s && typeof s.pending_users === "number" ? s.pending_users : 0);
     applyIntegrationSettings(s);
     applySandboxSettings(s); /* code-sandbox tools (2.6/2.7) */
+    applyOCRSettings(s);
   } catch (err) {
     if (err instanceof AuthError) return;
     if (isForbidden(err)) {
       usersSection.hidden = true;
       integrationsSection.hidden = true;
       toolsSection.hidden = true; /* code-sandbox tools (2.6/2.7) */
+      ocrSection.hidden = true;
       return;
     }
     if (!silent) toast(err.message);
@@ -972,6 +981,38 @@ async function saveToolsEnabled() {
   } catch (err) {
     if (err instanceof AuthError) return;
     settingToolsEnabled.checked = !value;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
+  }
+}
+
+/* Image OCR (feature 2.5) — populate the admin OCR block from GET /api/settings. */
+function applyOCRSettings(s) {
+  if (!s) return;
+  if (settingOcrEnabled) settingOcrEnabled.checked = s.ocr_enabled !== false;
+  if (ocrStatus) {
+    if (s.ocr_available === false) {
+      ocrStatus.textContent = "OCR engine not configured on the server.";
+    } else {
+      ocrStatus.textContent = s.ocr_enabled === false
+        ? "Image OCR is off."
+        : "Image OCR is on.";
+    }
+  }
+}
+
+async function saveOcrEnabled() {
+  const value = settingOcrEnabled.checked;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ ocr_enabled: value }),
+    });
+    applyOCRSettings(s);
+    toast(value ? "Image OCR enabled" : "Image OCR disabled");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    settingOcrEnabled.checked = !value;
     toast(isForbidden(err) ? "Admin access required" : err.message);
   }
 }
@@ -2981,6 +3022,9 @@ function wireEvents() {
   /* ==== BEGIN code-sandbox tools (2.6/2.7) — self-contained, safe to relocate ==== */
   if (settingSandboxEnabled) settingSandboxEnabled.addEventListener("change", saveSandboxEnabled);
   /* ==== END code-sandbox tools ==== */
+
+  /* Image OCR toggle (admin, feature 2.5). */
+  settingOcrEnabled.addEventListener("change", saveOcrEnabled);
 
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();

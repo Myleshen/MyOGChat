@@ -374,6 +374,22 @@
         </section>
         <!-- ==== END code-sandbox tools section ==== -->
 
+        <!-- ===== Image OCR (feature 2.5) — self-contained block; safe to relocate ===== -->
+        <section id="ocr-section" class="settings-ocr" hidden>
+          <hr class="settings-sep">
+          <h3 class="settings-subtitle">Image OCR</h3>
+          <p class="settings-subtitle-sm">
+            Read text from uploaded images with Tesseract, run in a sandboxed
+            container. Applies to everyone on this server.
+          </p>
+          <label class="setting-toggle">
+            <span>Enable image OCR</span>
+            <input type="checkbox" id="setting-ocr-enabled">
+          </label>
+          <p id="ocr-status" class="settings-subtitle-sm">OCR: loading…</p>
+        </section>
+        <!-- ===== end Image OCR (feature 2.5) ===== -->
+
         <!-- Admin only (contract §9.6). Hidden for non-admins. -->
         <section id="users-section" class="settings-users" hidden>
           <hr class="settings-sep">

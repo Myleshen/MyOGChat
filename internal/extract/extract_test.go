@@ -68,9 +68,56 @@ func TestExtractByExtensionWhenMimeMissing(t *testing.T) {
 }
 
 func TestExtractImageUnsupported(t *testing.T) {
+	// No OCR function (feature disabled/unavailable) → images stay unsupported.
 	_, err := Extract("photo.png", "image/png", []byte("not really an image"))
 	if !errors.Is(err, ErrUnsupported) {
 		t.Errorf("err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestExtractImageWithOCR(t *testing.T) {
+	got, err := ExtractWith("photo.png", "image/png", []byte("PNG"), func(b []byte) (string, error) {
+		if string(b) != "PNG" {
+			t.Errorf("ocr received %q, want the image bytes", b)
+		}
+		return "  hello from an image \n", nil
+	})
+	if err != nil {
+		t.Fatalf("ExtractWith: %v", err)
+	}
+	if got != "hello from an image" {
+		t.Errorf("got %q, want %q", got, "hello from an image")
+	}
+}
+
+func TestExtractImageWithOCRByExtension(t *testing.T) {
+	// A generic MIME type must still route by extension to OCR.
+	got, err := ExtractWith("scan.jpeg", "application/octet-stream", []byte("x"), func([]byte) (string, error) {
+		return "text", nil
+	})
+	if err != nil {
+		t.Fatalf("ExtractWith: %v", err)
+	}
+	if got != "text" {
+		t.Errorf("got %q, want %q", got, "text")
+	}
+}
+
+func TestExtractImageOCRError(t *testing.T) {
+	_, err := ExtractWith("photo.png", "image/png", []byte("x"), func([]byte) (string, error) {
+		return "", errors.New("docker not found")
+	})
+	if !errors.Is(err, ErrOCR) {
+		t.Errorf("err = %v, want ErrOCR", err)
+	}
+}
+
+func TestExtractImageOCREmpty(t *testing.T) {
+	_, err := ExtractWith("blank.png", "image/png", []byte("x"), func([]byte) (string, error) {
+		return "   \n", nil
+	})
+	if !errors.Is(err, ErrEmpty) {
+		t.Errorf("err = %v, want ErrEmpty", err)
 	}
 }
 
