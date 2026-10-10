@@ -16,6 +16,7 @@ import (
 
 	"myogchat/internal/auth"
 	"myogchat/internal/models"
+	"myogchat/internal/sandbox"
 	"myogchat/internal/store"
 	"myogchat/internal/upstream"
 )
@@ -28,16 +29,18 @@ type Server struct {
 	static fs.FS
 	log    *slog.Logger
 
-	encKey    []byte // AES-256 key for per-user API keys (§2.1)
-	serverKey string // optional shared OpenCode Go key (may be empty)
-	tavilyKey string // optional Tavily key for web_search (Phase 2.4)
+	encKey    []byte          // AES-256 key for per-user API keys (§2.1)
+	serverKey string          // optional shared OpenCode Go key (may be empty)
+	tavilyKey string          // optional Tavily key for web_search (Phase 2.4)
+	sbx       *sandbox.Runner // code sandbox runner; nil when disabled (2.6/2.7)
 }
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
 // optional shared key (empty when the deployment is pure BYOK); tavilyKey
-// enables the web_search tool when non-empty.
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey, tavilyKey string) *Server {
-	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, tavilyKey: tavilyKey}
+// enables the web_search tool when non-empty; sbx runs the code sandbox tools
+// (nil when the sandbox is disabled by env).
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey, tavilyKey string, sbx *sandbox.Runner) *Server {
+	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, tavilyKey: tavilyKey, sbx: sbx}
 }
 
 // Handler returns the root handler: routes + auth + request logging.

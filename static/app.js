@@ -112,6 +112,12 @@ const linkwardenStatus = document.getElementById("linkwarden-status");
 const linkwardenError = document.getElementById("linkwarden-error");
 const linkwardenClear = document.getElementById("linkwarden-clear");
 
+/* ==== BEGIN code-sandbox tools (2.6/2.7) — self-contained, safe to relocate ==== */
+const toolsSection = document.getElementById("tools-section");
+const settingSandboxEnabled = document.getElementById("setting-sandbox-enabled");
+const sandboxStatus = document.getElementById("sandbox-status");
+/* ==== END code-sandbox tools ==== */
+
 const projectModal = document.getElementById("project-modal");
 const projectForm = document.getElementById("project-form");
 const projectModalTitle = document.getElementById("project-modal-title");
@@ -629,6 +635,7 @@ function openSettings() {
   usersSection.hidden = !isAdmin;
   shareKeyRow.hidden = !isAdmin;
   integrationsSection.hidden = !isAdmin;
+  toolsSection.hidden = !isAdmin; /* code-sandbox tools (2.6/2.7) */
   openModal(settingsModal);
   loadKeyStatus().catch(() => {});
   loadGroups().catch(() => {});
@@ -831,11 +838,13 @@ async function loadSettingsInfo(silent) {
     if (settingShareServerKey) settingShareServerKey.checked = !!(s && s.share_server_key);
     setPendingCount(s && typeof s.pending_users === "number" ? s.pending_users : 0);
     applyIntegrationSettings(s);
+    applySandboxSettings(s); /* code-sandbox tools (2.6/2.7) */
   } catch (err) {
     if (err instanceof AuthError) return;
     if (isForbidden(err)) {
       usersSection.hidden = true;
       integrationsSection.hidden = true;
+      toolsSection.hidden = true; /* code-sandbox tools (2.6/2.7) */
       return;
     }
     if (!silent) toast(err.message);
@@ -859,6 +868,36 @@ function applyIntegrationSettings(s) {
       : "Not configured.";
   }
 }
+
+/* ==== BEGIN code-sandbox tools (2.6/2.7) — self-contained, safe to relocate ==== */
+/* Populate the admin Code sandbox section from GET /api/settings. */
+function applySandboxSettings(s) {
+  if (!s) return;
+  if (settingSandboxEnabled) settingSandboxEnabled.checked = s.sandbox_enabled !== false;
+  if (sandboxStatus) {
+    sandboxStatus.textContent = s.sandbox_available
+      ? "Sandbox: available (Docker reachable)."
+      : "Sandbox: unavailable — Docker is not reachable, or images/network are missing (run deploy/sandbox-setup.sh).";
+  }
+}
+
+async function saveSandboxEnabled() {
+  const value = settingSandboxEnabled.checked;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ sandbox_enabled: value }),
+    });
+    applySandboxSettings(s);
+    toast(value ? "Code sandbox enabled" : "Code sandbox disabled");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    settingSandboxEnabled.checked = !value;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
+  }
+}
+/* ==== END code-sandbox tools ==== */
 
 async function saveToolsEnabled() {
   const value = settingToolsEnabled.checked;
@@ -2874,6 +2913,10 @@ function wireEvents() {
   settingToolsEnabled.addEventListener("change", saveToolsEnabled);
   linkwardenForm.addEventListener("submit", saveLinkwarden);
   linkwardenClear.addEventListener("click", clearLinkwarden);
+
+  /* ==== BEGIN code-sandbox tools (2.6/2.7) — self-contained, safe to relocate ==== */
+  if (settingSandboxEnabled) settingSandboxEnabled.addEventListener("change", saveSandboxEnabled);
+  /* ==== END code-sandbox tools ==== */
 
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();

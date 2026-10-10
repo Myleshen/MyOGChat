@@ -235,6 +235,7 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		ToolsEnabled      *bool   `json:"tools_enabled"`
 		LinkwardenURL     *string `json:"linkwarden_url"`
 		LinkwardenToken   *string `json:"linkwarden_token"`
+		SandboxEnabled    *bool   `json:"sandbox_enabled"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -265,6 +266,13 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	if req.ToolsEnabled != nil {
 		if err := s.setToolsEnabled(r.Context(), *req.ToolsEnabled); err != nil {
 			s.log.Error("set tools_enabled", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.SandboxEnabled != nil {
+		if err := s.setSandboxEnabled(r.Context(), *req.SandboxEnabled); err != nil {
+			s.log.Error("set sandbox_enabled", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
 		}

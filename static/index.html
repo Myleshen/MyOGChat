@@ -333,6 +333,23 @@
           </form>
         </section>
 
+        <!-- ==== BEGIN code-sandbox tools section (2.6/2.7) — self-contained, safe to relocate ==== -->
+        <!-- Admin only. Toggles the ephemeral Docker code sandbox (run_bash/run_python). -->
+        <section id="tools-section" class="settings-tools" hidden>
+          <hr class="settings-sep">
+          <h3 class="settings-subtitle">Code sandbox</h3>
+          <p class="settings-subtitle-sm">
+            Let the model run Bash and Python in a fresh, ephemeral Docker sandbox.
+            Nothing is kept between calls.
+          </p>
+          <label class="setting-toggle">
+            <span>Enable code sandbox (run_bash, run_python)</span>
+            <input type="checkbox" id="setting-sandbox-enabled">
+          </label>
+          <p id="sandbox-status" class="settings-subtitle-sm">Sandbox: loading…</p>
+        </section>
+        <!-- ==== END code-sandbox tools section ==== -->
+
         <!-- Admin only (contract §9.6). Hidden for non-admins. -->
         <section id="users-section" class="settings-users" hidden>
           <hr class="settings-sep">

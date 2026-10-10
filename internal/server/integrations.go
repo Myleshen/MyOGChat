@@ -11,11 +11,12 @@ import (
 	"myogchat/internal/upstream"
 )
 
-// Settings keys for the tools/integrations feature (Phase 2.4 / 2.8).
+// Settings keys for the tools/integrations feature (Phase 2.4 / 2.8 / 2.6-2.7).
 const (
 	settingToolsEnabled    = "tools_enabled"
 	settingLinkwardenURL   = "linkwarden_url"
 	settingLinkwardenToken = "linkwarden_token"
+	settingSandboxEnabled  = "sandbox_enabled"
 )
 
 // toolsEnabled reports whether tool calling is on (default true).
@@ -25,6 +26,26 @@ func (s *Server) toolsEnabled(ctx context.Context) bool {
 		return true
 	}
 	return v == "1"
+}
+
+// sandboxEnabled reports whether the code sandbox tools are on (default true).
+// This is the DB-backed admin toggle; the MYOGCHAT_SANDBOX env var is a hard
+// kill switch applied at startup (it leaves s.sbx nil).
+func (s *Server) sandboxEnabled(ctx context.Context) bool {
+	v, ok, err := s.st.GetSetting(ctx, settingSandboxEnabled)
+	if err != nil || !ok {
+		return true
+	}
+	return v == "1"
+}
+
+// setSandboxEnabled persists the global sandbox toggle.
+func (s *Server) setSandboxEnabled(ctx context.Context, enabled bool) error {
+	v := "0"
+	if enabled {
+		v = "1"
+	}
+	return s.st.SetSetting(ctx, settingSandboxEnabled, v)
 }
 
 // linkwardenConfig returns the configured instance URL and decrypted token.
@@ -76,6 +97,12 @@ func (s *Server) toolRegistry(ctx context.Context) *tools.Registry {
 	if c, ok := s.linkwardenClient(ctx); ok {
 		reg.Add(tools.NewLinkwardenSearchTool(c))
 		reg.Add(tools.NewLinkwardenSaveTool(c))
+	}
+	// Code sandbox (Phase 2.6 / 2.7): registered only when the DB toggle is on
+	// AND Docker is reachable. Missing images surface a clear error at call time.
+	if s.sbx != nil && s.sandboxEnabled(ctx) && s.sbx.Available(ctx) {
+		reg.Add(tools.NewRunBashTool(s.sbx))
+		reg.Add(tools.NewRunPythonTool(s.sbx))
 	}
 	return reg
 }
@@ -129,12 +156,15 @@ func (s *Server) integrationSettings(ctx context.Context) map[string]any {
 	if configured {
 		hint = keyHint(token)
 	}
+	sandboxAvailable := s.sbx != nil && s.sbx.Available(ctx)
 	return map[string]any{
 		"tools_enabled":         s.toolsEnabled(ctx),
 		"tavily_configured":     s.tavilyKey != "",
 		"linkwarden_url":        rawURL,
 		"linkwarden_configured": configured,
 		"linkwarden_token_hint": hint,
+		"sandbox_enabled":       s.sandboxEnabled(ctx),
+		"sandbox_available":     sandboxAvailable,
 	}
 }
 

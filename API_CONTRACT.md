@@ -417,8 +417,13 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
   (`status` ∈ `active` | `pending` | `disabled`; setting `active` approves a
   pending registration).
 - `DELETE /api/users/{id}` → `204` (cannot delete yourself → `400`)
-- `GET /api/settings` → `{"allow_registration": bool, "pending_users": N}`
-- `PATCH /api/settings` `{"allow_registration"?: bool}` → `200` (same shape as GET)
+- `GET /api/settings` → `{"allow_registration": bool, "pending_users": N,
+  "share_server_key": bool, "server_key_present": bool, "tools_enabled": bool,
+  "tavily_configured": bool, "linkwarden_url": str, "linkwarden_configured": bool,
+  "linkwarden_token_hint": str, "sandbox_enabled": bool, "sandbox_available": bool}`
+- `PATCH /api/settings` `{"allow_registration"?, "share_server_key"?,
+  "tools_enabled"?, "linkwarden_url"?, "linkwarden_token"?, "sandbox_enabled"?}`
+  → `200` (same shape as GET).
 
 Non-admin callers of any of these get `403`.
 
@@ -450,3 +455,35 @@ Admins do **not** see other users' chats (only user administration).
   registrations"** toggle (`GET`/`PATCH /api/settings`).
 - Any `/api` `401` returns to the login screen; `403` on admin panels shows a
   toast and is hidden for non-admins.
+
+## 10. Code sandbox (2.6 Python / 2.7 Bash)
+
+The model gets two tools — **`run_bash`** and **`run_python`** — that execute
+model-generated code in a hardened, resource-limited, **ephemeral** Docker
+container and return stdout/stderr. Full design: `docs/2.6-2.7-sandbox.md`.
+
+- Each call is a fresh `docker run --rm` container; **nothing persists** between
+  calls (read-only rootfs, writable `/work` tmpfs).
+- The code is piped to the interpreter over **stdin** (`bash -s` / `python -`);
+  it is never interpolated into the command line.
+- Hardening: dedicated user-defined bridge network (no published ports → no
+  inbound path), `--cap-drop ALL`, `--security-opt no-new-privileges`,
+  `--user 65534:65534`, `--read-only`, tmpfs `/work` + `/tmp`,
+  `--memory 256m --memory-swap 256m --cpus 1 --pids-limit 128
+  --ulimit nofile=256:256`, `--stop-timeout 2`, `--pull never`.
+- Outbound network is available (the owner's choice). Optional LAN-egress
+  hardening is applied by `sudo deploy/sandbox-setup.sh --harden`
+  (`DOCKER-USER` DROPs to RFC1918 / link-local / loopback / CGNAT).
+- Per-call wall-clock timeout (default 30 s) enforced with `exec.CommandContext`
+  plus an explicit `docker rm -f <name>` on timeout/cancel so containers cannot
+  leak. Unique `--name` + label `myogchat-sandbox=1`.
+- Registered per request only when `tools_enabled` **and** `sandbox_enabled`
+  (default true) **and** Docker is reachable. Missing images/network return a
+  clear error pointing at `deploy/sandbox-setup.sh`.
+- Env config: `MYOGCHAT_SANDBOX` (hard on/off), `MYOGCHAT_DOCKER`,
+  `MYOGCHAT_SANDBOX_NETWORK`, `MYOGCHAT_SANDBOX_IMAGE_BASH` (default `bash:5.3`),
+  `MYOGCHAT_SANDBOX_IMAGE_PYTHON` (default `python:3.14-slim`),
+  `MYOGCHAT_SANDBOX_TIMEOUT`, `MYOGCHAT_SANDBOX_MEMORY`, `MYOGCHAT_SANDBOX_CPUS`,
+  `MYOGCHAT_SANDBOX_MAX_OUTPUT`.
+- `GET`/`PATCH /api/settings` gain `sandbox_enabled` (admin) and
+  `sandbox_available` (read-only status).

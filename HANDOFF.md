@@ -42,12 +42,13 @@ internal/
   models/     static model registry + cost/peak/tier pricing + thinking flags
   upstream/   OpenCode Go clients: chat + responses dialects, SSE parsing, agentic tool loop (agent.go)
   server/     HTTP routes, SSE streaming, auth middleware, per-user scoping
-  tools/      tool registry + web_search (Tavily), fetch_url, Linkwarden
+  tools/      tool registry + web_search (Tavily), fetch_url, Linkwarden, run_bash/run_python
+  sandbox/    hardened ephemeral Docker code sandbox runner (2.6/2.7)
   extract/    text + PDF extraction for attachments
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
-deploy/       systemd unit + deploy.sh + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.8-linkwarden.md
+deploy/       systemd unit + deploy.sh + sandbox-setup.sh + env.example
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md
 ```
 
 ## Docs index
@@ -137,12 +138,13 @@ fix, deploy.
 | 2.4 | Tools + web search | ✅ shipped (**web_search needs `TAVILY_API_KEY`** in the Pi env) |
 | 2.8 | URL summarization + Linkwarden | ✅ shipped (Linkwarden needs instance URL + token in Settings) |
 | 2.5 | **OCR for images** | ❌ todo |
-| 2.6 | **Python sandbox** | ❌ todo |
-| 2.7 | **Bash sandbox** | ❌ todo |
+| 2.6 | **Python sandbox** | ✅ shipped (`run_python`, hardened Docker sandbox; needs `deploy/sandbox-setup.sh` on the host) |
+| 2.7 | **Bash sandbox** | ✅ shipped (`run_bash`, same engine) |
 | 2.9 | **Full settings page (not a popup)** | ❌ todo — *the settings modal is still a popup; promote it to a page* |
 
 Suggested order: **2.9 first** (frontend-only; the modal has grown large), then
-**2.7 + 2.6 together** (shared sandbox design), then **2.5** (builds on 2.3).
+**2.5** (builds on 2.3). **2.6/2.7 (sandbox) are done** — provision the host
+with `deploy/sandbox-setup.sh`.
 Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
 ## Known gaps / caveats (be honest)
@@ -191,6 +193,8 @@ After each merge: `go build/vet/test` + `node --check static/app.js` + run
 
 1. (Optional) Add `TAVILY_API_KEY` to the Pi env to enable web search.
 2. Build **2.9 settings page**.
-3. Build **2.7 bash sandbox** + **2.6 python sandbox**.
+3. (Done) **2.7 bash sandbox** + **2.6 python sandbox** — run
+   `deploy/sandbox-setup.sh` on the Pi to create the network and pull
+   `bash:5.3` / `python:3.14-slim`; optional `sudo … --harden` blocks LAN egress.
 4. Build **2.5 OCR**.
 5. Keep `API_CONTRACT.md` / `TODO.md` current; add a `docs/2.x-*.md` per feature.
