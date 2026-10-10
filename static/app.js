@@ -112,9 +112,17 @@ const settingToolsEnabled = document.getElementById("setting-tools-enabled");
 const searchStatus = document.getElementById("search-status");
 const searchProvider = document.getElementById("search-provider");
 const searchBraveKey = document.getElementById("search-brave-key");
+const searchBraveMode = document.getElementById("search-brave-mode");
 const searchError = document.getElementById("search-error");
 const searchSave = document.getElementById("search-save");
 const searchClearKey = document.getElementById("search-clear-key");
+
+/* Per-user web search block (2.12; visible to all users, not admin-only). */
+const mySearchStatus = document.getElementById("my-search-status");
+const mySerperForm = document.getElementById("my-serper-form");
+const mySerperKey = document.getElementById("my-serper-key");
+const mySerperError = document.getElementById("my-serper-error");
+const mySerperClear = document.getElementById("my-serper-clear");
 const linkwardenForm = document.getElementById("linkwarden-form");
 const linkwardenUrl = document.getElementById("linkwarden-url");
 const linkwardenToken = document.getElementById("linkwarden-token");
@@ -715,6 +723,7 @@ function showSettingsPage() {
   if (body) body.scrollTop = 0;
   loadKeyStatus().catch(() => {});
   loadGroups().catch(() => {});
+  loadMySearch().catch(() => {}); /* per-user web search (2.12) */
   if (isAdmin) {
     loadUsers().catch(() => {});
     loadSettingsInfo(false).catch(() => {});
@@ -958,10 +967,12 @@ function applyIntegrationSettings(s) {
 function applySearchSettings(s) {
   if (searchProvider) searchProvider.value = s.search_provider || "auto";
   if (searchBraveKey) searchBraveKey.value = "";
+  if (searchBraveMode) searchBraveMode.value = s.brave_mode || "web";
   if (!searchStatus) return;
   const providers = [
     "Tavily: " + (s.tavily_configured ? "configured" : "not configured"),
     "Brave: " + (s.brave_configured ? "configured" : "not configured"),
+    "Serper: " + (s.serper_configured ? "configured" : "not configured"),
     "DuckDuckGo: always available",
   ];
   const active = s.search_active ? s.search_active : "none";
@@ -974,6 +985,7 @@ async function saveSearch() {
   const key = searchBraveKey ? searchBraveKey.value.trim() : "";
   // Only send the key when provided so saving the provider keeps the stored one.
   if (key) body.brave_key = key;
+  if (searchBraveMode) body.brave_mode = searchBraveMode.value;
   if (searchSave) searchSave.disabled = true;
   try {
     const s = await api("/api/settings", {
@@ -994,6 +1006,72 @@ async function saveSearch() {
     if (searchSave) searchSave.disabled = false;
   }
 }
+
+/* ==== BEGIN per-user web search (2.12) — self-contained, safe to relocate ==== */
+/* Populate the per-user Serper key block from GET /api/me/serper (all users). */
+async function loadMySearch() {
+  if (!mySearchStatus) return;
+  try {
+    const s = await api("/api/me/serper");
+    if (mySerperKey) mySerperKey.value = "";
+    const providers = [
+      "Tavily: " + (s.tavily_configured ? "configured" : "not configured"),
+      "Brave: " + (s.brave_configured ? "configured" : "not configured"),
+      "Serper: " + (s.serper_configured ? "configured" : "not configured"),
+      "DuckDuckGo: always available",
+    ];
+    const active = s.search_active ? s.search_active : "none";
+    const mine = s.has_key
+      ? "your Serper key set" + (s.key_hint ? " (…" + s.key_hint + ")" : "")
+      : s.server_key_present
+        ? "using the server Serper key"
+        : "no Serper key";
+    mySearchStatus.textContent =
+      "Active provider: " + active + " · " + providers.join(" · ") + " · " + mine + ".";
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    mySearchStatus.textContent = "Web search: " + err.message;
+  }
+}
+
+async function saveMySerper() {
+  setFormError(mySerperError, "");
+  const key = mySerperKey ? mySerperKey.value.trim() : "";
+  if (!key) {
+    setFormError(mySerperError, "Enter a Serper API key (or use Clear key).");
+    return;
+  }
+  try {
+    await api("/api/me/serper", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ api_key: key }),
+    });
+    toast("Serper key saved");
+    await loadMySearch();
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    setFormError(mySerperError, err.message);
+  }
+}
+
+async function clearMySerper() {
+  if (!confirm("Clear your stored Serper API key?")) return;
+  setFormError(mySerperError, "");
+  try {
+    await api("/api/me/serper", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ api_key: "" }),
+    });
+    toast("Serper key cleared");
+    await loadMySearch();
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    setFormError(mySerperError, err.message);
+  }
+}
+/* ==== END per-user web search ==== */
 
 /* ==== BEGIN code-sandbox tools (2.6/2.7) — self-contained, safe to relocate ==== */
 /* Populate the admin Code sandbox section from GET /api/settings. */
@@ -3087,6 +3165,14 @@ function wireEvents() {
   /* Web search block (self-contained; safe to relocate). */
   if (searchSave) searchSave.addEventListener("click", saveSearch);
   if (searchClearKey) searchClearKey.addEventListener("click", clearBraveKey);
+
+  /* ==== BEGIN per-user web search (2.12) — self-contained, safe to relocate ==== */
+  if (mySerperForm) mySerperForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveMySerper();
+  });
+  if (mySerperClear) mySerperClear.addEventListener("click", clearMySerper);
+  /* ==== END per-user web search ==== */
 
   /* ==== BEGIN code-sandbox tools (2.6/2.7) — self-contained, safe to relocate ==== */
   if (settingSandboxEnabled) settingSandboxEnabled.addEventListener("change", saveSandboxEnabled);

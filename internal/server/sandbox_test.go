@@ -33,7 +33,7 @@ func probeRunner(ok bool) *sandbox.Runner {
 
 func TestSandboxToolsRegistered(t *testing.T) {
 	srv, _ := newSandboxTestServer(t, probeRunner(true))
-	reg := srv.toolRegistry(context.Background())
+	reg := srv.toolRegistry(context.Background(), store.User{})
 	if _, ok := reg.Get("run_bash"); !ok {
 		t.Error("run_bash should be registered when sandbox is on and Docker is reachable")
 	}
@@ -47,7 +47,7 @@ func TestSandboxToolsDisabledBySetting(t *testing.T) {
 	if err := st.SetSetting(context.Background(), settingSandboxEnabled, "0"); err != nil {
 		t.Fatalf("SetSetting: %v", err)
 	}
-	reg := srv.toolRegistry(context.Background())
+	reg := srv.toolRegistry(context.Background(), store.User{})
 	if _, ok := reg.Get("run_bash"); ok {
 		t.Error("run_bash must not be registered when sandbox_enabled=0")
 	}
@@ -62,7 +62,7 @@ func TestSandboxToolsDisabledBySetting(t *testing.T) {
 
 func TestSandboxToolsSkippedWhenDockerUnavailable(t *testing.T) {
 	srv, _ := newSandboxTestServer(t, probeRunner(false))
-	reg := srv.toolRegistry(context.Background())
+	reg := srv.toolRegistry(context.Background(), store.User{})
 	if _, ok := reg.Get("run_bash"); ok {
 		t.Error("run_bash must not be registered when Docker is unreachable")
 	}
@@ -70,7 +70,7 @@ func TestSandboxToolsSkippedWhenDockerUnavailable(t *testing.T) {
 
 func TestSandboxToolsSkippedWhenRunnerNil(t *testing.T) {
 	srv, _ := newSandboxTestServer(t, nil)
-	reg := srv.toolRegistry(context.Background())
+	reg := srv.toolRegistry(context.Background(), store.User{})
 	if _, ok := reg.Get("run_bash"); ok {
 		t.Error("run_bash must not be registered when the runner is nil (env kill switch)")
 	}
@@ -81,7 +81,7 @@ func TestSandboxToolsDisabledWithTools(t *testing.T) {
 	if err := st.SetSetting(context.Background(), settingToolsEnabled, "0"); err != nil {
 		t.Fatalf("SetSetting: %v", err)
 	}
-	reg := srv.toolRegistry(context.Background())
+	reg := srv.toolRegistry(context.Background(), store.User{})
 	if reg.Len() != 0 {
 		t.Errorf("registry should be empty when tools_enabled=0, got %d tools", reg.Len())
 	}

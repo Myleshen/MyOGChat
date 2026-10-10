@@ -237,6 +237,7 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		LinkwardenToken   *string `json:"linkwarden_token"`
 		SearchProvider    *string `json:"search_provider"`
 		BraveKey          *string `json:"brave_key"`
+		BraveMode         *string `json:"brave_mode"`
 		SandboxEnabled    *bool   `json:"sandbox_enabled"`
 		OCREnabled        *bool   `json:"ocr_enabled"` // feature 2.5
 	}
@@ -310,6 +311,13 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	if req.BraveKey != nil {
 		if err := s.setBraveKey(r.Context(), *req.BraveKey); err != nil {
 			s.log.Error("set brave_key", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.BraveMode != nil {
+		if err := s.setBraveMode(r.Context(), *req.BraveMode); err != nil {
+			s.log.Error("set brave_mode", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
 		}

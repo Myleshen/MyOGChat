@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
   is_admin      INTEGER NOT NULL DEFAULT 0,
   status        TEXT NOT NULL DEFAULT 'active',
   api_key_enc   TEXT,
+  serper_key_enc TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -106,6 +107,7 @@ type User struct {
 	IsAdmin      bool    `json:"is_admin"`
 	Status       string  `json:"status"` // active | pending | disabled
 	APIKeyEnc    *string `json:"-"`      // encrypted per-user OpenCode Go key (§2.1)
+	SerperKeyEnc *string `json:"-"`      // encrypted per-user Serper key (2.12)
 	CreatedAt    int64   `json:"created_at"`
 	UpdatedAt    int64   `json:"updated_at"`
 }
@@ -244,6 +246,7 @@ func (s *Store) migrate() error {
 		{"projects", "user_id", `ALTER TABLE projects ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE`},
 		{"users", "status", `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`},
 		{"users", "api_key_enc", `ALTER TABLE users ADD COLUMN api_key_enc TEXT`},
+		{"users", "serper_key_enc", `ALTER TABLE users ADD COLUMN serper_key_enc TEXT`},
 	}
 	cache := map[string]map[string]bool{}
 	for _, st := range steps {
@@ -337,17 +340,19 @@ func optInt(n sql.NullInt64) *int64 {
 
 // ---------- users ----------
 
-const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, created_at, updated_at"
+const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, serper_key_enc, created_at, updated_at"
 
 func scanUser(sc scanner) (User, error) {
 	var u User
 	var admin int
 	var keyEnc sql.NullString
-	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	var serperEnc sql.NullString
+	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &serperEnc, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return User{}, err
 	}
 	u.IsAdmin = admin != 0
 	u.APIKeyEnc = optString(keyEnc)
+	u.SerperKeyEnc = optString(serperEnc)
 	return u, nil
 }
 
@@ -355,8 +360,8 @@ func scanUser(sc scanner) (User, error) {
 // driver error (the caller maps it to 409).
 func (s *Store) InsertUser(ctx context.Context, u *User) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.ID, u.Username, u.Email, u.PasswordHash, boolToInt(u.IsAdmin), u.Status, nullString(u.APIKeyEnc), u.CreatedAt, u.UpdatedAt)
+		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, u.Username, u.Email, u.PasswordHash, boolToInt(u.IsAdmin), u.Status, nullString(u.APIKeyEnc), nullString(u.SerperKeyEnc), u.CreatedAt, u.UpdatedAt)
 	return err
 }
 
@@ -432,6 +437,14 @@ func (s *Store) SetUserStatus(ctx context.Context, id, status string, now int64)
 func (s *Store) SetUserAPIKey(ctx context.Context, id string, enc *string, now int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET api_key_enc = ?, updated_at = ? WHERE id = ?`, nullString(enc), now, id)
+	return err
+}
+
+// SetUserSerperKey stores (or clears, when nil) a user's encrypted Serper key
+// (2.12).
+func (s *Store) SetUserSerperKey(ctx context.Context, id string, enc *string, now int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET serper_key_enc = ?, updated_at = ? WHERE id = ?`, nullString(enc), now, id)
 	return err
 }
 

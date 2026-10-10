@@ -86,7 +86,7 @@ func TestBraveProvider(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newBraveProvider("brave-key")
+	p := newBraveProvider("brave-key", false)
 	p.baseURL = srv.URL
 	p.hc = srv.Client()
 	res, err := p.Search(context.Background(), "greek food", Options{MaxResults: 3, Region: "us-en", SafeSearch: "strict"})
@@ -132,11 +132,206 @@ func TestBraveProviderHTTPError(t *testing.T) {
 		io.WriteString(w, `{"error":"bad key"}`)
 	}))
 	defer srv.Close()
-	p := newBraveProvider("k")
+	p := newBraveProvider("k", false)
 	p.baseURL = srv.URL
 	p.hc = srv.Client()
 	if _, err := p.Search(context.Background(), "x", Options{}); err == nil {
 		t.Fatal("expected an error on HTTP 401")
+	}
+}
+
+func TestBraveContextProvider(t *testing.T) {
+	var gotPath, gotToken, gotAccept string
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get("X-Subscription-Token")
+		gotAccept = r.Header.Get("Accept")
+		gotQuery = r.URL.Query()
+		io.WriteString(w, `{"grounding":{"generic":[
+			{"url":"https://go.dev","title":"Go","snippets":["chunk one","chunk two"]},
+			{"url":"https://rust-lang.org","title":"Rust","snippets":["ownership"]}
+		]}}`)
+	}))
+	defer srv.Close()
+
+	p := newBraveProvider("brave-key", true)
+	p.baseURL = srv.URL
+	p.hc = srv.Client()
+	res, err := p.Search(context.Background(), "greek food", Options{MaxResults: 3, Region: "us-en", SafeSearch: "strict"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if gotPath != "/res/v1/llm/context" {
+		t.Errorf("path = %q, want /res/v1/llm/context", gotPath)
+	}
+	if gotToken != "brave-key" {
+		t.Errorf("token = %q", gotToken)
+	}
+	if gotAccept != "application/json" {
+		t.Errorf("accept = %q", gotAccept)
+	}
+	if got := gotQuery.Get("q"); got != "greek food" {
+		t.Errorf("q = %q", got)
+	}
+	if got := gotQuery.Get("count"); got != "3" {
+		t.Errorf("count = %q", got)
+	}
+	if got := gotQuery.Get("country"); got != "us" {
+		t.Errorf("country = %q, want us", got)
+	}
+	if got := gotQuery.Get("search_lang"); got != "en" {
+		t.Errorf("search_lang = %q, want en", got)
+	}
+	if got := gotQuery.Get("maximum_number_of_tokens"); got != "4096" {
+		t.Errorf("maximum_number_of_tokens = %q, want 4096", got)
+	}
+	if got := gotQuery.Get("safesearch"); got != "strict" {
+		t.Errorf("safesearch = %q", got)
+	}
+	if len(res) != 2 {
+		t.Fatalf("results = %+v", res)
+	}
+	if res[0].URL != "https://go.dev" || res[0].Title != "Go" {
+		t.Errorf("res[0] = %+v", res[0])
+	}
+	// snippets[] are flattened (joined) into Result.Snippet.
+	if res[0].Snippet != "chunk one\nchunk two" {
+		t.Errorf("snippet[0] = %q", res[0].Snippet)
+	}
+}
+
+func TestBraveContextEmptyIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"grounding":{"generic":[]}}`)
+	}))
+	defer srv.Close()
+	p := newBraveProvider("k", true)
+	p.baseURL = srv.URL
+	p.hc = srv.Client()
+	if _, err := p.Search(context.Background(), "x", Options{}); err == nil {
+		t.Fatal("expected an error when grounding.generic is empty (chain must continue)")
+	}
+}
+
+func TestSerperProvider(t *testing.T) {
+	var gotMethod, gotKey, gotCT string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			t.Errorf("path = %q, want /search", r.URL.Path)
+		}
+		gotMethod = r.Method
+		gotKey = r.Header.Get("X-API-KEY")
+		gotCT = r.Header.Get("Content-Type")
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		io.WriteString(w, `{"organic":[
+			{"title":"Go","link":"https://go.dev","snippet":"The Go language.","position":1},
+			{"title":"Rust","link":"https://rust-lang.org","snippet":"The Rust language.","position":2}
+		]}`)
+	}))
+	defer srv.Close()
+
+	p := newSerperProvider("serper-key")
+	p.baseURL = srv.URL
+	p.hc = srv.Client()
+	res, err := p.Search(context.Background(), "languages", Options{MaxResults: 7, Region: "us-en"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotKey != "serper-key" {
+		t.Errorf("X-API-KEY = %q", gotKey)
+	}
+	if gotCT != "application/json" {
+		t.Errorf("Content-Type = %q", gotCT)
+	}
+	if gotBody["q"] != "languages" {
+		t.Errorf("q = %v", gotBody["q"])
+	}
+	if gotBody["num"].(float64) != 7 {
+		t.Errorf("num = %v", gotBody["num"])
+	}
+	if gotBody["gl"] != "us" {
+		t.Errorf("gl = %v", gotBody["gl"])
+	}
+	if gotBody["hl"] != "en" {
+		t.Errorf("hl = %v", gotBody["hl"])
+	}
+	if len(res) != 2 {
+		t.Fatalf("results = %+v", res)
+	}
+	// The Serper field is "link", not "url".
+	if res[0].URL != "https://go.dev" || res[0].Title != "Go" || res[0].Snippet != "The Go language." {
+		t.Errorf("res[0] = %+v", res[0])
+	}
+}
+
+func TestSerperProviderCapsNumAtTen(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		io.WriteString(w, `{"organic":[]}`)
+	}))
+	defer srv.Close()
+	p := newSerperProvider("k")
+	p.baseURL = srv.URL
+	p.hc = srv.Client()
+	if _, err := p.Search(context.Background(), "x", Options{MaxResults: 20}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// >10 results doubles the credit cost; the provider caps num at 10.
+	if got := gotBody["num"].(float64); got != 10 {
+		t.Errorf("num = %v, want 10 (1 credit)", got)
+	}
+}
+
+func TestSerperProviderHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"message":"credits exhausted"}`)
+	}))
+	defer srv.Close()
+	p := newSerperProvider("k")
+	p.baseURL = srv.URL
+	p.hc = srv.Client()
+	if _, err := p.Search(context.Background(), "x", Options{}); err == nil {
+		t.Fatal("expected an error on HTTP 429")
+	}
+}
+
+func TestSerperProviderEmptyOrganic(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"organic":[]}`)
+	}))
+	defer srv.Close()
+	p := newSerperProvider("k")
+	p.baseURL = srv.URL
+	p.hc = srv.Client()
+	res, err := p.Search(context.Background(), "x", Options{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(res) != 0 {
+		t.Errorf("results = %+v, want empty", res)
+	}
+}
+
+func TestLangFromRegion(t *testing.T) {
+	cases := map[string]string{
+		"us-en": "en",
+		"de":    "de",
+		"":      "en",
+		"en-us": "us",
+		"pt_BR": "BR",
+		"fr-":   "en",
+	}
+	for in, want := range cases {
+		if got := langFromRegion(in); got != want {
+			t.Errorf("langFromRegion(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -265,10 +460,20 @@ func TestBuildSearchProvidersAuto(t *testing.T) {
 	if len(got) != 1 || got[0].Name() != SearchProviderDDG {
 		t.Fatalf("auto/no-keys = %v", names(got))
 	}
+	// All keys: Tavily → Brave → Serper → DuckDuckGo.
+	got = BuildSearchProviders(SearchConfig{Provider: "auto", TavilyKey: "t", BraveKey: "b", SerperKey: "s"})
+	if want := []string{"tavily", "brave", "serper", "ddg"}; !equal(names(got), want) {
+		t.Fatalf("auto order = %v, want %v", names(got), want)
+	}
 	// Tavily + Brave keys: Tavily first.
 	got = BuildSearchProviders(SearchConfig{Provider: "auto", TavilyKey: "t", BraveKey: "b"})
 	if want := []string{"tavily", "brave", "ddg"}; !equal(names(got), want) {
 		t.Fatalf("auto order = %v, want %v", names(got), want)
+	}
+	// Only Serper: Serper then DDG.
+	got = BuildSearchProviders(SearchConfig{Provider: "auto", SerperKey: "s"})
+	if want := []string{"serper", "ddg"}; !equal(names(got), want) {
+		t.Fatalf("serper order = %v, want %v", names(got), want)
 	}
 	// Only Brave: Brave then DDG.
 	got = BuildSearchProviders(SearchConfig{Provider: "auto", BraveKey: "b"})
@@ -279,14 +484,24 @@ func TestBuildSearchProvidersAuto(t *testing.T) {
 
 func TestBuildSearchProvidersExplicit(t *testing.T) {
 	// Explicit brave puts Brave first but keeps fallbacks.
-	got := BuildSearchProviders(SearchConfig{Provider: "brave", TavilyKey: "t", BraveKey: "b"})
-	if want := []string{"brave", "tavily", "ddg"}; !equal(names(got), want) {
+	got := BuildSearchProviders(SearchConfig{Provider: "brave", TavilyKey: "t", BraveKey: "b", SerperKey: "s"})
+	if want := []string{"brave", "tavily", "serper", "ddg"}; !equal(names(got), want) {
 		t.Fatalf("explicit brave = %v, want %v", names(got), want)
+	}
+	// Explicit serper leads; others follow.
+	got = BuildSearchProviders(SearchConfig{Provider: "serper", TavilyKey: "t", BraveKey: "b", SerperKey: "s"})
+	if want := []string{"serper", "tavily", "brave", "ddg"}; !equal(names(got), want) {
+		t.Fatalf("explicit serper = %v, want %v", names(got), want)
 	}
 	// Explicit tavily with no Tavily key degrades to the next usable.
 	got = BuildSearchProviders(SearchConfig{Provider: "tavily", BraveKey: "b"})
 	if want := []string{"brave", "ddg"}; !equal(names(got), want) {
 		t.Fatalf("tavily-no-key = %v, want %v", names(got), want)
+	}
+	// Explicit serper with no Serper key is skipped.
+	got = BuildSearchProviders(SearchConfig{Provider: "serper", TavilyKey: "t"})
+	if want := []string{"tavily", "ddg"}; !equal(names(got), want) {
+		t.Fatalf("serper-no-key = %v, want %v", names(got), want)
 	}
 	// Explicit ddg leads.
 	got = BuildSearchProviders(SearchConfig{Provider: "ddg", TavilyKey: "t"})
@@ -309,6 +524,24 @@ func TestSearchActive(t *testing.T) {
 	}
 	if got := SearchActive(SearchConfig{BraveKey: "b"}); got != SearchProviderBrave {
 		t.Errorf("active = %q, want brave", got)
+	}
+	if got := SearchActive(SearchConfig{SerperKey: "s"}); got != SearchProviderSerper {
+		t.Errorf("active = %q, want serper", got)
+	}
+	if got := SearchActive(SearchConfig{Provider: "serper", SerperKey: "s"}); got != SearchProviderSerper {
+		t.Errorf("active = %q, want serper", got)
+	}
+}
+
+func TestBraveProviderContextFlagSelectsMode(t *testing.T) {
+	// The mode flag is carried into the provider; the default is web/search.
+	web := newBraveProvider("k", false)
+	if web.useContext {
+		t.Error("newBraveProvider(k, false) should use web/search")
+	}
+	ctxMode := newBraveProvider("k", true)
+	if !ctxMode.useContext {
+		t.Error("newBraveProvider(k, true) should use llm/context")
 	}
 }
 

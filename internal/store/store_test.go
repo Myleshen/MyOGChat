@@ -101,6 +101,12 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	if !userCols["status"] {
 		t.Error("migration did not add users.status")
 	}
+	if !userCols["api_key_enc"] {
+		t.Error("migration did not add users.api_key_enc")
+	}
+	if !userCols["serper_key_enc"] {
+		t.Error("migration did not add users.serper_key_enc")
+	}
 
 	// The first admin claims the ownerless legacy rows.
 	u := seedUser(t, s, "u1", "admin", true)
@@ -113,6 +119,37 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	}
 	if c.Title != "Old Chat" || c.Model != "glm-5.3-flash" {
 		t.Errorf("legacy row corrupted: %+v", c)
+	}
+}
+
+// TestUserSerperKeyRoundTrip stores and clears a per-user Serper key.
+func TestUserSerperKeyRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	u := seedUser(t, s, "u-serper", "serper", false)
+
+	enc := "ciphertext"
+	if err := s.SetUserSerperKey(ctx, u.ID, &enc, 42); err != nil {
+		t.Fatalf("SetUserSerperKey: %v", err)
+	}
+	got, err := s.GetUserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if got.SerperKeyEnc == nil || *got.SerperKeyEnc != "ciphertext" {
+		t.Fatalf("SerperKeyEnc = %v, want ciphertext", got.SerperKeyEnc)
+	}
+	if got.UpdatedAt != 42 {
+		t.Errorf("UpdatedAt = %d, want 42", got.UpdatedAt)
+	}
+
+	// Clearing sets NULL.
+	if err := s.SetUserSerperKey(ctx, u.ID, nil, 43); err != nil {
+		t.Fatalf("SetUserSerperKey(clear): %v", err)
+	}
+	got, _ = s.GetUserByID(ctx, u.ID)
+	if got.SerperKeyEnc != nil {
+		t.Fatalf("SerperKeyEnc = %v, want nil", got.SerperKeyEnc)
 	}
 }
 

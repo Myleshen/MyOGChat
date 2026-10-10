@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -47,6 +48,8 @@ type config struct {
 	apiKey           string
 	tavilyKey        string
 	braveKey         string
+	serperKey        string
+	braveMode        string // web | context (2.12)
 	searchProvider   string
 	searchResults    int
 	searchRegion     string
@@ -197,6 +200,8 @@ func loadConfig() (config, error) {
 		apiKey:           os.Getenv("OPENCODE_API_KEY"),
 		tavilyKey:        os.Getenv("TAVILY_API_KEY"),
 		braveKey:         os.Getenv("BRAVE_API_KEY"),
+		serperKey:        os.Getenv("SERPER_API_KEY"),
+		braveMode:        normalizeBraveMode(os.Getenv("MYOGCHAT_BRAVE_MODE")),
 		searchProvider:   envOr("MYOGCHAT_SEARCH_PROVIDER", "auto"),
 		searchResults:    5,
 		searchRegion:     envOr("MYOGCHAT_SEARCH_REGION", "us-en"),
@@ -264,6 +269,15 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// normalizeBraveMode maps MYOGCHAT_BRAVE_MODE to "context" (RAG mode) or "web"
+// (default). Anything unrecognized falls back to "web".
+func normalizeBraveMode(v string) string {
+	if strings.EqualFold(strings.TrimSpace(v), "context") {
+		return "context"
+	}
+	return "web"
 }
 
 // parseOCRDuration accepts a Go duration ("30s") or a bare integer number of
@@ -344,12 +358,14 @@ func run(cfg config, log *slog.Logger) error {
 	}
 
 	srv := server.New(st, upstream.NewClient(), auth.New(st, secret), static, log, encKey, cfg.apiKey, server.SearchDefaults{
-		Provider:   cfg.searchProvider,
-		TavilyKey:  cfg.tavilyKey,
-		BraveKey:   cfg.braveKey,
-		MaxResults: cfg.searchResults,
-		Region:     cfg.searchRegion,
-		SafeSearch: cfg.searchSafeSearch,
+		Provider:     cfg.searchProvider,
+		TavilyKey:    cfg.tavilyKey,
+		BraveKey:     cfg.braveKey,
+		SerperKey:    cfg.serperKey,
+		BraveContext: cfg.braveMode == "context",
+		MaxResults:   cfg.searchResults,
+		Region:       cfg.searchRegion,
+		SafeSearch:   cfg.searchSafeSearch,
 	}, sbx, ocrEngine)
 
 	go janitor(ctx, st, cfg.retentionDays, log)
@@ -371,6 +387,8 @@ func run(cfg config, log *slog.Logger) error {
 		"server_key", cfg.apiKey != "",
 		"tavily_key", cfg.tavilyKey != "",
 		"brave_key", cfg.braveKey != "",
+		"serper_key", cfg.serperKey != "",
+		"brave_mode", cfg.braveMode,
 		"search_provider", cfg.searchProvider,
 		"search_results", cfg.searchResults,
 		"sandbox", cfg.sandboxEnabled,

@@ -106,7 +106,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save message")
 		return
 	}
-	s.streamReply(w, r, conv, u.ID, apiKey, atts)
+	s.streamReply(w, r, conv, u, apiKey, atts)
 }
 
 // handleRegenerate replaces the trailing assistant reply (§8.5).
@@ -141,11 +141,11 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	// Re-fold any attachments the last user message carried (2.3).
 	atts := s.attachmentsFromLastUser(r.Context(), u.ID, conv.ID)
-	s.streamReply(w, r, conv, u.ID, apiKey, atts)
+	s.streamReply(w, r, conv, u, apiKey, atts)
 }
 
 // streamReply streams one assistant reply for conv over SSE and persists it.
-func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, userID, apiKey string, atts []store.Attachment) {
+func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, u store.User, apiKey string, atts []store.Attachment) {
 	ctx := r.Context()
 	m, ok := models.ByID(conv.Model)
 	if !ok {
@@ -162,7 +162,7 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	for _, hm := range history {
 		msgs = append(msgs, upstream.Message{Role: hm.Role, Content: hm.Content})
 	}
-	instructions := s.projectInstructions(ctx, conv.ProjectID, userID)
+	instructions := s.projectInstructions(ctx, conv.ProjectID, u.ID)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -185,7 +185,7 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	}
 	// Build the per-request tool set (Phase 2.4). An empty registry disables
 	// tool calling but still runs the same agentic code path.
-	reg := s.toolRegistry(ctx)
+	reg := s.toolRegistry(ctx, u)
 	events := s.up.StreamAgent(ctx, upstream.Params{
 		Dialect:      m.Dialect,
 		Model:        conv.Model,
