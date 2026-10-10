@@ -3207,7 +3207,7 @@ function renderStreamThinking(ui) {
   ui.thinkingBody.textContent = ui.reasoningBuf;
 }
 
-/* ============================== Tool activity (Phase 2.4) ============================== */
+/* ============================== Tool activity (Phase 2.4, collapsible 4.1) ============================== */
 
 function toolIcon(status) {
   if (status === "done") return "🔧";
@@ -3215,16 +3215,82 @@ function toolIcon(status) {
   return "⏳";
 }
 
-function toolLine(t) {
-  const line = el("div", "msg-tool");
-  line.textContent =
-    toolIcon(t.status) + " " + t.name + " · " + t.status + (t.summary ? " · " + t.summary : "");
-  return line;
+/* Pretty-print a tool's JSON arguments; fall back to the raw string. */
+function fmtToolArgs(args) {
+  if (!args) return "";
+  const s = String(args);
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2);
+  } catch {
+    return s;
+  }
 }
 
+/* One labelled, monospace block (Input / Output / Error). */
+function toolSection(label, text, isError) {
+  const sec = el("div", "msg-tool-section");
+  const head = el("div", "msg-tool-label");
+  head.textContent = label;
+  const pre = el("pre", "msg-tool-pre" + (isError ? " msg-tool-pre-error" : ""));
+  pre.textContent = text; // textContent → never inject markup (XSS-safe)
+  sec.append(head, pre);
+  return sec;
+}
+
+/* One tool call as a collapsible <details> with Input/Output sections. Errors
+   auto-expand so a failure is visible without a tap. */
+function buildToolItem(t) {
+  const item = el("details", "msg-tool");
+  if (t.status === "error") item.open = true;
+  const summary = document.createElement("summary");
+  summary.className = "msg-tool-summary";
+  const dur = t.duration_ms ? " · " + fmtDuration(t.duration_ms) : "";
+  summary.textContent =
+    toolIcon(t.status) +
+    " " +
+    (t.name || "tool") +
+    " · " +
+    (t.status || "") +
+    dur +
+    (t.summary ? " · " + t.summary : "");
+  item.appendChild(summary);
+
+  const body = el("div", "msg-tool-body");
+  const argsText = fmtToolArgs(t.args);
+  if (argsText) body.appendChild(toolSection("Input", argsText));
+  if (t.output) body.appendChild(toolSection("Output", t.output));
+  if (t.error) body.appendChild(toolSection("Error", t.error, true));
+  if (t.truncated) {
+    const note = el("p", "msg-tool-note");
+    note.textContent = "Truncated for display.";
+    body.appendChild(note);
+  }
+  if (body.childElementCount > 0) item.appendChild(body);
+  return item;
+}
+
+/* Collapsible wrapper for a message's tool calls. Shows a count/status line and
+   auto-expands when any call errored. */
 function buildToolsBlock(tools) {
-  const wrap = el("div", "msg-tools");
-  for (const t of tools) wrap.appendChild(toolLine(t));
+  const wrap = el("details", "msg-tools");
+  const done = tools.filter((t) => t.status === "done").length;
+  const errs = tools.filter((t) => t.status === "error").length;
+  const running = tools.filter((t) => t.status === "running").length;
+  const parts = [];
+  if (done) parts.push(done + " done");
+  if (errs) parts.push(errs + " error" + (errs === 1 ? "" : "s"));
+  if (running) parts.push(running + " running");
+  const summary = document.createElement("summary");
+  summary.className = "msg-tools-summary";
+  summary.textContent =
+    "🔧 " + tools.length + " tool" + (tools.length === 1 ? "" : "s") +
+    (parts.length ? " · " + parts.join(", ") : "");
+  wrap.appendChild(summary);
+
+  const body = el("div", "msg-tools-body");
+  for (const t of tools) body.appendChild(buildToolItem(t));
+  wrap.appendChild(body);
+  if (errs > 0) wrap.open = true;
   return wrap;
 }
 
@@ -3233,19 +3299,28 @@ function updateToolActivity(ui, payload) {
   if (!ui.tools) ui.tools = [];
   const name = payload.name || "tool";
   const status = payload.status || "running";
+  const entry = {
+    name,
+    status,
+    summary: payload.summary || "",
+    args: payload.args || "",
+    output: payload.output || "",
+    error: payload.error || "",
+    duration_ms: payload.duration_ms || 0,
+    truncated: !!payload.truncated,
+  };
   if (status === "running") {
-    ui.tools.push({ name, status, summary: "" });
+    ui.tools.push(entry);
   } else {
     let updated = false;
     for (let i = ui.tools.length - 1; i >= 0; i--) {
       if (ui.tools[i].name === name && ui.tools[i].status === "running") {
-        ui.tools[i].status = status;
-        ui.tools[i].summary = payload.summary || "";
+        ui.tools[i] = entry;
         updated = true;
         break;
       }
     }
-    if (!updated) ui.tools.push({ name, status, summary: payload.summary || "" });
+    if (!updated) ui.tools.push(entry);
   }
   renderStreamTools(ui);
 }
@@ -3254,11 +3329,11 @@ function renderStreamTools(ui) {
   if (!ui.tools || ui.tools.length === 0) return;
   ensureStreamBubble(ui);
   if (!ui.toolsEl) {
-    ui.toolsEl = el("div", "msg-tools");
+    ui.toolsEl = el("div", "msg-tools-slot");
     ui.bubble.insertBefore(ui.toolsEl, ui.bubble.firstChild);
   }
   ui.toolsEl.innerHTML = "";
-  for (const t of ui.tools) ui.toolsEl.appendChild(toolLine(t));
+  ui.toolsEl.appendChild(buildToolsBlock(ui.tools));
   scrollToBottom();
 }
 

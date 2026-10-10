@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // StreamAgent performs an agentic streaming call (Phase 2.4). It streams the
@@ -347,13 +348,23 @@ type functionCallItem struct {
 // runTool executes one tool call, emitting running/done/error activity events.
 // Tool failures are returned to the model as text so it can recover.
 func runTool(ctx context.Context, exec ExecuteTool, send func(Event) bool, call ToolCall) string {
-	send(Event{Kind: EventTool, Tool: &ToolActivity{Name: call.Name, Status: ToolRunning}})
+	send(Event{Kind: EventTool, Tool: &ToolActivity{
+		Name: call.Name, Status: ToolRunning, Args: call.Arguments,
+	}})
+	start := time.Now()
 	result, summary, err := exec(ctx, call)
+	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
-		send(Event{Kind: EventTool, Tool: &ToolActivity{Name: call.Name, Status: ToolError, Summary: firstN(err.Error(), 200)}})
+		send(Event{Kind: EventTool, Tool: &ToolActivity{
+			Name: call.Name, Status: ToolError, Summary: firstN(err.Error(), 200),
+			Error: err.Error(), DurationMs: elapsed,
+		}})
 		return "Tool error: " + err.Error()
 	}
-	send(Event{Kind: EventTool, Tool: &ToolActivity{Name: call.Name, Status: ToolDone, Summary: summary}})
+	send(Event{Kind: EventTool, Tool: &ToolActivity{
+		Name: call.Name, Status: ToolDone, Summary: summary,
+		Output: result, DurationMs: elapsed,
+	}})
 	return result
 }
 

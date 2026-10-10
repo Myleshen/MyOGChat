@@ -162,13 +162,16 @@ func TestStreamAgentChatLoop(t *testing.T) {
 	}
 
 	var sawRunning, sawDone, sawText bool
+	var runningArgs, doneOutput string
 	var usage *Usage
 	for _, ev := range events {
 		switch {
 		case ev.Kind == EventTool && ev.Tool != nil && ev.Tool.Status == ToolRunning:
 			sawRunning = true
+			runningArgs = ev.Tool.Args
 		case ev.Kind == EventTool && ev.Tool != nil && ev.Tool.Status == ToolDone:
 			sawDone = true
+			doneOutput = ev.Tool.Output
 		case ev.Kind == EventText && ev.Delta == "Answer":
 			sawText = true
 		case ev.Kind == EventUsage:
@@ -179,6 +182,13 @@ func TestStreamAgentChatLoop(t *testing.T) {
 	}
 	if !sawRunning || !sawDone {
 		t.Errorf("missing tool events (running=%v done=%v)", sawRunning, sawDone)
+	}
+	// Phase 4.1: the running event carries the arguments; the done event the output.
+	if runningArgs != `{"query":"golang"}` {
+		t.Errorf("running args = %q, want the call arguments", runningArgs)
+	}
+	if doneOutput != "RESULT" {
+		t.Errorf("done output = %q, want the tool result", doneOutput)
 	}
 	if !sawText {
 		t.Error("missing final text")

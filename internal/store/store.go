@@ -199,11 +199,19 @@ type Message struct {
 
 // ToolActivity is one tool call's display state persisted as a JSON array on
 // messages.tools (2.10), so the inline tool block survives a reload. It mirrors
-// the SSE `tool` payload / upstream.ToolActivity.
+// the SSE `tool` payload / upstream.ToolActivity. Phase 4.1 also stores the
+// tool's arguments, output, error text, wall time, and whether the fields were
+// truncated to bound the row size. The full output is only ever shown in the
+// UI; the model always receives the uncapped result.
 type ToolActivity struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // running | done | error
-	Summary string `json:"summary,omitempty"`
+	Name       string `json:"name"`
+	Status     string `json:"status"` // running | done | error
+	Summary    string `json:"summary,omitempty"`
+	Args       string `json:"args,omitempty"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
 }
 
 // AttachedFile is the display metadata of a file attached to a user message.

@@ -110,6 +110,7 @@ every 15 s while waiting on upstream:
 | `meta` | `{"message_id":"…","model":"…"}` | first, before any upstream call output |
 | `reasoning` | `{"delta":"…"}` | reasoning tokens (chat dialect only) |
 | `text` | `{"delta":"…"}` | visible assistant text |
+| `tool` | `{"name":"…","status":"running\|done\|error","summary":"…","args":"…","output":"…","error":"…","duration_ms":N,"truncated":bool}` | one or more per tool call (Phase 2.4, extended 4.1): `args` on `running`, `output` on `done`, `error` on failure; oversized args/output are UTF-8-truncated (`truncated:true`) |
 | `usage` | `{"prompt_tokens":N,"completion_tokens":N,"cached_tokens":N,"cost_micros":N}` | after final upstream usage |
 | `done` | `{"message_id":"…","title":"…"}` | successful end; `title` only if newly set |
 | `error` | `{"message":"…"}` | any failure (upstream HTTP status + first 200 chars of body, or local error); stream ends |
@@ -282,10 +283,15 @@ Messages (2.3/2.10) also gain two JSON columns, each an array omitted when
 empty:
 - `attachments` — user messages: `[{id,name,mime,size}]` display metadata of the
   files attached (the extracted text lives in the `attachments` table).
-- `tools` — assistant messages: `[{name,status,summary}]` tool activity
-  (`status` ∈ `running` | `done` | `error`), so the inline tool block survives a
-  reload. The server collects `event: tool` frames during a reply and collapses
-  each `running`→terminal pair (see §3). The SSE wire format is unchanged.
+- `tools` — assistant messages: `[{name,status,summary,args,output,error,duration_ms,truncated}]`
+  tool activity (`status` ∈ `running` | `done` | `error`), so the inline tool block
+  survives a reload. The server collects `event: tool` frames during a reply and
+  collapses each `running`→terminal pair (see §3). Since Phase 4.1 each entry also
+  stores the call's `args`, its `output`/`error`, its `duration_ms`, and a
+  `truncated` flag (the persisted fields are size-capped at 16 KB args / 64 KB
+  output / 4 KB error, UTF-8-safe; the model still receives the full result).
+  The UI renders this as a collapsed `<details>` per message that expands to
+  per-tool Input/Output blocks.
 
 ### 8.5 Regenerate endpoint
 

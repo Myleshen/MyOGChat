@@ -5,12 +5,59 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"myogchat/internal/auth"
 	"myogchat/internal/store"
 	"myogchat/internal/upstream"
 )
+
+// TestMergeToolEventCarriesArgsOutput verifies Phase 4.1 keeps the tool's
+// arguments (captured when the call starts) and its output/duration.
+func TestMergeToolEventCarriesArgsOutput(t *testing.T) {
+	var list []store.ToolActivity
+	list = mergeToolEvent(list, &upstream.ToolActivity{
+		Name: "web_search", Status: upstream.ToolRunning, Args: `{"query":"go"}`,
+	})
+	list = mergeToolEvent(list, &upstream.ToolActivity{
+		Name: "web_search", Status: upstream.ToolDone, Summary: "3 results",
+		Output: "OUT", DurationMs: 5,
+	})
+	if len(list) != 1 {
+		t.Fatalf("want one entry, got %+v", list)
+	}
+	if list[0].Args != `{"query":"go"}` || list[0].Output != "OUT" || list[0].DurationMs != 5 {
+		t.Errorf("args/output/duration not carried: %+v", list[0])
+	}
+}
+
+// TestCappedToolTruncates verifies oversized inputs/outputs are cut on the caps.
+func TestCappedToolTruncates(t *testing.T) {
+	entry := cappedTool(&upstream.ToolActivity{
+		Name: "fetch_url", Status: upstream.ToolDone,
+		Args:   strings.Repeat("a", maxToolArgsBytes+500),
+		Output: strings.Repeat("b", maxToolOutputBytes+500),
+		Error:  strings.Repeat("e", maxToolErrorBytes+500),
+	})
+	if !entry.Truncated {
+		t.Error("expected Truncated=true")
+	}
+	if len(entry.Args) > maxToolArgsBytes+len("\n… [truncated]") {
+		t.Errorf("args not truncated: len=%d", len(entry.Args))
+	}
+	if len(entry.Output) > maxToolOutputBytes+len("\n… [truncated]") {
+		t.Errorf("output not truncated: len=%d", len(entry.Output))
+	}
+	if len(entry.Error) > maxToolErrorBytes {
+		t.Errorf("error not truncated: len=%d", len(entry.Error))
+	}
+	// Small values pass through untouched.
+	small := cappedTool(&upstream.ToolActivity{Name: "x", Status: upstream.ToolDone, Output: "ok"})
+	if small.Truncated || small.Output != "ok" {
+		t.Errorf("small output should not be truncated: %+v", small)
+	}
+}
 
 func TestMergeToolEvent(t *testing.T) {
 	var list []store.ToolActivity

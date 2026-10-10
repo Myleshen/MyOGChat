@@ -501,8 +501,10 @@ func TestMessageToolsRoundTrip(t *testing.T) {
 	if err := s.InsertMessage(ctx, &Message{
 		ID: "a1", ConversationID: "c1", Role: "assistant", Content: "hi",
 		Tools: []ToolActivity{
-			{Name: "web_search", Status: "done", Summary: "3 results"},
-			{Name: "run_bash", Status: "error", Summary: "boom"},
+			{Name: "web_search", Status: "done", Summary: "3 results",
+				Args: `{"query":"go"}`, Output: "result body", DurationMs: 42},
+			{Name: "run_bash", Status: "error", Summary: "boom",
+				Error: "exit 1", DurationMs: 7, Truncated: true},
 		},
 		CreatedAt: 1,
 	}); err != nil {
@@ -524,7 +526,9 @@ func TestMessageToolsRoundTrip(t *testing.T) {
 	got := msgs[0].Tools
 	if len(got) != 2 ||
 		got[0].Name != "web_search" || got[0].Status != "done" || got[0].Summary != "3 results" ||
-		got[1].Name != "run_bash" || got[1].Status != "error" || got[1].Summary != "boom" {
+		got[0].Args != `{"query":"go"}` || got[0].Output != "result body" || got[0].DurationMs != 42 ||
+		got[1].Name != "run_bash" || got[1].Status != "error" || got[1].Summary != "boom" ||
+		got[1].Error != "exit 1" || got[1].DurationMs != 7 || !got[1].Truncated {
 		t.Errorf("tools not round-tripped: %+v", got)
 	}
 	if msgs[1].Tools != nil {

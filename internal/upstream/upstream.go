@@ -61,10 +61,16 @@ type ToolFunctionSpec struct {
 }
 
 // ToolActivity is emitted on EventTool to surface tool progress to the client.
+// Phase 4.1 also carries the tool's arguments, output, error text, and wall
+// time so the full call can be shown (collapsibly) and persisted.
 type ToolActivity struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // running | done | error
-	Summary string `json:"summary,omitempty"`
+	Name       string `json:"name"`
+	Status     string `json:"status"` // running | done | error
+	Summary    string `json:"summary,omitempty"`
+	Args       string `json:"args,omitempty"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
 }
 
 // ToolCall is one function call requested by the model. ID is the tool-call id

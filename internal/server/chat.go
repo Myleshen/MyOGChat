@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"myogchat/internal/models"
 	"myogchat/internal/store"
@@ -45,12 +46,26 @@ type errorEvent struct {
 	Message string `json:"message"`
 }
 
-// toolEvent surfaces tool activity to the client (Phase 2.4).
+// toolEvent surfaces tool activity to the client (Phase 2.4; extended 4.1 with
+// the full call so the UI can show inputs/outputs collapsibly).
 type toolEvent struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // running | done | error
-	Summary string `json:"summary,omitempty"`
+	Name       string `json:"name"`
+	Status     string `json:"status"` // running | done | error
+	Summary    string `json:"summary,omitempty"`
+	Args       string `json:"args,omitempty"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
 }
+
+// Size caps for persisted/streamed tool activity (Phase 4.1). These bound the
+// messages.tools row; the model always receives the uncapped tool result.
+const (
+	maxToolArgsBytes   = 16 * 1024
+	maxToolOutputBytes = 64 * 1024
+	maxToolErrorBytes  = 4 * 1024
+)
 
 // handlePostMessage appends a user message and streams the assistant reply.
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
@@ -274,12 +289,18 @@ stream:
 			case upstream.EventTool:
 				if ev.Tool != nil {
 					// Collect the same activity we stream so it survives a
-					// reload (2.10).
+					// reload (2.10/4.1).
+					entry := cappedTool(ev.Tool)
 					tools = mergeToolEvent(tools, ev.Tool)
 					writeSSE(w, flusher, "tool", toolEvent{
-						Name:    ev.Tool.Name,
-						Status:  ev.Tool.Status,
-						Summary: ev.Tool.Summary,
+						Name:       entry.Name,
+						Status:     entry.Status,
+						Summary:    entry.Summary,
+						Args:       entry.Args,
+						Output:     entry.Output,
+						Error:      entry.Error,
+						DurationMs: entry.DurationMs,
+						Truncated:  entry.Truncated,
 					})
 				}
 			}
@@ -443,22 +464,72 @@ func truncateRunes(s string, n int) string {
 	return s
 }
 
+// cappedTool converts an upstream tool event into a persistable/streamable
+// store.ToolActivity, applying UTF-8-safe size caps so the SSE payload and the
+// stored row are identical.
+func cappedTool(t *upstream.ToolActivity) store.ToolActivity {
+	args, argsTrunc := truncateToolField(t.Args, maxToolArgsBytes)
+	output, outTrunc := truncateToolField(t.Output, maxToolOutputBytes)
+	return store.ToolActivity{
+		Name:       t.Name,
+		Status:     t.Status,
+		Summary:    t.Summary,
+		Args:       args,
+		Output:     output,
+		Error:      firstNBytes(t.Error, maxToolErrorBytes),
+		DurationMs: t.DurationMs,
+		Truncated:  argsTrunc || outTrunc,
+	}
+}
+
+// truncateToolField cuts s to at most max bytes on a UTF-8 boundary and reports
+// whether it was truncated. A visible marker is appended when cut.
+func truncateToolField(s string, max int) (string, bool) {
+	if len(s) <= max {
+		return s, false
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n… [truncated]", true
+}
+
+// firstNBytes is like firstN but UTF-8-safe and byte-counted.
+func firstNBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 // mergeToolEvent folds one upstream tool activity into the persisted list,
-// mirroring the SPA's updateToolActivity (2.10): a "running" event starts an
+// mirroring the SPA's updateToolActivity (2.10/4.1): a "running" event starts an
 // entry; a terminal event closes the most recent matching running entry, else
 // appends. Tools run sequentially (agent.go), so there is never true
 // concurrency to reconcile.
 func mergeToolEvent(list []store.ToolActivity, t *upstream.ToolActivity) []store.ToolActivity {
-	if t.Status == upstream.ToolRunning {
-		return append(list, store.ToolActivity{Name: t.Name, Status: t.Status})
+	entry := cappedTool(t)
+	if entry.Status == upstream.ToolRunning {
+		return append(list, entry)
 	}
 	for i := len(list) - 1; i >= 0; i-- {
-		if list[i].Name == t.Name && list[i].Status == upstream.ToolRunning {
-			list[i].Status, list[i].Summary = t.Status, t.Summary
+		if list[i].Name == entry.Name && list[i].Status == upstream.ToolRunning {
+			// Keep the args captured when the call started if the terminal
+			// event omits them, and carry the truncation flag forward.
+			if entry.Args == "" {
+				entry.Args = list[i].Args
+			}
+			entry.Truncated = entry.Truncated || list[i].Truncated
+			list[i] = entry
 			return list
 		}
 	}
-	return append(list, store.ToolActivity{Name: t.Name, Status: t.Status, Summary: t.Summary})
+	return append(list, entry)
 }
 
 // writeSSE writes one SSE frame and flushes it immediately.
