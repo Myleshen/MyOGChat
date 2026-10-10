@@ -13,7 +13,7 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 - **Live:** `https://chat.example.com` (also `http://raspberrypi.local:8787` on LAN)
 - **Repo:** `github.com/Myleshen/MyOGChat` — `main` is the source of truth
 - **Phase 1:** complete. **Phase 2:** complete (2.1–2.13). **Phase 3:** complete.
-  **Phase 4:** in progress — 4.1/4.2/4.3a/4.4/4.5a/4.5b shipped, 4.3b in progress
+  **Phase 4:** complete — 4.1/4.2/4.3a/4.3b/4.4/4.5a/4.5b shipped (see `docs/PHASE4.md`)
   (see status below; plan of record `docs/PHASE4.md`).
 
 ## Live deployment
@@ -173,7 +173,7 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 | 4.1 | Collapsible tool calls + full persistence | ✅ done — assistant messages persist tool args/output/error/duration/truncated in `messages.tools` (JSON, size-capped 16 KB args / 64 KB output / 4 KB error, UTF-8-safe); UI renders a collapsible `<details>` per message with per-tool Input/Output |
 | 4.2 | Attachment chips in chat | ✅ done — sent user messages show file type-icon + name + size chips (metadata only; original bytes are **not** stored) |
 | 4.3a | Image prompt enhancement | ✅ done — `POST /api/images/enhance` rewrites a brief into a rich SD-Turbo prompt (LLM via the caller's key, deterministic template fallback with `enhanced:false`); the SPA shows a preview & edit modal before generating |
-| 4.3b | `generate_image` model tool | 🚧 in progress |
+| 4.3b | `generate_image` model tool | ✅ done — the model calls `generate_image` mid-conversation; the image is stored owner-scoped and attached to the assistant message (`messages.images`), so it renders in chat and survives a reload. Live-verified: prompt written by the model, PNG served via `GET /api/images/{id}` |
 | 4.4 | Settings IA/UX overhaul | ✅ done — settings categorized (left nav rail ≥768px, horizontal chip bar on mobile) into Account / Appearance / AI & access / Integrations / Tools / Voice / Usage / Users / About; admin web-search block relabelled "Server web search (admin)"; per-user Serper under Integrations → Web search; UI battery 45/45 on mobile |
 | 4.5a | Document extraction | ✅ done — `internal/extract` handles `.docx/.xlsx/.pptx` (OOXML), `.odt/.ods/.odp` (ODF), `.epub`, `.rtf` with the standard library only (no new deps) |
 | 4.5b | Media transcription | ✅ done — audio/video attachments (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) transcribed via the configured speech-to-text service (`internal/extract.Options{OCR,Transcribe}`); **synchronous** (long media may exceed the tunnel timeout — async is future work) |

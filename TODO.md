@@ -352,7 +352,11 @@ merges sequentially and resolves the small additive conflicts in shared files
   brief into a rich SD-Turbo prompt (LLM via the caller's key; deterministic
   template fallback with `enhanced:false`). The SPA shows a preview & edit modal
   before generating.
-- **4.3b `generate_image` model tool — 🚧 in progress.**
+- **4.3b `generate_image` model tool — ✅ done.** The model calls `generate_image`
+  (`{"prompt"}`) mid-conversation; the image is stored owner-scoped and attached
+  to the assistant message (`messages.images`), so it renders in chat and survives
+  a reload. Registered only when tools are enabled and a ComfyUI backend is
+  configured (see `API_CONTRACT.md` §16.5).
 
 ### 4.4 Settings IA + UX overhaul — ✅ done
 - Settings categorized into Account / Appearance / AI & access / Integrations /
