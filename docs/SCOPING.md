@@ -81,9 +81,13 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
   body `{q,num,gl,hl,tbs,page,type}`; response `organic[]` = `{title,link,snippet,
   position}` (**`link`, not `url`**). 10 results = 1 credit, >10 doubles it;
   2,500 free queries. Chain: **Tavily → Brave → Serper → DDG** (`maxSearchChain` 3→4).
-  Config: `SERPER_API_KEY` env + encrypted DB `serper_key`. **Key: sign up at
-  serper.dev → dashboard → API key (2,500 free one-time queries, no card).**
-  Optional — Brave/DDG already work.
+  **Per-user key (BYOK-style, owner request):** each user adds their own in
+  **Settings → Integrations** (encrypted with `internal/secret`), resolved per
+  request like the OpenCode key (own key → optional server env `SERPER_API_KEY`).
+  Key: sign up at serper.dev → dashboard → API key (2,500 free one-time queries,
+  no card). Optional — Brave/DDG already work.
+- **UI:** per-user **Serper key** field + provider list in Settings → Integrations
+  (visible to all users, not just admins).
 - **Brave `llm/context`:** a **mode flag on the existing Brave provider**
   (`MYOGCHAT_BRAVE_MODE=web|context`, DB `brave_mode`) — not a separate provider
   (shares key/host/identity). `GET|POST /res/v1/llm/context`, response
@@ -151,10 +155,26 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
     (`.in`/`.com`/`.eu`); app-specific password.
 - **Libs:** `emersion/go-imap/v2` + `go-message` + `go-sasl` (no XOAUTH2 type — use
   OAUTHBEARER or a ~15-line custom client if ever needed) + stdlib `net/smtp`.
-- **Design:** per-user encrypted credential blob (`auth_type`, host/port/TLS,
-  password, `allow_send`, `append_sent`); per-call connect with timeouts;
-  normalized `Message`; tools **`email_folders` / `email_search` / `email_read` /
-  `email_send`** (send gated).
+- **Design (READ-ONLY by construction):** per-user encrypted credential blob
+  (`auth_type`, host/port/TLS, password) — **no `allow_send`/`append_sent`**;
+  per-call connect with timeouts; normalized `Message`; tools are **only**
+  **`email_folders` / `email_search` / `email_read`** — **no `email_send`, no SMTP
+  client in v1**.
+- **Read-only enforcement (code-level, layered):**
+  1. **No write path exists** — the IMAP wrapper exposes only read methods; no
+     `APPEND`/`STORE`/`COPY`/`MOVE`/`EXPUNGE`/`CREATE`/`DELETE`.
+  2. **Open read-only** — `EXAMINE` (go-imap v2 `SelectOptions{ReadOnly:true}`)
+     instead of `SELECT` (no `\Seen`/`\Recent` side effects).
+  3. **Fetch with `BODY.PEEK[]`** so reading never marks a message seen.
+  4. **Transport command allowlist** — wrap the IMAP `net.Conn` in a filter that
+     parses client commands and **rejects anything not on a read-only allowlist**
+     (`CAPABILITY, NOOP, LOGIN, AUTHENTICATE, LIST, LSUB, STATUS, EXAMINE, SELECT,
+     FETCH, SEARCH, UID, IDLE, CLOSE, LOGOUT`). Even a tool-layer bug cannot mutate
+     the mailbox — **this is the key guardrail** (app passwords are full-access, so
+     scoping must be ours).
+  5. **Bodies are untrusted data** (prompt-injection): never instructions; with no
+     write tools the blast radius is nil.
+  6. **Outbound-only** (993/TLS verified); credentials never returned to the SPA.
 - **Pitfalls:** prompt injection from mail bodies (treat as untrusted; gate send);
   Gmail auto-saves to Sent (iCloud/Zoho need `APPEND`); Gmail folders `[Gmail]/…`
   (use SPECIAL-USE); app passwords revoked on password change; cap attachments 5 MB
