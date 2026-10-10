@@ -2870,15 +2870,60 @@ function renderMessages() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+/* File-type glyph for an attachment chip, from MIME then extension. */
+function fileGlyph(name, mime) {
+  const m = (mime || "").toLowerCase();
+  if (m.startsWith("image/")) return "🖼️";
+  if (m.startsWith("audio/")) return "🎵";
+  if (m.startsWith("video/")) return "🎬";
+  if (m === "application/pdf") return "📕";
+  const ext = (name || "").toLowerCase().split(".").pop();
+  switch (ext) {
+    case "png": case "jpg": case "jpeg": case "gif": case "webp": case "bmp":
+      case "tif": case "tiff": case "svg": return "🖼️";
+    case "mp3": case "wav": case "m4a": case "ogg": case "flac": case "opus": case "aac":
+      return "🎵";
+    case "mp4": case "mov": case "webm": case "mkv": case "avi": return "🎬";
+    case "pdf": return "📕";
+    case "doc": case "docx": case "odt": case "rtf": case "txt": case "md": return "📄";
+    case "xls": case "xlsx": case "ods": case "csv": case "tsv": return "📊";
+    case "ppt": case "pptx": case "odp": return "📈";
+    case "zip": case "rar": case "7z": case "tar": case "gz": return "🗜️";
+    case "json": case "xml": case "yaml": case "yml": case "toml":
+      case "go": case "py": case "js": case "ts": case "java": case "rs": case "c":
+      case "cpp": case "h": case "sh": case "sql": case "html": case "css":
+      return "🧩";
+    default: return "📎";
+  }
+}
+
+/* A read-only chip for a file attached to a sent message (metadata only). */
+function attachmentChip(a) {
+  const chip = el("span", "attachment-chip");
+  chip.title = (a.mime ? a.mime + " · " : "") + (a.name || "file");
+  const icon = el("span", "attachment-chip-icon");
+  icon.textContent = fileGlyph(a.name, a.mime);
+  const name = el("span", "attachment-chip-name");
+  name.textContent = a.name || "file";
+  chip.append(icon, name);
+  const size = fmtBytes(a.size);
+  if (size) {
+    const s = el("span", "attachment-chip-size");
+    s.textContent = size;
+    chip.appendChild(s);
+  }
+  return chip;
+}
+
 function buildUserMessage(m) {
   const wrap = el("div", "msg msg-user");
   const bubble = el("div", "msg-bubble");
   bubble.textContent = m.content;
-  const n = Array.isArray(m.attachments) ? m.attachments.length : 0;
-  if (n > 0) {
-    const note = el("div", "msg-attachments");
-    note.textContent = n + " file" + (n === 1 ? "" : "s") + " attached";
-    bubble.appendChild(note);
+  const atts = Array.isArray(m.attachments) ? m.attachments : [];
+  if (atts.length > 0) {
+    const row = el("div", "msg-attachments");
+    for (const a of atts) row.appendChild(attachmentChip(a));
+    bubble.appendChild(row);
   }
   wrap.appendChild(bubble);
   return wrap;

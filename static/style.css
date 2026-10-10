@@ -848,12 +848,14 @@ button { font: inherit; }
 }
 /* ===== end image generation ===== */
 
-/* "N file(s) attached" line inside a user message */
+/* Attachment chips inside a sent user message (metadata only) */
 .msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-top: 6px;
-  font-size: 0.75rem;
-  opacity: 0.85;
 }
+.attachment-chip-icon { font-size: 0.95rem; line-height: 1; }
 
 .composer textarea {
   flex: 1;
