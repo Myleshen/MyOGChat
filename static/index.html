@@ -224,14 +224,35 @@
     </main>
   </div>
 
-  <!-- Settings panel -->
-  <div id="settings-modal" class="modal" hidden>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <div class="modal-head">
-        <h2 id="settings-title">Settings</h2>
-        <button id="settings-close" class="icon-btn modal-close" type="button" aria-label="Close settings">✕</button>
-      </div>
-      <div class="modal-body">
+  <!-- Settings page — full-screen route #/settings (see docs/2.9-settings-page.md).
+       All section element ids are unchanged from the old modal so behavior and
+       tests keep working. -->
+  <div id="settings-page" class="settings-page" hidden>
+    <header class="settings-header">
+      <button id="settings-back" class="icon-btn settings-back" type="button"
+              aria-label="Back" title="Back">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M12 4l-6 6 6 6" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <h1 id="settings-title" class="settings-header-title">Settings</h1>
+    </header>
+    <div class="settings-body">
+
+      <!-- Account (contract §9) -->
+      <section id="account-section" class="settings-section">
+        <h2 class="settings-heading">Account</h2>
+        <div class="account-info">
+          <span id="account-username" class="account-name"></span>
+          <span id="account-email" class="account-email"></span>
+        </div>
+        <button id="account-logout" class="btn btn-ghost account-logout" type="button">Log out</button>
+      </section>
+
+      <!-- Appearance / display (browser-local prefs, contract §8.8) -->
+      <section id="appearance-section" class="settings-section">
+        <h2 class="settings-heading">Appearance</h2>
         <fieldset class="setting-group">
           <legend class="setting-label">Theme</legend>
           <div class="segmented">
@@ -256,174 +277,180 @@
           <span>Send with Enter</span>
           <input type="checkbox" id="setting-enterToSend">
         </label>
+      </section>
 
-        <!-- OpenCode Go key (all users, contract §2.1) -->
-        <section id="key-section" class="settings-key">
-          <hr class="settings-sep">
-          <h3 class="settings-subtitle">OpenCode Go key</h3>
-          <p id="key-status" class="settings-subtitle-sm">Loading…</p>
-          <form id="key-form" class="add-user-form" autocomplete="off">
-            <label class="field">
-              <span class="field-label">Your API key</span>
-              <input id="key-input" type="password" autocomplete="off" placeholder="sk-…">
-            </label>
-            <p id="key-error" class="login-error" role="alert" hidden></p>
-            <div class="key-actions">
-              <button type="submit" class="btn btn-primary">Save key</button>
-              <button type="button" id="key-remove" class="btn btn-ghost" hidden>Remove my key</button>
-            </div>
-          </form>
-          <label class="setting-toggle" id="share-key-row" hidden>
-            <span>Share the server key with users</span>
-            <input type="checkbox" id="setting-share-server-key">
+      <!-- OpenCode Go key (all users, contract §2.1) -->
+      <section id="key-section" class="settings-section settings-key">
+        <h2 class="settings-heading">OpenCode Go key</h2>
+        <p id="key-status" class="settings-subtitle-sm">Loading…</p>
+        <form id="key-form" class="add-user-form" autocomplete="off">
+          <label class="field">
+            <span class="field-label">Your API key</span>
+            <input id="key-input" type="password" autocomplete="off" placeholder="sk-…">
           </label>
-        </section>
-
-        <!-- Groups & shared keys (contract §2.2) -->
-        <section id="groups-section" class="settings-groups">
-          <hr class="settings-sep">
-          <h3 class="settings-subtitle">Groups</h3>
-          <p class="settings-subtitle-sm">Share your OpenCode Go key with people you trust.</p>
-          <ul id="groups-list" class="groups-list"></ul>
-          <p id="groups-empty" class="nav-empty" hidden>You're not in any groups yet.</p>
-          <form id="group-form" class="add-user-form" autocomplete="off">
-            <p class="settings-subtitle settings-subtitle-sm">Create a group</p>
-            <label class="field">
-              <span class="field-label">Name</span>
-              <input id="group-name" type="text" required maxlength="120" placeholder="Group name">
-            </label>
-            <label class="setting-toggle">
-              <span>Share my key with this group</span>
-              <input type="checkbox" id="group-share-key" checked>
-            </label>
-            <p id="group-error" class="login-error" role="alert" hidden></p>
-            <button type="submit" class="btn btn-primary">Create group</button>
-          </form>
-        </section>
-
-        <!-- Integrations (admin only, Phase 2.4 / 2.8). Hidden for non-admins. -->
-        <section id="integrations-section" class="settings-integrations" hidden>
-          <hr class="settings-sep">
-          <h3 class="settings-subtitle">Integrations</h3>
-          <p class="settings-subtitle-sm">
-            Tools let the model search the web, read pages, and use Linkwarden.
-          </p>
-          <label class="setting-toggle">
-            <span>Enable tools</span>
-            <input type="checkbox" id="setting-tools-enabled">
-          </label>
-          <!-- web-search:start — self-contained web search block (safe to relocate) -->
-          <div id="web-search-block" class="web-search-block">
-            <p class="settings-subtitle settings-subtitle-sm">Web search</p>
-            <p id="search-status" class="settings-subtitle-sm">Web search: loading…</p>
-            <label class="field">
-              <span class="field-label">Provider</span>
-              <select id="search-provider">
-                <option value="auto">Auto (Tavily → Brave → DuckDuckGo)</option>
-                <option value="tavily">Tavily</option>
-                <option value="brave">Brave</option>
-                <option value="ddg">DuckDuckGo</option>
-              </select>
-            </label>
-            <label class="field">
-              <span class="field-label">Brave API key</span>
-              <input id="search-brave-key" type="password" autocomplete="off"
-                     placeholder="Leave blank to keep the stored key">
-            </label>
-            <p id="search-error" class="login-error" role="alert" hidden></p>
-            <div class="key-actions">
-              <button type="button" id="search-save" class="btn btn-primary">Save</button>
-              <button type="button" id="search-clear-key" class="btn btn-ghost">Clear key</button>
-            </div>
+          <p id="key-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="submit" class="btn btn-primary">Save key</button>
+            <button type="button" id="key-remove" class="btn btn-ghost" hidden>Remove my key</button>
           </div>
-          <!-- web-search:end -->
-          <form id="linkwarden-form" class="add-user-form" autocomplete="off">
-            <p class="settings-subtitle settings-subtitle-sm">Linkwarden</p>
-            <label class="field">
-              <span class="field-label">Instance URL</span>
-              <input id="linkwarden-url" type="url" autocomplete="off"
-                     placeholder="https://links.example.com">
-            </label>
-            <label class="field">
-              <span class="field-label">API token</span>
-              <input id="linkwarden-token" type="password" autocomplete="off" placeholder="Token">
-            </label>
-            <p id="linkwarden-status" class="settings-subtitle-sm">Not configured.</p>
-            <p id="linkwarden-error" class="login-error" role="alert" hidden></p>
-            <div class="key-actions">
-              <button type="submit" class="btn btn-primary">Save</button>
-              <button type="button" id="linkwarden-clear" class="btn btn-ghost">Clear</button>
-            </div>
-          </form>
-        </section>
+        </form>
+        <label class="setting-toggle" id="share-key-row" hidden>
+          <span>Share the server key with users</span>
+          <input type="checkbox" id="setting-share-server-key">
+        </label>
+      </section>
 
-        <!-- ==== BEGIN code-sandbox tools section (2.6/2.7) — self-contained, safe to relocate ==== -->
-        <!-- Admin only. Toggles the ephemeral Docker code sandbox (run_bash/run_python). -->
-        <section id="tools-section" class="settings-tools" hidden>
-          <hr class="settings-sep">
-          <h3 class="settings-subtitle">Code sandbox</h3>
-          <p class="settings-subtitle-sm">
-            Let the model run Bash and Python in a fresh, ephemeral Docker sandbox.
-            Nothing is kept between calls.
-          </p>
-          <label class="setting-toggle">
-            <span>Enable code sandbox (run_bash, run_python)</span>
-            <input type="checkbox" id="setting-sandbox-enabled">
+      <!-- Groups & shared keys (contract §2.2) -->
+      <section id="groups-section" class="settings-section settings-groups">
+        <h2 class="settings-heading">Groups</h2>
+        <p class="settings-subtitle-sm">Share your OpenCode Go key with people you trust.</p>
+        <ul id="groups-list" class="groups-list"></ul>
+        <p id="groups-empty" class="nav-empty" hidden>You're not in any groups yet.</p>
+        <form id="group-form" class="add-user-form" autocomplete="off">
+          <p class="settings-subtitle settings-subtitle-sm">Create a group</p>
+          <label class="field">
+            <span class="field-label">Name</span>
+            <input id="group-name" type="text" required maxlength="120" placeholder="Group name">
           </label>
-          <p id="sandbox-status" class="settings-subtitle-sm">Sandbox: loading…</p>
-        </section>
-        <!-- ==== END code-sandbox tools section ==== -->
+          <label class="setting-toggle">
+            <span>Share my key with this group</span>
+            <input type="checkbox" id="group-share-key" checked>
+          </label>
+          <p id="group-error" class="login-error" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary">Create group</button>
+        </form>
+      </section>
 
-        <!-- ===== Image OCR (feature 2.5) — self-contained block; safe to relocate ===== -->
-        <section id="ocr-section" class="settings-ocr" hidden>
-          <hr class="settings-sep">
-          <h3 class="settings-subtitle">Image OCR</h3>
-          <p class="settings-subtitle-sm">
-            Read text from uploaded images with Tesseract, run in a sandboxed
-            container. Applies to everyone on this server.
-          </p>
-          <label class="setting-toggle">
-            <span>Enable image OCR</span>
-            <input type="checkbox" id="setting-ocr-enabled">
+      <!-- Integrations (admin only, Phase 2.4 / 2.8). Hidden for non-admins. -->
+      <section id="integrations-section" class="settings-section settings-integrations" hidden>
+        <h2 class="settings-heading">Integrations</h2>
+        <p class="settings-subtitle-sm">
+          Tools let the model search the web, read pages, and use Linkwarden.
+        </p>
+        <label class="setting-toggle">
+          <span>Enable tools</span>
+          <input type="checkbox" id="setting-tools-enabled">
+        </label>
+        <p id="tavily-status" class="settings-subtitle-sm">Tavily: loading…</p>
+        <!-- web-search:start — self-contained web search block (safe to relocate) -->
+        <div id="web-search-block" class="web-search-block">
+          <p class="settings-subtitle settings-subtitle-sm">Web search</p>
+          <p id="search-status" class="settings-subtitle-sm">Web search: loading…</p>
+          <label class="field">
+            <span class="field-label">Provider</span>
+            <select id="search-provider">
+              <option value="auto">Auto (Tavily → Brave → DuckDuckGo)</option>
+              <option value="tavily">Tavily</option>
+              <option value="brave">Brave</option>
+              <option value="ddg">DuckDuckGo</option>
+            </select>
           </label>
-          <p id="ocr-status" class="settings-subtitle-sm">OCR: loading…</p>
-        </section>
-        <!-- ===== end Image OCR (feature 2.5) ===== -->
+          <label class="field">
+            <span class="field-label">Brave API key</span>
+            <input id="search-brave-key" type="password" autocomplete="off"
+                   placeholder="Leave blank to keep the stored key">
+          </label>
+          <p id="search-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="button" id="search-save" class="btn btn-primary">Save</button>
+            <button type="button" id="search-clear-key" class="btn btn-ghost">Clear key</button>
+          </div>
+        </div>
+        <!-- web-search:end -->
+        <form id="linkwarden-form" class="add-user-form" autocomplete="off">
+          <p class="settings-subtitle settings-subtitle-sm">Linkwarden</p>
+          <label class="field">
+            <span class="field-label">Instance URL</span>
+            <input id="linkwarden-url" type="url" autocomplete="off"
+                   placeholder="https://links.example.com">
+          </label>
+          <label class="field">
+            <span class="field-label">API token</span>
+            <input id="linkwarden-token" type="password" autocomplete="off" placeholder="Token">
+          </label>
+          <p id="linkwarden-status" class="settings-subtitle-sm">Not configured.</p>
+          <p id="linkwarden-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button type="button" id="linkwarden-clear" class="btn btn-ghost">Clear</button>
+          </div>
+        </form>
+      </section>
 
-        <!-- Admin only (contract §9.6). Hidden for non-admins. -->
-        <section id="users-section" class="settings-users" hidden>
-          <hr class="settings-sep">
-          <h3 id="users-title" class="settings-subtitle">Users</h3>
-          <label class="setting-toggle">
-            <span>Allow new registrations</span>
-            <input type="checkbox" id="setting-allow-registration">
+      <!-- ==== BEGIN code-sandbox tools section (2.6/2.7) — self-contained, safe to relocate ==== -->
+      <!-- Admin only. Toggles the ephemeral Docker code sandbox (run_bash/run_python). -->
+      <section id="tools-section" class="settings-section settings-tools" hidden>
+        <h2 class="settings-heading">Code sandbox</h2>
+        <p class="settings-subtitle-sm">
+          Let the model run Bash and Python in a fresh, ephemeral Docker sandbox.
+          Nothing is kept between calls.
+        </p>
+        <label class="setting-toggle">
+          <span>Enable code sandbox (run_bash, run_python)</span>
+          <input type="checkbox" id="setting-sandbox-enabled">
+        </label>
+        <p id="sandbox-status" class="settings-subtitle-sm">Sandbox: loading…</p>
+      </section>
+      <!-- ==== END code-sandbox tools section ==== -->
+
+      <!-- ===== Image OCR (feature 2.5) — self-contained block; safe to relocate ===== -->
+      <section id="ocr-section" class="settings-section settings-ocr" hidden>
+        <h2 class="settings-heading">Image OCR</h2>
+        <p class="settings-subtitle-sm">
+          Read text from uploaded images with Tesseract, run in a sandboxed
+          container. Applies to everyone on this server.
+        </p>
+        <label class="setting-toggle">
+          <span>Enable image OCR</span>
+          <input type="checkbox" id="setting-ocr-enabled">
+        </label>
+        <p id="ocr-status" class="settings-subtitle-sm">OCR: loading…</p>
+      </section>
+      <!-- ===== end Image OCR (feature 2.5) ===== -->
+
+      <!-- Admin only (contract §9.6). Hidden for non-admins. -->
+      <section id="users-section" class="settings-section settings-users" hidden>
+        <h2 id="users-title" class="settings-heading">Users</h2>
+        <label class="setting-toggle">
+          <span>Allow new registrations</span>
+          <input type="checkbox" id="setting-allow-registration">
+        </label>
+        <ul id="users-list" class="users-list"></ul>
+        <form id="add-user-form" class="add-user-form" autocomplete="off">
+          <p class="settings-subtitle settings-subtitle-sm">Add user</p>
+          <label class="field">
+            <span class="field-label">Username</span>
+            <input id="add-user-username" type="text" required minlength="3" maxlength="32"
+                   autocomplete="off" placeholder="Username">
           </label>
-          <ul id="users-list" class="users-list"></ul>
-          <form id="add-user-form" class="add-user-form" autocomplete="off">
-            <p class="settings-subtitle settings-subtitle-sm">Add user</p>
-            <label class="field">
-              <span class="field-label">Username</span>
-              <input id="add-user-username" type="text" required minlength="3" maxlength="32"
-                     autocomplete="off" placeholder="Username">
-            </label>
-            <label class="field">
-              <span class="field-label">Email</span>
-              <input id="add-user-email" type="email" required autocomplete="off" placeholder="Email">
-            </label>
-            <label class="field">
-              <span class="field-label">Password</span>
-              <input id="add-user-password" type="password" required minlength="8"
-                     autocomplete="new-password" placeholder="Password (min 8 characters)">
-            </label>
-            <label class="setting-toggle">
-              <span>Administrator</span>
-              <input type="checkbox" id="add-user-admin">
-            </label>
-            <p id="users-error" class="login-error" role="alert" hidden></p>
-            <button type="submit" class="btn btn-primary">Add user</button>
-          </form>
-        </section>
-      </div>
+          <label class="field">
+            <span class="field-label">Email</span>
+            <input id="add-user-email" type="email" required autocomplete="off" placeholder="Email">
+          </label>
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input id="add-user-password" type="password" required minlength="8"
+                   autocomplete="new-password" placeholder="Password (min 8 characters)">
+          </label>
+          <label class="setting-toggle">
+            <span>Administrator</span>
+            <input type="checkbox" id="add-user-admin">
+          </label>
+          <p id="users-error" class="login-error" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary">Add user</button>
+        </form>
+      </section>
+
+      <!-- About -->
+      <section id="about-section" class="settings-section">
+        <h2 class="settings-heading">About</h2>
+        <p class="settings-about">
+          <strong>MyOGChat</strong> <span id="app-version" class="settings-version"></span>
+        </p>
+        <p class="settings-about">
+          A personal, self-hosted chat client backed by an OpenCode Go subscription.
+        </p>
+      </section>
     </div>
   </div>
 

@@ -315,8 +315,17 @@ Required UI:
 1. **Theme**: `<html data-theme="light|dark">` set from the setting; `system`
    follows `prefers-color-scheme` and reacts to changes. Ship a light and a dark
    syntax-highlight stylesheet; toggle the disabled one.
-2. **Settings panel**: opened from a gear button; contains theme, thinking
-   display, token speed, Enter-to-send toggles. Closes on Esc/backdrop.
+2. **Settings page**: a dedicated, full-screen mobile-first **page** at the hash
+   route `#/settings` (not a modal), opened from the gear button. Sections:
+   **Account** (username/email from `GET /api/auth/me` + log out), **Appearance**
+   (theme, thinking display, token speed, Enter-to-send), **OpenCode Go key**
+   (§2.1), **Groups** (§2.2), **Integrations** (admin, §2.4/2.8), **Users**
+   (admin, §9.6), **About** (name + version). The page scrolls independently,
+   uses the shared visual-viewport variables (`--app-h`/`--app-top`) so the
+   on-screen keyboard never breaks layout, and never overflows horizontally.
+   A header back affordance and the browser/Android back button both return to
+   the previous view (hash-driven). Esc also closes it. There is **one** settings
+   surface — the old modal is removed.
 3. **Sidebar**: a collapse/expand control on desktop (icon); collapsed state
    persisted. On mobile it stays an overlay drawer. Sidebar shows a
    **Projects** section (list, "New project" button, per-project menu:
@@ -497,6 +506,10 @@ Admins do **not** see other users' chats (only user administration).
 - A `403` from login whose body mentions approval shows the pending-approval
   message; a `403` for `disabled` shows "account disabled".
 - **Sidebar bottom**: show the signed-in username and a Log out button.
+- **Settings page**: reachable at the hash route `#/settings` (see §8.8.2). The
+  account section shows the signed-in username/email (`GET /api/auth/me`) and a
+  log out button; admin-only sections (Users, Integrations, share-server-key)
+  are hidden for non-admins.
 - **Settings → Users** (admins only): list users (with a **status** badge and a
   **Pending** section/count), add a user (username, email, password, admin
   checkbox), **Approve**/**Reject** pending registrations (`PATCH status=active`

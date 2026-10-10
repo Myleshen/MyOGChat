@@ -3,8 +3,8 @@
 #
 # Two passes over a mobile viewport:
 #   Phase A — a normal test user: shell, keyboard, sidebar, projects, attachments,
-#             settings (key + groups), themes, send a message.
-#   Phase B — an admin: admin badge + the admin-only Users panel.
+#             settings page (#/settings: account + key + groups), themes, send.
+#   Phase B — an admin: admin badge + the admin-only Users panel + Integrations.
 #
 # Run against an isolated instance with scripts/ui-test-run.sh (dedicated test DB).
 #
@@ -104,21 +104,31 @@ sleep 2
 assert "attachment chip shown" "document.getElementById('attachments-bar').textContent.length > 0 && !document.getElementById('attachments-bar').hidden"
 shot 06-attachment.png
 
-echo "-- settings (key + groups) --"
+echo "-- settings page (#/settings) --"
 ab press Escape >/dev/null 2>&1; sleep 1
 ab click "#settings-btn" >/dev/null 2>&1; sleep 1
-assert "settings opens" "!document.getElementById('settings-modal').hidden"
-assert "settings fits viewport" "document.querySelector('#settings-modal .modal-card').getBoundingClientRect().height <= window.innerHeight + 1"
+assert "settings page opens" "!document.getElementById('settings-page').hidden && location.hash === '#/settings'"
+assert "settings fits viewport" "(function(){var r=document.getElementById('settings-page').getBoundingClientRect();return r.top >= -1 && r.bottom <= window.innerHeight + 1;})()"
+assert "settings: no horizontal overflow" "document.getElementById('settings-page').scrollWidth <= window.innerWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1"
+assert "account section present" "document.getElementById('account-username').textContent.length > 0"
 assert "key section present" "!document.getElementById('key-section').hidden"
 assert "groups section present" "!!document.getElementById('groups-section')"
 assert "non-admin: users section hidden" "document.getElementById('users-section').hidden"
+assert "about section present" "document.getElementById('app-version').textContent.length > 0"
+shot 07a-settings-top.png
 ab fill "#group-name" "UI Test Group" >/dev/null 2>&1
 ab click "#group-form button[type=submit]" >/dev/null 2>&1; sleep 1
 assert "group created & listed" "document.getElementById('groups-list').textContent.includes('UI Test Group')"
-ab scrollintoview "#groups-section" >/dev/null 2>&1
+ab scrollintoview "#groups-section" >/dev/null 2>&1; sleep 1
 shot 07-settings.png
 cleanup "/api/groups" "UI Test Group"
-ab press Escape >/dev/null 2>&1; sleep 1
+# In-page back affordance returns to the previous view.
+ab click "#settings-back" >/dev/null 2>&1; sleep 1
+assert "back button returns to chat" "document.getElementById('settings-page').hidden && !document.getElementById('app').hidden"
+# Browser/Android back button works too (hash routing).
+ab click "#settings-btn" >/dev/null 2>&1; sleep 1
+ab eval "history.back()" >/dev/null 2>&1; sleep 1
+assert "browser back closes settings" "document.getElementById('settings-page').hidden"
 
 echo "-- theme --"
 ab eval "document.documentElement.setAttribute('data-theme','light')" >/dev/null 2>&1
@@ -147,12 +157,13 @@ assert "admin signed in" "!document.getElementById('app').hidden"
 assert "admin badge shown" "!document.getElementById('user-admin-badge').hidden"
 ab press Escape >/dev/null 2>&1; sleep 1
 ab click "#settings-btn" >/dev/null 2>&1; sleep 1
+assert "settings page opens (admin)" "!document.getElementById('settings-page').hidden"
 assert "users section visible for admin" "!document.getElementById('users-section').hidden"
-assert "share-server-key toggle present" "!!document.getElementById('setting-share-server-key')"
+assert "share-server-key toggle present" "!document.getElementById('share-key-row').hidden"
 assert "integrations section visible for admin" "!document.getElementById('integrations-section').hidden"
-ab scrollintoview "#users-section" >/dev/null 2>&1
+ab scrollintoview "#users-section" >/dev/null 2>&1; sleep 1
 shot 10-admin.png
-ab press Escape >/dev/null 2>&1; sleep 1
+ab click "#settings-back" >/dev/null 2>&1; sleep 1
 fi
 
 echo "-- result --"

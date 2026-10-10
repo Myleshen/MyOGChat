@@ -12,7 +12,7 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 
 - **Live:** `https://chat.example.com` (also `http://raspberrypi.local:8787` on LAN)
 - **Repo:** `github.com/Myleshen/MyOGChat` — `main` is the source of truth
-- **Phase 1:** complete. **Phase 2:** 5 of 9 items shipped (see status below).
+- **Phase 1:** complete. **Phase 2:** 6 of 9 items shipped (see status below).
 
 ## Live deployment
 
@@ -49,7 +49,7 @@ internal/
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
 deploy/       systemd unit + deploy.sh + sandbox-setup.sh + ocr-setup.sh + ocr/ (Dockerfile) + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md
 ```
 
 ## Docs index
@@ -142,11 +142,10 @@ fix, deploy.
 | 2.5 | OCR for images | ✅ shipped (`DockerTesseract`; needs `deploy/ocr-setup.sh` on the host) |
 | 2.6 | **Python sandbox** | ✅ shipped (`run_python`, hardened Docker sandbox; needs `deploy/sandbox-setup.sh` on the host) |
 | 2.7 | **Bash sandbox** | ✅ shipped (`run_bash`, same engine) |
-| 2.9 | **Full settings page (not a popup)** | ⏳ done on `feat/settings-page` (pending merge) — replaces the modal with `#/settings` |
+| 2.9 | **Full settings page (not a popup)** | ✅ shipped — `#/settings` page replaces the modal; see `docs/2.9-settings-page.md` |
 
-Suggested order: **2.9** is done on `feat/settings-page` (pending merge). **2.5**,
-**2.6/2.7** are done — provision the host with `deploy/sandbox-setup.sh` and
-`deploy/ocr-setup.sh`.
+All Phase 2 items (2.1–2.9) are implemented. Provision the host with
+`deploy/sandbox-setup.sh` and `deploy/ocr-setup.sh`.
 Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
 ## Known gaps / caveats (be honest)
@@ -200,10 +199,9 @@ After each merge: `go build/vet/test` + `node --check static/app.js` + run
 ## Immediate next steps
 
 1. (Optional) Add `TAVILY_API_KEY` to the Pi env to enable web search.
-2. Merge **2.5 OCR** (`feat/ocr`); then on the Pi run `bash deploy/ocr-setup.sh`
-   (needs Docker + the `docker` group) and restart.
+2. (Done) **2.5 OCR** — run `bash deploy/ocr-setup.sh` on the Pi (Docker) and restart.
 3. (Done) **2.7 bash sandbox** + **2.6 python sandbox** — run
    `deploy/sandbox-setup.sh` on the Pi to create the network and pull
    `bash:5.3` / `python:3.14-slim`; optional `sudo … --harden` blocks LAN egress.
-4. Merge **2.9 settings page** (`feat/settings-page`).
+4. (Done) **2.9 settings page** — `#/settings` replaces the modal.
 5. Keep `API_CONTRACT.md` / `TODO.md` current; add a `docs/2.x-*.md` per feature.

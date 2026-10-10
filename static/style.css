@@ -914,6 +914,69 @@ button { font: inherit; }
 .field textarea:focus,
 .field select:focus { outline: none; border-color: var(--accent); }
 
+/* ---------- Settings page (#/settings) ---------- */
+
+.settings-page {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--app-top, 0px);
+  height: var(--app-h, 100dvh);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.settings-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.settings-header-title { margin: 0; font-size: 1.05rem; }
+.settings-back { flex-shrink: 0; margin-left: -4px; }
+
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 20px 16px calc(32px + env(safe-area-inset-bottom, 0px));
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.settings-heading {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.account-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.account-name { font-weight: 600; overflow-wrap: anywhere; }
+.account-email { color: var(--text-dim); font-size: 0.85rem; overflow-wrap: anywhere; }
+.account-logout { align-self: flex-start; }
+
+.settings-about { margin: 0; color: var(--text-dim); font-size: 0.9rem; line-height: 1.6; }
+.settings-version { color: var(--text); }
+
 /* ---------- Settings: admin Users panel ---------- */
 
 .settings-users { display: flex; flex-direction: column; gap: 12px; }
@@ -1129,4 +1192,13 @@ body.modal-open { overflow: hidden; }
   .messages { padding: 24px; }
   .msg-bubble { max-width: min(760px, 85%); }
   .composer { padding: 12px 24px; }
+
+  /* Settings page: centre the column on wide screens. */
+  .settings-body { padding: 24px; }
+  .settings-section {
+    width: 100%;
+    max-width: 680px;
+    margin-left: auto;
+    margin-right: auto;
+  }
 }

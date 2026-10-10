@@ -136,10 +136,13 @@ key when sharing is allowed.
 - **Linkwarden**: connect to the owner's instance (URL + token in settings) to
   search saved links and save new ones directly from a chat.
 
-### 2.9 Full settings page (not a popup)
-- Promote settings from the modal to a dedicated, mobile-first **page** (e.g.
-  `#/settings`) with sections: Account, API key, Users (admin), Integrations
-  (Linkwarden), Tools, About. Keep it PWA-fast — the PWA remains the main goal.
+### 2.9 Full settings page (not a popup) — ✅ done (merged, pending deploy)
+- Settings is now a dedicated, mobile-first **page** at the hash route
+  `#/settings` (vanilla JS, no build step) with sections: **Account**,
+  **Appearance**, **OpenCode Go key**, **Groups**, **Integrations** (admin),
+  **Users** (admin), **About**. The old modal is gone — the gear button
+  navigates to the route and the in-page back button / browser (Android) back
+  button return to the previous view. See `docs/2.9-settings-page.md`.
 
 ### Cross-cutting decisions to settle
 
