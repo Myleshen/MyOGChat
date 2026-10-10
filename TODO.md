@@ -232,7 +232,7 @@ merges sequentially and resolves the small additive conflicts in shared files
   `static/{index.html,app.js,sw.js}`, `docs/2.4-search-providers.md`,
   `API_CONTRACT.md`. **Effort:** small–medium.
 
-### 2.13 Vision-model OCR (alternative engine) — ✅ done (branch `feat/vision-ocr`)
+### 2.13 Vision-model OCR (alternative engine) — ✅ done (deployed)
 - **Finding:** OpenCode Go exposes vision **input** models — `gpt-6-luna`
   (responses dialect; input = text, image, pdf) and `deepseek-v4-flash-vision-exp`
   (chat). They can transcribe images, so OCR can optionally run through a vision
@@ -253,7 +253,7 @@ merges sequentially and resolves the small additive conflicts in shared files
 
 ## Phase 3 (scoped — exploratory, not scheduled)
 
-### 3.1 Image generation — ✅ app side done (self-hosted on the Proxmox GPU)
+### 3.1 Image generation — ✅ done (app side deployed; ComfyUI on the Proxmox box)
 - **External providers out** (owner isn't getting one; OpenCode Go has no
   image-output model) → **self-host** on the Proxmox box.
 - **GPU:** GTX 1650 Ti Mobile (Turing, CC 7.5, 4 GB), driver 615.71.09 — fully
@@ -290,7 +290,7 @@ merges sequentially and resolves the small additive conflicts in shared files
   `internal/server/email.go`, `internal/store` (schema + CRUD), `static/`
   (`#email-section`), `docs/3.2-imap.md`, `API_CONTRACT.md` §11.
 
-### 3.3 Calendar — ✅ implemented (branch `feat/calendar`)
+### 3.3 Calendar — ✅ done (deployed)
 - **Apple/iCloud + Zoho → CalDAV** (read/write, app-specific password).
   **Google → read-only via the secret ICS URL** (no OAuth/consent; owner decision).
   `calendar_list` / `calendar_create` / `calendar_update` / `calendar_delete`
@@ -300,12 +300,12 @@ merges sequentially and resolves the small additive conflicts in shared files
   `go-ical`. See `docs/3.3-calendar.md` and `API_CONTRACT.md` §11.
 - v1 = whole-series edits; ICS is read-only (write tools return a clear error).
 
-### 3.4 Maps — ✅ done (branch `feat/maps`)
+### 3.4 Maps — ✅ done (deployed)
 - **OSM-only (keyless)** — Nominatim (geocode/reverse) + OSRM (directions) +
   Photon/Overpass (places). Four `maps_*` tools reusing the 2.4 loop; global
   1 req/s limiter + a SQLite result cache (policy). See `docs/3.4-maps.md`.
 
-### 3.5 Speech-to-text (STT) — ✅ done (implemented, pending deploy)
+### 3.5 Speech-to-text (STT) — ✅ done (deployed)
 - **Ollama does NOT serve STT** (LLMs + embeddings only). Pi default:
   **whisper.cpp `base.en`** (MIT, ~1.5–2× real-time, HTTP server). GPU option:
   faster-whisper `large-v3` int8. Design: `internal/speech` + `POST /api/stt` +
@@ -314,7 +314,7 @@ merges sequentially and resolves the small additive conflicts in shared files
   See `docs/3.5-3.6-speech.md` / `docs/SCOPING.md` §3.5 /
   `docs/research/3.5-3.6-tts-stt.md`.
 
-### 3.6 Text-to-speech (TTS) — ✅ done (implemented, pending deploy)
+### 3.6 Text-to-speech (TTS) — ✅ done (deployed)
 - Pi default: **Piper** (real-time on the Pi; GPL-3.0 — note). GPU: Kokoro-82M
   (Apache-2.0). Design: `internal/speech` + `POST /api/tts` + a speaker button;
   Web Speech API fallback. See `docs/3.5-3.6-speech.md` / `docs/SCOPING.md` §3.6.

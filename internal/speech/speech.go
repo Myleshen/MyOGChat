@@ -287,8 +287,9 @@ func (c *OpenAITTS) Synthesize(ctx context.Context, text, voice string) ([]byte,
 }
 
 // PiperTTS synthesizes speech against a native Piper HTTP server. Piper's
-// `piper.http_server` accepts POST {"text": ...} on its root and returns a WAV;
-// the voice is normally fixed at server start, so the "voice" field is advisory.
+// `piper.http_server` accepts POST {"text": ...} on `/synthesize` and returns a
+// WAV; the voice is normally fixed at server start, so the "voice" field is
+// advisory.
 type PiperTTS struct {
 	baseURL string
 	voice   string
@@ -326,7 +327,7 @@ func (c *PiperTTS) Synthesize(ctx context.Context, text, voice string) ([]byte, 
 	if err != nil {
 		return nil, "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/synthesize", bytes.NewReader(body))
 	if err != nil {
 		return nil, "", err
 	}
