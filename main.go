@@ -772,9 +772,15 @@ func run(cfg config, log *slog.Logger) error {
 		return nil
 	case <-ctx.Done():
 		log.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// Drain in-flight requests (including short SSE turns). If a stream is
+		// still running when the deadline passes we exit cleanly anyway — a slow
+		// client must not make systemd mark the unit FAILED on every restart.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		return httpSrv.Shutdown(shutdownCtx)
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			log.Warn("graceful shutdown incomplete", "error", err)
+		}
+		return nil
 	}
 }
 

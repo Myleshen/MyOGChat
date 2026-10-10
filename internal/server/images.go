@@ -354,11 +354,19 @@ func (s *Server) handleEnhanceImagePrompt(w http.ResponseWriter, r *http.Request
 		fail()
 		return
 	}
-	out, err := s.up.ChatOnce(r.Context(), apiKey, "img-enhance-"+u.ID, defaultEnhanceModel,
-		[]upstream.Message{
-			{Role: "system", Content: enhanceSystemPrompt},
-			{Role: "user", Content: brief},
-		}, 400)
+	// One retry: the enhancer model can be slow to warm up and occasionally
+	// exceeds the one-shot timeout; a second attempt usually succeeds.
+	var out string
+	for attempt := 0; attempt < 2; attempt++ {
+		out, err = s.up.ChatOnce(r.Context(), apiKey, "img-enhance-"+u.ID, defaultEnhanceModel,
+			[]upstream.Message{
+				{Role: "system", Content: enhanceSystemPrompt},
+				{Role: "user", Content: brief},
+			}, 400)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		s.log.Warn("image prompt enhance failed", "error", err)
 		fail()
