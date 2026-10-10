@@ -210,8 +210,13 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 		effort = *conv.Effort
 	}
 	// Build the per-request tool set (Phase 2.4). An empty registry disables
-	// tool calling but still runs the same agentic code path.
-	reg := s.toolRegistry(ctx, u)
+	// tool calling but still runs the same agentic code path. Images generated
+	// by the generate_image tool (4.3b) are collected here and attached to the
+	// assistant message below.
+	var generatedImages []store.GeneratedImage
+	reg := s.toolRegistryWithImage(ctx, u, func(img store.GeneratedImage) {
+		generatedImages = append(generatedImages, img)
+	})
 	events := s.up.StreamAgent(ctx, upstream.Params{
 		Dialect:      m.Dialect,
 		Model:        conv.Model,
@@ -329,6 +334,7 @@ stream:
 		ReasoningTokens:  &reasoningTokens,
 		DurationMs:       &durationMs,
 		Tools:            tools,
+		Images:           generatedImages,
 		CreatedAt:        time.Now().UnixMilli(),
 	}
 	if reasoningStr := reasoning.String(); reasoningStr != "" {

@@ -1004,6 +1004,18 @@ Assistant messages may include `"images": [{"id","prompt","mime","width","height
 purges images older than the retention window alongside conversations and
 attachments.
 
+### 16.5 Model tool — `generate_image` (4.3b)
+
+When tools are enabled **and** a ComfyUI backend is configured, the model gets a
+`generate_image` tool (`{"prompt": string}`). Calling it generates via ComfyUI,
+stores the bytes owner-scoped in the `images` table, and attaches the resulting
+reference to the **assistant message** (`messages.images`), so the picture renders
+in the chat and survives a reload — the model can therefore generate images
+mid-conversation with full context. The tool result fed back to the model is a
+short text confirmation (the bytes are delivered via `GET /api/images/{id}`). The
+`/api/images` endpoint and the enhance endpoint (§16.2) remain available to the
+composer UI.
+
 ## 17. Linkwarden (per-user, 2.8)
 
 Each user connects **their own** Linkwarden instance (URL + API token); the
