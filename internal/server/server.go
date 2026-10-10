@@ -3,7 +3,10 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +33,11 @@ type Server struct {
 	auth   *auth.Auth
 	static fs.FS
 	log    *slog.Logger
+
+	// indexHTML is the SPA entry served with per-build cache-busting
+	// (?v=<hash>) on its asset URLs + an inline service-worker registration, so
+	// a CDN edge cache that caches .js/.css cannot serve a stale shell.
+	indexHTML []byte
 
 	encKey    []byte          // AES-256 key for per-user API keys (§2.1)
 	serverKey string          // optional shared OpenCode Go key (may be empty)
@@ -95,7 +103,52 @@ func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log
 	} else {
 		s.newTTS = func(cfg speech.TTSConfig) speech.Synthesizer { return speech.NewOpenAITTS(cfg) }
 	}
+	// Cache-bust the SPA shell with a content hash so an edge/CDN cache that
+	// caches .js/.css (but not HTML) always misses after a deploy.
+	if version := staticVersionOf(staticFS); version != "" {
+		s.indexHTML = renderIndex(staticFS, version)
+	}
 	return s
+}
+
+// staticVersionOf returns a short content hash of the SPA shell files. It
+// changes on every deploy that touches any shell asset.
+func staticVersionOf(fsys fs.FS) string {
+	if fsys == nil {
+		return ""
+	}
+	h := sha256.New()
+	for _, n := range []string{"index.html", "app.js", "style.css", "sw.js", "manifest.webmanifest"} {
+		b, err := fs.ReadFile(fsys, n)
+		if err != nil {
+			continue
+		}
+		h.Write([]byte(n))
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:10]
+}
+
+// renderIndex appends ?v=<version> to the shell's CSS/JS/manifest URLs and
+// injects the app-version meta tag plus an inline service-worker registration
+// (so the SW script URL itself is versioned and updates on every deploy).
+func renderIndex(fsys fs.FS, version string) []byte {
+	if fsys == nil {
+		return nil
+	}
+	raw, err := fs.ReadFile(fsys, "index.html")
+	if err != nil {
+		return nil
+	}
+	v := "?v=" + version
+	raw = bytes.Replace(raw, []byte(`href="style.css"`), []byte(`href="style.css`+v+`"`), 1)
+	raw = bytes.Replace(raw, []byte(`src="app.js"`), []byte(`src="app.js`+v+`"`), 1)
+	raw = bytes.Replace(raw, []byte(`href="manifest.webmanifest"`), []byte(`href="manifest.webmanifest`+v+`"`), 1)
+	head := []byte(`<head>` +
+		"\n  " + `<meta name="app-version" content="` + version + `">` +
+		"\n  " + `<script>if("serviceWorker"in navigator&&window.isSecureContext){window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js?v=` + version + `").catch(function(){})})}</script>`)
+	raw = bytes.Replace(raw, []byte("<head>"), head, 1)
+	return raw
 }
 
 // Handler returns the root handler: routes + auth + request logging.
@@ -444,6 +497,15 @@ func (s *Server) staticHandler() http.Handler {
 		}
 		if info, err := fs.Stat(s.static, name); err != nil || info.IsDir() {
 			name = "index.html"
+		}
+		// no-cache: the SPA shell must always revalidate so a deploy is visible
+		// immediately (an edge/CDN cache must not hold app.js/style.css/sw.js).
+		w.Header().Set("Cache-Control", "no-cache")
+		if name == "index.html" && len(s.indexHTML) > 0 {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(s.indexHTML)
+			return
 		}
 		if strings.HasSuffix(name, ".webmanifest") {
 			w.Header().Set("Content-Type", "application/manifest+json")

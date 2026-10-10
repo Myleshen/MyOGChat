@@ -1,10 +1,17 @@
 /* MyOGChat service worker.
-   Cache-first for the static shell only; /api/* is always network-only. */
+   Cache-first for the static shell only; /api/* is always network-only.
+
+   The cache name and every shell URL are keyed by the version in this script's
+   own URL (sw.js?v=<hash>, injected per build). A deploy therefore installs a
+   fresh worker that fetches the shell with the same ?v=<hash> cache-buster —
+   bypassing any edge/CDN cache that caches .js/.css — while storing under the
+   plain URLs the app requests (matched with ignoreSearch). */
 "use strict";
 
-const CACHE = "myogchat-shell-v17";
+const VERSION = new URL(self.location.href).searchParams.get("v") || "0";
+const CACHE = "myogchat-shell-" + VERSION;
 
-const SHELL = [
+const ASSETS = [
   "./",
   "index.html",
   "app.js",
@@ -17,11 +24,26 @@ const SHELL = [
   "vendor/highlight-light.css",
 ];
 
+const withV = (u) => u + (u.indexOf("?") >= 0 ? "&" : "?") + "v=" + VERSION;
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
+      .then(async (cache) => {
+        await Promise.all(
+          ASSETS.map(async (u) => {
+            try {
+              // cache: "reload" skips the browser HTTP cache; ?v= skips any CDN
+              // cache — the response is stored under the plain URL.
+              const res = await fetch(new Request(withV(u), { cache: "reload" }));
+              if (res.ok) await cache.put(u, res);
+            } catch (e) {
+              /* best effort; the network fallback still applies */
+            }
+          })
+        );
+      })
       .then(() => self.skipWaiting())
   );
 });
@@ -50,17 +72,14 @@ self.addEventListener("fetch", (event) => {
   // Navigations: serve the cached app shell, fall back to network.
   if (request.mode === "navigate") {
     event.respondWith(
-      caches
-        .match(request)
-        .then((cached) => cached || caches.match("index.html"))
-        .then((cached) => cached || fetch(request))
+      caches.match("index.html").then((cached) => cached || fetch(request))
     );
     return;
   }
 
-  // Static shell: cache-first, then network (and cache the fresh copy).
+  // Static shell: cache-first (ignoring the ?v= query), then network.
   event.respondWith(
-    caches.match(request).then((cached) => {
+    caches.match(request, { ignoreSearch: true }).then((cached) => {
       if (cached) return cached;
       return fetch(request).then((res) => {
         if (res.ok) {

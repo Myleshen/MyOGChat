@@ -4844,8 +4844,14 @@ function wireEvents() {
 
 function registerSW() {
   if ("serviceWorker" in navigator && window.isSecureContext) {
+    // The server injects <meta name="app-version">; registering sw.js?v=<hash>
+    // makes the worker URL change on every deploy so it always updates (and the
+    // inline registration in index.html covers the first load after a deploy).
+    const meta = document.querySelector('meta[name="app-version"]');
+    const version = meta ? meta.getAttribute("content") : "";
+    const url = version ? "sw.js?v=" + encodeURIComponent(version) : "sw.js";
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js").catch(() => {
+      navigator.serviceWorker.register(url).catch(() => {
         /* offline shell is a progressive enhancement */
       });
     });
