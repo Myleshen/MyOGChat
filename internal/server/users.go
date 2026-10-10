@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,6 +100,10 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		Password *string `json:"password"`
 		IsAdmin  *bool   `json:"is_admin"`
 		Status   *string `json:"status"`
+		// Per-user quota overrides (2.11): omitted = unchanged, null =
+		// clear/inherit, number = override.
+		DailyTokenLimit  nullableInt64 `json:"daily_token_limit"`
+		MonthlyCostLimit nullableInt64 `json:"monthly_cost_limit"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -153,6 +158,25 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.st.SetUserStatus(r.Context(), target.ID, *req.Status, now); err != nil {
 			s.log.Error("set status", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update user")
+			return
+		}
+	}
+	// Per-user quota overrides (2.11): apply only the fields that were present.
+	if req.DailyTokenLimit.Set || req.MonthlyCostLimit.Set {
+		daily, monthly := target.DailyTokenLimit, target.MonthlyCostLimit
+		if req.DailyTokenLimit.Set {
+			daily = req.DailyTokenLimit.Value
+		}
+		if req.MonthlyCostLimit.Set {
+			monthly = req.MonthlyCostLimit.Value
+		}
+		if (daily != nil && *daily < 0) || (monthly != nil && *monthly < 0) {
+			writeError(w, http.StatusBadRequest, "quota limits must be >= 0")
+			return
+		}
+		if err := s.st.SetUserLimits(r.Context(), target.ID, daily, monthly, now); err != nil {
+			s.log.Error("set user limits", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update user")
 			return
 		}
@@ -239,6 +263,9 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		BraveKey          *string `json:"brave_key"`
 		SandboxEnabled    *bool   `json:"sandbox_enabled"`
 		OCREnabled        *bool   `json:"ocr_enabled"` // feature 2.5
+		// Quota limits (2.11); 0 = off.
+		DailyTokenLimit  *int64 `json:"daily_token_limit"`
+		MonthlyCostLimit *int64 `json:"monthly_cost_limit"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -314,6 +341,28 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.DailyTokenLimit != nil {
+		if *req.DailyTokenLimit < 0 {
+			writeError(w, http.StatusBadRequest, "daily_token_limit must be >= 0")
+			return
+		}
+		if err := s.st.SetSetting(r.Context(), settingDailyTokenLimit, strconv.FormatInt(*req.DailyTokenLimit, 10)); err != nil {
+			s.log.Error("set daily_token_limit", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.MonthlyCostLimit != nil {
+		if *req.MonthlyCostLimit < 0 {
+			writeError(w, http.StatusBadRequest, "monthly_cost_limit must be >= 0")
+			return
+		}
+		if err := s.st.SetSetting(r.Context(), settingMonthlyCostLimit, strconv.FormatInt(*req.MonthlyCostLimit, 10)); err != nil {
+			s.log.Error("set monthly_cost_limit", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
 	s.writeSettings(w, r)
 }
 
@@ -346,6 +395,10 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// Feature 2.5: image OCR (self-contained block).
 	for k, v := range s.ocrSettings(r.Context()) {
+		out[k] = v
+	}
+	// 2.11: quota limits (self-contained block).
+	for k, v := range s.usageSettings(r.Context()) {
 		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)

@@ -408,6 +408,44 @@
       </section>
       <!-- ===== end Image OCR (feature 2.5) ===== -->
 
+      <!-- ===== Usage & quotas (2.11) — self-contained block; safe to relocate ===== -->
+      <section id="usage-section" class="settings-section settings-usage">
+        <h2 class="settings-heading">Usage</h2>
+        <p class="settings-subtitle-sm">
+          Token and cost totals from your assistant replies.
+        </p>
+        <label class="field">
+          <span class="field-label">Range</span>
+          <select id="usage-range">
+            <option value="7d">Last 7 days</option>
+            <option value="30d" selected>Last 30 days</option>
+            <option value="all">All time</option>
+          </select>
+        </label>
+        <div id="usage-totals" class="usage-totals">Loading…</div>
+        <div id="usage-by-model" class="usage-by-model"></div>
+        <p id="usage-quota-status" class="settings-subtitle-sm"></p>
+        <!-- Admin only: global limits + all-users table. -->
+        <div id="usage-admin" hidden>
+          <p class="settings-subtitle settings-subtitle-sm">Quota limits (0 = off)</p>
+          <label class="field">
+            <span class="field-label">Daily token limit</span>
+            <input id="setting-daily-token-limit" type="number" min="0" step="1" placeholder="0">
+          </label>
+          <label class="field">
+            <span class="field-label">Monthly cost limit (USD)</span>
+            <input id="setting-monthly-cost-limit" type="number" min="0" step="0.01" placeholder="0">
+          </label>
+          <p id="usage-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="button" id="usage-save" class="btn btn-primary">Save limits</button>
+          </div>
+          <p class="settings-subtitle settings-subtitle-sm">All users</p>
+          <ul id="usage-users-list" class="usage-list"></ul>
+        </div>
+      </section>
+      <!-- ===== end Usage & quotas (2.11) ===== -->
+
       <!-- Admin only (contract §9.6). Hidden for non-admins. -->
       <section id="users-section" class="settings-section settings-users" hidden>
         <h2 id="users-title" class="settings-heading">Users</h2>

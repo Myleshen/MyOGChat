@@ -62,6 +62,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/me/key", s.handleGetMyKey)
 	mux.HandleFunc("PUT /api/me/key", s.handlePutMyKey)
+	// Usage & quotas (2.11).
+	mux.HandleFunc("GET /api/me/usage", s.handleMyUsage)
+	mux.HandleFunc("GET /api/users/usage", s.handleUsersUsage)
 	// Groups & shared keys (§2.2).
 	mux.HandleFunc("GET /api/groups", s.handleListGroups)
 	mux.HandleFunc("POST /api/groups", s.handleCreateGroup)

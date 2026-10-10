@@ -105,6 +105,12 @@ func UserFrom(ctx context.Context) (store.User, bool) {
 	return u, ok
 }
 
+// WithUser returns a context carrying u as the authenticated user. It exists so
+// tests can drive handlers directly without the session middleware.
+func WithUser(ctx context.Context, u store.User) context.Context {
+	return context.WithValue(ctx, ctxKey{}, u)
+}
+
 // RequireAdmin writes 403 and returns false when u is not an admin.
 func RequireAdmin(w http.ResponseWriter, u store.User) bool {
 	if !u.IsAdmin {

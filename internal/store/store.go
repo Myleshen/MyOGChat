@@ -106,8 +106,11 @@ type User struct {
 	IsAdmin      bool    `json:"is_admin"`
 	Status       string  `json:"status"` // active | pending | disabled
 	APIKeyEnc    *string `json:"-"`      // encrypted per-user OpenCode Go key (§2.1)
-	CreatedAt    int64   `json:"created_at"`
-	UpdatedAt    int64   `json:"updated_at"`
+	// Per-user quota overrides (2.11); nil = inherit the global admin setting.
+	DailyTokenLimit  *int64 `json:"daily_token_limit,omitempty"`
+	MonthlyCostLimit *int64 `json:"monthly_cost_limit,omitempty"`
+	CreatedAt        int64  `json:"created_at"`
+	UpdatedAt        int64  `json:"updated_at"`
 }
 
 // Conversation mirrors a row of the conversations table.
@@ -137,7 +140,17 @@ type Message struct {
 	ReasoningTokens  *int64         `json:"reasoning_tokens"`
 	DurationMs       *int64         `json:"duration_ms"`
 	Attachments      []AttachedFile `json:"attachments,omitempty"`
+	Tools            []ToolActivity `json:"tools,omitempty"`
 	CreatedAt        int64          `json:"created_at"`
+}
+
+// ToolActivity is one tool call's display state persisted as a JSON array on
+// messages.tools (2.10), so the inline tool block survives a reload. It mirrors
+// the SSE `tool` payload / upstream.ToolActivity.
+type ToolActivity struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"` // running | done | error
+	Summary string `json:"summary,omitempty"`
 }
 
 // AttachedFile is the display metadata of a file attached to a user message.
@@ -240,10 +253,13 @@ func (s *Store) migrate() error {
 		{"messages", "reasoning_tokens", `ALTER TABLE messages ADD COLUMN reasoning_tokens INTEGER`},
 		{"messages", "duration_ms", `ALTER TABLE messages ADD COLUMN duration_ms INTEGER`},
 		{"messages", "attachments", `ALTER TABLE messages ADD COLUMN attachments TEXT`},
+		{"messages", "tools", `ALTER TABLE messages ADD COLUMN tools TEXT`},
 		{"conversations", "user_id", `ALTER TABLE conversations ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE`},
 		{"projects", "user_id", `ALTER TABLE projects ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE`},
 		{"users", "status", `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`},
 		{"users", "api_key_enc", `ALTER TABLE users ADD COLUMN api_key_enc TEXT`},
+		{"users", "daily_token_limit", `ALTER TABLE users ADD COLUMN daily_token_limit INTEGER`},
+		{"users", "monthly_cost_limit", `ALTER TABLE users ADD COLUMN monthly_cost_limit INTEGER`},
 	}
 	cache := map[string]map[string]bool{}
 	for _, st := range steps {
@@ -268,6 +284,8 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_convos_project ON conversations(project_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_convos_user ON conversations(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)`,
+		// 2.11: range scans over assistant usage rows.
+		`CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)`,
 	} {
 		if _, err := s.db.Exec(idx); err != nil {
 			return err
@@ -337,17 +355,20 @@ func optInt(n sql.NullInt64) *int64 {
 
 // ---------- users ----------
 
-const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, created_at, updated_at"
+const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, daily_token_limit, monthly_cost_limit, created_at, updated_at"
 
 func scanUser(sc scanner) (User, error) {
 	var u User
 	var admin int
 	var keyEnc sql.NullString
-	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	var daily, monthly sql.NullInt64
+	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &daily, &monthly, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return User{}, err
 	}
 	u.IsAdmin = admin != 0
 	u.APIKeyEnc = optString(keyEnc)
+	u.DailyTokenLimit = optInt(daily)
+	u.MonthlyCostLimit = optInt(monthly)
 	return u, nil
 }
 
@@ -355,8 +376,9 @@ func scanUser(sc scanner) (User, error) {
 // driver error (the caller maps it to 409).
 func (s *Store) InsertUser(ctx context.Context, u *User) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.ID, u.Username, u.Email, u.PasswordHash, boolToInt(u.IsAdmin), u.Status, nullString(u.APIKeyEnc), u.CreatedAt, u.UpdatedAt)
+		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, u.Username, u.Email, u.PasswordHash, boolToInt(u.IsAdmin), u.Status, nullString(u.APIKeyEnc),
+		nullInt(u.DailyTokenLimit), nullInt(u.MonthlyCostLimit), u.CreatedAt, u.UpdatedAt)
 	return err
 }
 
@@ -432,6 +454,15 @@ func (s *Store) SetUserStatus(ctx context.Context, id, status string, now int64)
 func (s *Store) SetUserAPIKey(ctx context.Context, id string, enc *string, now int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET api_key_enc = ?, updated_at = ? WHERE id = ?`, nullString(enc), now, id)
+	return err
+}
+
+// SetUserLimits stores (or clears, when nil) a user's per-user quota overrides
+// (2.11). A nil override inherits the global admin setting.
+func (s *Store) SetUserLimits(ctx context.Context, id string, daily, monthly *int64, now int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET daily_token_limit = ?, monthly_cost_limit = ?, updated_at = ? WHERE id = ?`,
+		nullInt(daily), nullInt(monthly), now, id)
 	return err
 }
 
@@ -611,16 +642,16 @@ func (s *Store) DeleteOlderThan(ctx context.Context, cutoff int64) (int64, error
 
 const messageCols = "id, conversation_id, role, content, reasoning, model, " +
 	"prompt_tokens, completion_tokens, cached_tokens, cost_micros, " +
-	"reasoning_tokens, duration_ms, attachments, created_at"
+	"reasoning_tokens, duration_ms, attachments, tools, created_at"
 
 func scanMessage(sc scanner) (Message, error) {
 	var m Message
-	var reasoning, model, attachments sql.NullString
+	var reasoning, model, attachments, tools sql.NullString
 	var promptTokens, completionTokens, cachedTokens, costMicros sql.NullInt64
 	var reasoningTokens, durationMs sql.NullInt64
 	err := sc.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content,
 		&reasoning, &model, &promptTokens, &completionTokens, &cachedTokens,
-		&costMicros, &reasoningTokens, &durationMs, &attachments, &m.CreatedAt)
+		&costMicros, &reasoningTokens, &durationMs, &attachments, &tools, &m.CreatedAt)
 	if err != nil {
 		return Message{}, err
 	}
@@ -636,12 +667,16 @@ func scanMessage(sc scanner) (Message, error) {
 		// A malformed value must not fail the whole history load; drop it.
 		_ = json.Unmarshal([]byte(attachments.String), &m.Attachments)
 	}
+	if tools.Valid && tools.String != "" {
+		// Same contract as attachments: malformed JSON is dropped, not fatal.
+		_ = json.Unmarshal([]byte(tools.String), &m.Tools)
+	}
 	return m, nil
 }
 
 // InsertMessage inserts a new message row.
 func (s *Store) InsertMessage(ctx context.Context, m *Message) error {
-	var attachments any
+	var attachments, tools any
 	if len(m.Attachments) > 0 {
 		b, err := json.Marshal(m.Attachments)
 		if err != nil {
@@ -649,12 +684,19 @@ func (s *Store) InsertMessage(ctx context.Context, m *Message) error {
 		}
 		attachments = string(b)
 	}
+	if len(m.Tools) > 0 {
+		b, err := json.Marshal(m.Tools)
+		if err != nil {
+			return err
+		}
+		tools = string(b)
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ConversationID, m.Role, m.Content, nullString(m.Reasoning),
 		nullString(m.Model), nullInt(m.PromptTokens), nullInt(m.CompletionTokens),
 		nullInt(m.CachedTokens), nullInt(m.CostMicros), nullInt(m.ReasoningTokens),
-		nullInt(m.DurationMs), attachments, m.CreatedAt)
+		nullInt(m.DurationMs), attachments, tools, m.CreatedAt)
 	return err
 }
 
@@ -1057,4 +1099,135 @@ func (s *Store) DeleteAttachmentsOlderThan(ctx context.Context, cutoff int64) (i
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// ---------- usage (2.11) ----------
+
+// UsageTotals aggregates token and cost counters over assistant messages.
+type UsageTotals struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	CachedTokens     int64 `json:"cached_tokens"`
+	ReasoningTokens  int64 `json:"reasoning_tokens"`
+	CostMicros       int64 `json:"cost_micros"`
+	Messages         int64 `json:"messages"`
+}
+
+// UsageRow is one by-day or by-model bucket. Exactly one of Day/Model is set.
+type UsageRow struct {
+	Day   string `json:"day,omitempty"`
+	Model string `json:"model,omitempty"`
+	UsageTotals
+}
+
+// UserUsage is one user's totals for the admin view.
+type UserUsage struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	UsageTotals
+}
+
+// usageSumCols is the shared aggregate projection over an aliased `messages m`.
+const usageSumCols = `COALESCE(SUM(m.prompt_tokens),0), COALESCE(SUM(m.completion_tokens),0), ` +
+	`COALESCE(SUM(m.cached_tokens),0), COALESCE(SUM(m.reasoning_tokens),0), ` +
+	`COALESCE(SUM(m.cost_micros),0), COUNT(1)`
+
+// usageScope is the shared WHERE clause: assistant rows of the owner's
+// conversations, optionally restricted to created_at >= cutoff (0 = all time).
+const usageScope = `m.role = 'assistant' AND (? = 0 OR m.created_at >= ?)`
+
+// UserUsageTotals sums one user's assistant usage since cutoff (unix ms; 0 =
+// all time).
+func (s *Store) UserUsageTotals(ctx context.Context, userID string, cutoff int64) (UsageTotals, error) {
+	var t UsageTotals
+	err := s.db.QueryRowContext(ctx,
+		`SELECT `+usageSumCols+`
+		   FROM messages m JOIN conversations c ON c.id = m.conversation_id
+		  WHERE c.user_id = ? AND `+usageScope,
+		userID, cutoff, cutoff).Scan(
+		&t.PromptTokens, &t.CompletionTokens, &t.CachedTokens,
+		&t.ReasoningTokens, &t.CostMicros, &t.Messages)
+	if err != nil {
+		return UsageTotals{}, err
+	}
+	return t, nil
+}
+
+// UserUsageByDay buckets one user's assistant usage by UTC calendar day,
+// oldest first.
+func (s *Store) UserUsageByDay(ctx context.Context, userID string, cutoff int64) ([]UsageRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT strftime('%Y-%m-%d', m.created_at/1000, 'unixepoch') AS day, `+usageSumCols+`
+		   FROM messages m JOIN conversations c ON c.id = m.conversation_id
+		  WHERE c.user_id = ? AND `+usageScope+`
+		  GROUP BY day ORDER BY day ASC`,
+		userID, cutoff, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]UsageRow, 0)
+	for rows.Next() {
+		var r UsageRow
+		if err := rows.Scan(&r.Day, &r.PromptTokens, &r.CompletionTokens,
+			&r.CachedTokens, &r.ReasoningTokens, &r.CostMicros, &r.Messages); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// UserUsageByModel buckets one user's assistant usage by model, descending by
+// cost then tokens.
+func (s *Store) UserUsageByModel(ctx context.Context, userID string, cutoff int64) ([]UsageRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT COALESCE(m.model,'') AS model, `+usageSumCols+`
+		   FROM messages m JOIN conversations c ON c.id = m.conversation_id
+		  WHERE c.user_id = ? AND `+usageScope+`
+		  GROUP BY m.model
+		  ORDER BY SUM(COALESCE(m.cost_micros,0)) DESC, SUM(COALESCE(m.prompt_tokens,0)+COALESCE(m.completion_tokens,0)) DESC`,
+		userID, cutoff, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]UsageRow, 0)
+	for rows.Next() {
+		var r UsageRow
+		if err := rows.Scan(&r.Model, &r.PromptTokens, &r.CompletionTokens,
+			&r.CachedTokens, &r.ReasoningTokens, &r.CostMicros, &r.Messages); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// AllUsersUsage sums every user's assistant usage since cutoff (unix ms; 0 =
+// all time) for the admin view.
+func (s *Store) AllUsersUsage(ctx context.Context, cutoff int64) ([]UserUsage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT c.user_id, COALESCE(u.username,''), `+usageSumCols+`
+		   FROM messages m
+		   JOIN conversations c ON c.id = m.conversation_id
+		   LEFT JOIN users u ON u.id = c.user_id
+		  WHERE `+usageScope+`
+		  GROUP BY c.user_id ORDER BY u.username ASC`,
+		cutoff, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]UserUsage, 0)
+	for rows.Next() {
+		var u UserUsage
+		if err := rows.Scan(&u.UserID, &u.Username, &u.PromptTokens,
+			&u.CompletionTokens, &u.CachedTokens, &u.ReasoningTokens,
+			&u.CostMicros, &u.Messages); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }
