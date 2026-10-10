@@ -73,7 +73,7 @@ key when sharing is allowed.
 - UI: Settings → **OpenCode Go key** (status, add/replace/remove, which key is
   in use); admin toggle "share the server key with users".
 
-### 2.2 Groups & shared keys — ✅ done (merged, pending deploy)
+### 2.2 Groups & shared keys — ✅ done (deployed)
 
 - `groups(id, name, owner_id, share_key, created_at)` +
   `group_members(group_id, user_id, role)`.
@@ -81,7 +81,7 @@ key when sharing is allowed.
   sharing) → server key → error. Owner/admin manages members.
 - UI: group switcher, member management, "use my key for this group" toggle.
 
-### 2.3 Files & PDF attachments — ✅ done (merged, pending deploy)
+### 2.3 Files & PDF attachments — ✅ done (deployed)
 
 - Attach files to a message; extract text and fold into the prompt with a token
   budget.
@@ -91,7 +91,7 @@ key when sharing is allowed.
 - Limits: per-file size, total attachment size, and a clear token-budget
   indicator.
 
-### 2.4 Tools: web search (+ extensible tool loop) — ✅ done (merged, pending deploy)
+### 2.4 Tools: web search (+ extensible tool loop) — ✅ done (deployed)
 
 - Requires an **agentic tool-calling loop**: model requests a tool → we execute
   → feed results back → repeat (bounded iterations). Chat dialect uses `tools`
@@ -105,7 +105,7 @@ key when sharing is allowed.
   (Brave key settable from the admin UI, encrypted at rest).
 - Later tools reuse the same loop (calculator, fetch-url, python via 2.6).
 
-### 2.5 OCR for images — ✅ done (branch `feat/ocr`, pending merge)
+### 2.5 OCR for images — ✅ done (deployed)
 
 - Extract text from images → context. Depends on the file pipeline (2.3).
 - Runs **Tesseract in an ephemeral, hardened Docker container** (stdin→stdout),
@@ -130,13 +130,13 @@ key when sharing is allowed.
   2.4 tool loop and the `internal/sandbox` runner. Files do not persist between
   calls. See `docs/2.6-2.7-sandbox.md`.
 
-### 2.8 URL summarization + Linkwarden integration — ✅ done (merged, pending deploy)
+### 2.8 URL summarization + Linkwarden integration — ✅ done (deployed)
 - **Summarize a URL**: fetch → extract readable text → summarize (a `fetch_url`
   tool in the 2.4 loop).
 - **Linkwarden**: connect to the owner's instance (URL + token in settings) to
   search saved links and save new ones directly from a chat.
 
-### 2.9 Full settings page (not a popup) — ✅ done (merged, pending deploy)
+### 2.9 Full settings page (not a popup) — ✅ done (deployed)
 - Settings is now a dedicated, mobile-first **page** at the hash route
   `#/settings` (vanilla JS, no build step) with sections: **Account**,
   **Appearance**, **OpenCode Go key**, **Groups**, **Integrations** (admin),
@@ -144,14 +144,21 @@ key when sharing is allowed.
   navigates to the route and the in-page back button / browser (Android) back
   button return to the previous view. See `docs/2.9-settings-page.md`.
 
-### Cross-cutting decisions to settle
+> **Status: Phase 2 is complete and deployed** (`https://chat.example.com`).
+> Host provisioning done on the Pi: `deploy/sandbox-setup.sh` (network +
+> `bash:5.3`/`python:3.14-slim`) and `deploy/ocr-setup.sh` (`myogchat-ocr`).
+> Optional hardening still pending owner action:
+> `sudo deploy/sandbox-setup.sh --harden` (blocks sandbox LAN egress).
 
-- **Dependency policy:** 2.3 (PDF) and 2.5 (OCR) likely need either a new Go
-  dependency or an external binary on the Pi — decide per item.
-- **Usage accounting:** per-user token/cost tracking would help quota fairness
-  once keys are shared (natural follow-on to 2.1/2.2).
-- **Secrets at rest:** 2.1 introduces encrypted key storage — reuse that pattern
-  for Linkwarden tokens etc.
+### Cross-cutting decisions (settled)
+
+- **Dependency policy:** PDF uses pure-Go `github.com/ledongthuc/pdf`; OCR and the
+  code sandbox run **Docker** containers on the Pi (no new Go deps, no host
+  binaries). See `docs/2.5-ocr.md`, `docs/2.6-2.7-sandbox.md`.
+- **Secrets at rest:** encrypted with `internal/secret` (per-user keys, group
+  keys, Linkwarden token, Brave key).
+- **Usage accounting:** still open — per-user token/cost tracking for quota
+  fairness once keys are shared (natural follow-on to 2.1/2.2).
 
 ## Parallelization plan (git worktrees)
 
@@ -160,8 +167,9 @@ merges sequentially and resolves the small additive conflicts in shared files
 (`internal/server/server.go` routes, `internal/store/store.go` schema,
 `static/app.js`).
 
-- **Batch 1 (parallel):** 2.2 Groups · 2.3 Files/PDF · 2.4+2.8 Tools & web/URL/Linkwarden
-- **Batch 2 (after 2.4):** 2.7 Bash sandbox · 2.6 Python sandbox · 2.9 Settings page
+- **Batch 1 (parallel, done):** 2.2 Groups · 2.3 Files/PDF · 2.4+2.8 Tools & web/URL/Linkwarden
+- **Batch 2 (parallel, done):** 2.6 Python sandbox · 2.7 Bash sandbox · 2.5 OCR · 2.9 Settings page
+  · multi-provider web search (2.4 extension)
 
 ---
 
