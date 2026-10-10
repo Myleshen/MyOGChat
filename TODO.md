@@ -249,10 +249,21 @@ merges sequentially and resolves the small additive conflicts in shared files
 - **Gate:** time one SD-Turbo 512² image; **< 15 s warm → proceed**.
 - **See `docs/SCOPING.md` §3.1 and `docs/research/3.1-imagegen-recheck.md`.**
 
-### 3.2 IMAP email
-- Read/search/send mail via **app-specific passwords** (Gmail/iCloud/**Zoho Pro
-  (India)**). Encrypted creds (`internal/secret`), TLS; a Settings section +
-  `email_*` tools (send gated). **Effort:** ~2–4 d. See `docs/SCOPING.md` §3.2.
+### 3.2 IMAP email — ✅ done (read-only)
+- **Read/search** mail via **app-specific passwords** (Gmail/iCloud/**Zoho Pro
+  (India)**), per-user encrypted creds (`internal/secret`), implicit TLS with
+  cert verification. Tools are only **`email_folders` / `email_search` /
+  `email_read`** — **no `email_send`, no SMTP client**.
+- **Read-only by construction** (layered): no write path; `EXAMINE`
+  (`SelectOptions{ReadOnly:true}`); `BODY.PEEK[]`; and a **transport command
+  allowlist** that rejects any command outside the read-only set (`UID` narrowed
+  to `FETCH`/`SEARCH`). See `docs/3.2-imap.md`.
+- `mail_accounts` table + per-user Settings section (provider preset, email, app
+  password, custom host/port, test/save/disconnect, tools toggle). Caps: 100 KB
+  body, 5 MB attachment (metadata only), 50 search results.
+- Files: `internal/mail/` (read-only client + allowlist), `internal/tools/email.go`,
+  `internal/server/email.go`, `internal/store` (schema + CRUD), `static/`
+  (`#email-section`), `docs/3.2-imap.md`, `API_CONTRACT.md` §11.
 
 ### 3.3 Calendar
 - **Apple/iCloud + Zoho → CalDAV** (read/write, app-specific password).

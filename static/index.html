@@ -377,6 +377,50 @@
         </form>
       </section>
 
+      <!-- ===== Email (read-only IMAP, feature 3.2) — self-contained; visible to all users ===== -->
+      <section id="email-section" class="settings-section settings-email">
+        <h2 class="settings-heading">Email (read-only)</h2>
+        <p class="settings-subtitle-sm">
+          Connect a mailbox with an app-specific password. The assistant can list
+          folders, search, and read mail — it can never send, delete, or modify it.
+        </p>
+        <p id="email-status" class="settings-subtitle-sm">Not connected.</p>
+        <form id="email-form" class="add-user-form" autocomplete="off">
+          <label class="field">
+            <span class="field-label">Provider</span>
+            <select id="email-provider"></select>
+          </label>
+          <label class="field">
+            <span class="field-label">Email address</span>
+            <input id="email-address" type="email" autocomplete="off" placeholder="you@example.com">
+          </label>
+          <label class="field" id="email-host-field" hidden>
+            <span class="field-label">IMAP host</span>
+            <input id="email-host" type="text" autocomplete="off" placeholder="imap.example.com">
+          </label>
+          <label class="field" id="email-port-field" hidden>
+            <span class="field-label">IMAP port</span>
+            <input id="email-port" type="number" min="1" max="65535" placeholder="993">
+          </label>
+          <label class="field">
+            <span class="field-label">App-specific password</span>
+            <input id="email-password" type="password" autocomplete="new-password"
+                   placeholder="App-specific password">
+          </label>
+          <p id="email-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="button" id="email-test" class="btn btn-ghost">Test connection</button>
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button type="button" id="email-disconnect" class="btn btn-ghost" hidden>Disconnect</button>
+          </div>
+        </form>
+        <label class="setting-toggle" id="email-enabled-row" hidden>
+          <span>Enable email tools (email_folders, email_search, email_read)</span>
+          <input type="checkbox" id="setting-email-enabled">
+        </label>
+      </section>
+      <!-- ===== end Email (feature 3.2) ===== -->
+
       <!-- ==== BEGIN code-sandbox tools section (2.6/2.7) — self-contained, safe to relocate ==== -->
       <!-- Admin only. Toggles the ephemeral Docker code sandbox (run_bash/run_python). -->
       <section id="tools-section" class="settings-section settings-tools" hidden>

@@ -95,6 +95,18 @@ CREATE TABLE IF NOT EXISTS group_members (
 CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(owner_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id);
+CREATE TABLE IF NOT EXISTS mail_accounts (
+  user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  provider   TEXT NOT NULL,
+  email      TEXT NOT NULL,
+  imap_host  TEXT NOT NULL,
+  imap_port  INTEGER NOT NULL,
+  imap_tls   TEXT NOT NULL DEFAULT 'implicit',
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  secret_enc TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `
 
 // User mirrors a row of the users table (§9.1).
@@ -165,6 +177,22 @@ type Attachment struct {
 
 // Chars reports the number of characters in the extracted text (rune count).
 func (a Attachment) Chars() int { return len([]rune(a.Text)) }
+
+// MailAccount mirrors a row of the mail_accounts table (feature 3.2). It stores
+// exactly one mailbox per user. SecretEnc is the AES-256-GCM encrypted JSON blob
+// holding the app-specific password; it is never returned to the SPA.
+type MailAccount struct {
+	UserID    string `json:"-"`
+	Provider  string `json:"provider"`
+	Email     string `json:"email"`
+	Host      string `json:"imap_host"`
+	Port      int    `json:"imap_port"`
+	TLS       string `json:"imap_tls"`
+	Enabled   bool   `json:"enabled"`
+	SecretEnc string `json:"-"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
 
 // Project mirrors a row of the projects table (§8.2).
 type Project struct {
@@ -1057,4 +1085,59 @@ func (s *Store) DeleteAttachmentsOlderThan(ctx context.Context, cutoff int64) (i
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// ---------- mail accounts (feature 3.2) ----------
+
+const mailAccountCols = "user_id, provider, email, imap_host, imap_port, imap_tls, enabled, secret_enc, created_at, updated_at"
+
+func scanMailAccount(sc scanner) (MailAccount, error) {
+	var a MailAccount
+	var enabled int
+	if err := sc.Scan(&a.UserID, &a.Provider, &a.Email, &a.Host, &a.Port, &a.TLS, &enabled, &a.SecretEnc, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		return MailAccount{}, err
+	}
+	a.Enabled = enabled != 0
+	return a, nil
+}
+
+// GetMailAccount loads a user's connected mailbox, else ErrNotFound.
+func (s *Store) GetMailAccount(ctx context.Context, userID string) (MailAccount, error) {
+	a, err := scanMailAccount(s.db.QueryRowContext(ctx,
+		`SELECT `+mailAccountCols+` FROM mail_accounts WHERE user_id = ?`, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return MailAccount{}, ErrNotFound
+	}
+	return a, err
+}
+
+// SetMailAccount inserts or replaces a user's mailbox (one per user).
+func (s *Store) SetMailAccount(ctx context.Context, a *MailAccount) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO mail_accounts (`+mailAccountCols+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+		   provider = excluded.provider,
+		   email = excluded.email,
+		   imap_host = excluded.imap_host,
+		   imap_port = excluded.imap_port,
+		   imap_tls = excluded.imap_tls,
+		   enabled = excluded.enabled,
+		   secret_enc = excluded.secret_enc,
+		   updated_at = excluded.updated_at`,
+		a.UserID, a.Provider, a.Email, a.Host, a.Port, a.TLS, boolToInt(a.Enabled), a.SecretEnc, a.CreatedAt, a.UpdatedAt)
+	return err
+}
+
+// SetMailAccountEnabled flips the per-user email-tools toggle.
+func (s *Store) SetMailAccountEnabled(ctx context.Context, userID string, enabled bool, now int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE mail_accounts SET enabled = ?, updated_at = ? WHERE user_id = ?`, boolToInt(enabled), now, userID)
+	return err
+}
+
+// DeleteMailAccount disconnects (and deletes the credential of) a user's mailbox.
+func (s *Store) DeleteMailAccount(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM mail_accounts WHERE user_id = ?`, userID)
+	return err
 }

@@ -415,3 +415,55 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Errorf("EnsureSetting after update = %q, want 0", v)
 	}
 }
+
+// TestMailAccountRoundTrip covers the per-user mailbox (feature 3.2): connect,
+// read back, toggle, disconnect, and the ErrNotFound path.
+func TestMailAccountRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	u := seedUser(t, s, "u-mail", "mailer", false)
+
+	if _, err := s.GetMailAccount(ctx, u.ID); err != ErrNotFound {
+		t.Fatalf("GetMailAccount before connect = %v, want ErrNotFound", err)
+	}
+
+	acct := &MailAccount{
+		UserID: u.ID, Provider: "gmail", Email: "mailer@gmail.com",
+		Host: "imap.gmail.com", Port: 993, TLS: "implicit", Enabled: true,
+		SecretEnc: "ciphertext", CreatedAt: 10, UpdatedAt: 10,
+	}
+	if err := s.SetMailAccount(ctx, acct); err != nil {
+		t.Fatalf("SetMailAccount: %v", err)
+	}
+	got, err := s.GetMailAccount(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("GetMailAccount: %v", err)
+	}
+	if got.Provider != "gmail" || got.Email != "mailer@gmail.com" || got.Host != "imap.gmail.com" || !got.Enabled || got.SecretEnc != "ciphertext" {
+		t.Fatalf("mail account = %+v", got)
+	}
+
+	if err := s.SetMailAccountEnabled(ctx, u.ID, false, 20); err != nil {
+		t.Fatalf("SetMailAccountEnabled: %v", err)
+	}
+	if got, _ := s.GetMailAccount(ctx, u.ID); got.Enabled {
+		t.Error("enabled = true after disabling")
+	}
+
+	// Upsert replaces the credential.
+	acct.SecretEnc = "new-ciphertext"
+	acct.UpdatedAt = 30
+	if err := s.SetMailAccount(ctx, acct); err != nil {
+		t.Fatalf("SetMailAccount (upsert): %v", err)
+	}
+	if got, _ := s.GetMailAccount(ctx, u.ID); got.SecretEnc != "new-ciphertext" {
+		t.Errorf("SecretEnc = %q after upsert", got.SecretEnc)
+	}
+
+	if err := s.DeleteMailAccount(ctx, u.ID); err != nil {
+		t.Fatalf("DeleteMailAccount: %v", err)
+	}
+	if _, err := s.GetMailAccount(ctx, u.ID); err != ErrNotFound {
+		t.Fatalf("GetMailAccount after delete = %v, want ErrNotFound", err)
+	}
+}

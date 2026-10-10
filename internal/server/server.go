@@ -87,6 +87,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/attachments/{id}", s.handleGetAttachment)
 	mux.HandleFunc("DELETE /api/attachments/{id}", s.handleDeleteAttachment)
 
+	// Read-only email mailbox (per-user, feature 3.2).
+	mux.HandleFunc("GET /api/me/mail", s.handleGetMyMail)
+	mux.HandleFunc("PUT /api/me/mail", s.handlePutMyMail)
+	mux.HandleFunc("PATCH /api/me/mail", s.handlePatchMyMail)
+	mux.HandleFunc("DELETE /api/me/mail", s.handleDeleteMyMail)
+	mux.HandleFunc("POST /api/me/mail/test", s.handleTestMyMail)
+
 	// Admin: users and settings (§9.4).
 	mux.HandleFunc("GET /api/users", s.handleListUsers)
 	mux.HandleFunc("POST /api/users", s.handleCreateUser)

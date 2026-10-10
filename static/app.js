@@ -133,6 +133,23 @@ const ocrSection = document.getElementById("ocr-section");
 const settingOcrEnabled = document.getElementById("setting-ocr-enabled");
 const ocrStatus = document.getElementById("ocr-status");
 
+/* ==== BEGIN email (read-only IMAP, feature 3.2) — self-contained, safe to relocate ==== */
+const emailForm = document.getElementById("email-form");
+const emailProvider = document.getElementById("email-provider");
+const emailAddress = document.getElementById("email-address");
+const emailHostField = document.getElementById("email-host-field");
+const emailHost = document.getElementById("email-host");
+const emailPortField = document.getElementById("email-port-field");
+const emailPort = document.getElementById("email-port");
+const emailPassword = document.getElementById("email-password");
+const emailStatus = document.getElementById("email-status");
+const emailError = document.getElementById("email-error");
+const emailTest = document.getElementById("email-test");
+const emailDisconnect = document.getElementById("email-disconnect");
+const emailEnabledRow = document.getElementById("email-enabled-row");
+const settingEmailEnabled = document.getElementById("setting-email-enabled");
+/* ==== END email ==== */
+
 const projectModal = document.getElementById("project-modal");
 const projectForm = document.getElementById("project-form");
 const projectModalTitle = document.getElementById("project-modal-title");
@@ -159,6 +176,7 @@ const state = {
   streaming: false,
   abort: null,             // AbortController while streaming
   pendingAttachments: [],  // uploaded files awaiting send: {id,name,mime,size,chars,uploading?}
+  mail: { connected: false, enabled: false, presets: [] }, // GET /api/me/mail (feature 3.2)
 };
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -715,6 +733,7 @@ function showSettingsPage() {
   if (body) body.scrollTop = 0;
   loadKeyStatus().catch(() => {});
   loadGroups().catch(() => {});
+  loadMail().catch(() => {}); /* email (feature 3.2) — per-user, all users */
   if (isAdmin) {
     loadUsers().catch(() => {});
     loadSettingsInfo(false).catch(() => {});
@@ -1090,6 +1109,176 @@ async function saveOcrEnabled() {
     toast(isForbidden(err) ? "Admin access required" : err.message);
   }
 }
+
+/* ==== BEGIN email (read-only IMAP, feature 3.2) — self-contained, safe to relocate ==== */
+/* Load the caller's mailbox status (per-user, not admin-gated). */
+async function loadMail() {
+  try {
+    const m = await api("/api/me/mail");
+    state.mail = m || { connected: false, enabled: false, presets: [] };
+    applyMailStatus();
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (!isForbidden(err)) toast(err.message);
+  }
+}
+
+function populateEmailProviders(presets) {
+  if (!emailProvider) return;
+  const list = Array.isArray(presets) && presets.length ? presets : state.mail.presets || [];
+  // Rebuild only when the option set changes, so the current selection is kept.
+  if (emailProvider.options.length === list.length) return;
+  const current = emailProvider.value;
+  emailProvider.innerHTML = "";
+  list.forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name || p.id;
+    opt.dataset.host = p.host || "";
+    opt.dataset.port = p.port ? String(p.port) : "";
+    emailProvider.appendChild(opt);
+  });
+  if (current) emailProvider.value = current;
+}
+
+function providerLabel(id) {
+  const opt = emailProvider
+    ? Array.from(emailProvider.options).find((o) => o.value === id)
+    : null;
+  return opt ? opt.textContent : id || "";
+}
+
+function updateEmailCustomFields() {
+  const custom = emailProvider && emailProvider.value === "custom";
+  if (emailHostField) emailHostField.hidden = !custom;
+  if (emailPortField) emailPortField.hidden = !custom;
+}
+
+function applyMailStatus() {
+  const m = state.mail || {};
+  populateEmailProviders(m.presets);
+  if (m.connected) {
+    const label = providerLabel(m.provider);
+    emailStatus.textContent =
+      "Connected: " + (m.email || "") + (label ? " (" + label + ")" : "") +
+      " · " + (m.enabled ? "tools on" : "tools off") + ".";
+    emailAddress.value = m.email || "";
+    if (m.provider) emailProvider.value = m.provider;
+    if (emailHost) emailHost.value = m.imap_host || "";
+    if (emailPort) emailPort.value = m.imap_port ? String(m.imap_port) : "";
+    emailPassword.value = "";
+    emailDisconnect.hidden = false;
+    emailEnabledRow.hidden = false;
+    settingEmailEnabled.checked = m.enabled !== false;
+  } else {
+    emailStatus.textContent = "Not connected.";
+    emailDisconnect.hidden = true;
+    emailEnabledRow.hidden = true;
+  }
+  updateEmailCustomFields();
+}
+
+function emailPayload() {
+  return {
+    provider: emailProvider ? emailProvider.value : "custom",
+    email: emailAddress ? emailAddress.value.trim() : "",
+    password: emailPassword ? emailPassword.value : "",
+    imap_host: emailHost ? emailHost.value.trim() : "",
+    imap_port: emailPort && emailPort.value ? parseInt(emailPort.value, 10) : 0,
+  };
+}
+
+async function saveMail(e) {
+  if (e) e.preventDefault();
+  setFormError(emailError, "");
+  const payload = emailPayload();
+  if (!payload.email) {
+    setFormError(emailError, "Enter the mailbox email address.");
+    return;
+  }
+  if (!payload.password) {
+    setFormError(emailError, "Enter the app-specific password.");
+    return;
+  }
+  const btn = emailForm.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  btn.textContent = "Testing…";
+  try {
+    const m = await api("/api/me/mail", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(payload),
+    });
+    state.mail = m;
+    applyMailStatus();
+    toast("Mailbox connected");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    setFormError(emailError, err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Save";
+  }
+}
+
+async function testMail() {
+  setFormError(emailError, "");
+  const payload = emailPayload();
+  if (!payload.email || !payload.password) {
+    setFormError(emailError, "Enter the email address and app-specific password.");
+    return;
+  }
+  emailTest.disabled = true;
+  emailTest.textContent = "Testing…";
+  try {
+    await api("/api/me/mail/test", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(payload),
+    });
+    toast("Connection OK");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    setFormError(emailError, err.message);
+  } finally {
+    emailTest.disabled = false;
+    emailTest.textContent = "Test connection";
+  }
+}
+
+async function disconnectMail() {
+  if (!confirm("Disconnect this mailbox and delete its stored password?")) return;
+  setFormError(emailError, "");
+  try {
+    await api("/api/me/mail", { method: "DELETE" });
+    state.mail = { connected: false, enabled: false, presets: state.mail.presets };
+    emailForm.reset();
+    applyMailStatus();
+    toast("Mailbox disconnected");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(isForbidden(err) ? "Not allowed" : err.message);
+  }
+}
+
+async function toggleEmailEnabled() {
+  const value = settingEmailEnabled.checked;
+  try {
+    const m = await api("/api/me/mail", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ enabled: value }),
+    });
+    state.mail = m;
+    applyMailStatus();
+    toast(value ? "Email tools enabled" : "Email tools disabled");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    settingEmailEnabled.checked = !value;
+    toast(isForbidden(err) ? "Not allowed" : err.message);
+  }
+}
+/* ==== END email ==== */
 
 async function saveLinkwarden(e) {
   if (e) e.preventDefault();
@@ -3094,6 +3283,14 @@ function wireEvents() {
 
   /* Image OCR toggle (admin, feature 2.5). */
   settingOcrEnabled.addEventListener("change", saveOcrEnabled);
+
+  /* ==== BEGIN email (read-only IMAP, feature 3.2) — self-contained, safe to relocate ==== */
+  if (emailProvider) emailProvider.addEventListener("change", updateEmailCustomFields);
+  if (emailForm) emailForm.addEventListener("submit", saveMail);
+  if (emailTest) emailTest.addEventListener("click", testMail);
+  if (emailDisconnect) emailDisconnect.addEventListener("click", disconnectMail);
+  if (settingEmailEnabled) settingEmailEnabled.addEventListener("change", toggleEmailEnabled);
+  /* ==== END email ==== */
 
   prefersLight.addEventListener("change", () => {
     if (settings.theme === "system") applyTheme();

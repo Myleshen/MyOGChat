@@ -185,7 +185,7 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	}
 	// Build the per-request tool set (Phase 2.4). An empty registry disables
 	// tool calling but still runs the same agentic code path.
-	reg := s.toolRegistry(ctx)
+	reg := s.toolRegistry(ctx, userID)
 	events := s.up.StreamAgent(ctx, upstream.Params{
 		Dialect:      m.Dialect,
 		Model:        conv.Model,
