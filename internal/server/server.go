@@ -18,6 +18,7 @@ import (
 	"myogchat/internal/models"
 	"myogchat/internal/ocr"
 	"myogchat/internal/sandbox"
+	"myogchat/internal/speech"
 	"myogchat/internal/store"
 	"myogchat/internal/upstream"
 )
@@ -41,6 +42,14 @@ type Server struct {
 	// whether a vision model was built.
 	ocrEngineName      string
 	ocrVisionAvailable bool
+
+	// Speech (features 3.5 / 3.6). speechCfg holds env defaults; DB settings
+	// override the URL/voice. newSTT/newTTS build an engine per request (so an
+	// admin can repoint the services without a restart) and are injectable for
+	// tests.
+	speechCfg SpeechDefaults
+	newSTT    func(speech.STTConfig) speech.Transcriber
+	newTTS    func(speech.TTSConfig) speech.Synthesizer
 }
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
@@ -49,9 +58,23 @@ type Server struct {
 // holds the env-derived maps defaults (3.4); sbx runs the code sandbox tools
 // (nil when the sandbox is disabled by env); ocrEngine enables image OCR and may
 // be nil; ocrEngineName is the configured OCR engine mode and ocrVisionAvailable
-// reports whether vision OCR is usable.
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool) *Server {
-	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, search: search, geo: geo, sbx: sbx, ocrEngine: ocrEngine, ocrEngineName: ocrEngineName, ocrVisionAvailable: ocrVisionAvailable}
+// reports whether vision OCR is usable; speechDefaults configures the speech
+// engines (features 3.5 / 3.6).
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool, speechDefaults SpeechDefaults) *Server {
+	s := &Server{
+		st: st, up: up, auth: a, static: staticFS, log: log,
+		encKey: encKey, serverKey: serverKey, search: search, geo: geo, sbx: sbx,
+		ocrEngine: ocrEngine, ocrEngineName: ocrEngineName, ocrVisionAvailable: ocrVisionAvailable,
+		speechCfg: speechDefaults,
+	}
+	// Build engines per request so DB URL/voice overrides take effect live.
+	s.newSTT = func(cfg speech.STTConfig) speech.Transcriber { return speech.NewOpenAISTT(cfg) }
+	if speechDefaults.TTSFormat == "piper" {
+		s.newTTS = func(cfg speech.TTSConfig) speech.Synthesizer { return speech.NewPiperTTS(cfg) }
+	} else {
+		s.newTTS = func(cfg speech.TTSConfig) speech.Synthesizer { return speech.NewOpenAITTS(cfg) }
+	}
+	return s
 }
 
 // Handler returns the root handler: routes + auth + request logging.
@@ -104,6 +127,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/attachments", s.handleUploadAttachment)
 	mux.HandleFunc("GET /api/attachments/{id}", s.handleGetAttachment)
 	mux.HandleFunc("DELETE /api/attachments/{id}", s.handleDeleteAttachment)
+
+	// Speech: STT/TTS (features 3.5 / 3.6, per-user).
+	mux.HandleFunc("POST /api/stt", s.handleSTT)
+	mux.HandleFunc("POST /api/tts", s.handleTTS)
+	mux.HandleFunc("GET /api/speech/status", s.handleSpeechStatus)
 
 	// Admin: users and settings (§9.4).
 	mux.HandleFunc("GET /api/users", s.handleListUsers)

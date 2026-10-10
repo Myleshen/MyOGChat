@@ -46,10 +46,11 @@ internal/
   sandbox/    hardened ephemeral Docker code sandbox runner (2.6/2.7)
   extract/    text + PDF extraction for attachments (images → injected OCR)
   ocr/        image OCR via Docker Tesseract (feature 2.5)
+  speech/     STT (whisper.cpp) + TTS (Piper) via persistent HTTP services (3.5/3.6)
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
 deploy/       systemd unit + deploy.sh + sandbox-setup.sh + ocr-setup.sh + ocr/ (Dockerfile) + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.13-vision-ocr.md
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.13-vision-ocr.md, 3.4-maps.md, 3.5-3.6-speech.md
 ```
 
 ## Docs index
@@ -61,7 +62,7 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2
 - `README.md` — user-facing overview
 - `docs/` — `2.2-groups.md`, `2.3-attachments.md`, `2.4-tools.md`,
   `2.4-search-providers.md`, `2.8-linkwarden.md`, `2.10-2.11-tool-activity-usage.md`,
-  `2.13-vision-ocr.md`, `3.4-maps.md`
+  `2.13-vision-ocr.md`, `3.4-maps.md`, `3.5-3.6-speech.md`
 
 ## Conventions & hard constraints
 

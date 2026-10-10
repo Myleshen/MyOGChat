@@ -545,9 +545,11 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "ocr_engine": "tesseract"|"vision"|"auto"|"none", "ocr_vision_available": bool,
    "daily_token_limit": int, "monthly_cost_limit": int,
    "maps_provider": "osm"|"auto", "maps_region": string,
-   "maps_units": "metric"|"imperial", "maps_active": "osm"}`
+   "maps_units": "metric"|"imperial", "maps_active": "osm",
+   "stt_enabled": bool, "stt_available": bool, "stt_url": string,
+   "tts_enabled": bool, "tts_available": bool, "tts_url": string, "tts_voice": string}`
   (`share_server_key` §2.1; tools/Linkwarden §2.4/2.8; search §8.9; sandbox §10;
-   OCR §8.10; quotas §11; maps §12)
+   OCR §8.10; quotas §11; maps §12; calendar §13; speech §14)
 - `PATCH /api/settings` accepts any subset of
   `{"allow_registration"?: bool, "share_server_key"?: bool,
    "tools_enabled"?: bool, "linkwarden_url"?: string, "linkwarden_token"?: string,
@@ -555,7 +557,9 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "brave_mode"?: "web"|"context", "sandbox_enabled"?: bool, "ocr_enabled"?: bool,
    "daily_token_limit"?: int, "monthly_cost_limit"?: int,
    "maps_provider"?: "osm"|"auto", "maps_region"?: string,
-   "maps_units"?: "metric"|"imperial"}`
+   "maps_units"?: "metric"|"imperial",
+   "stt_enabled"?: bool, "tts_enabled"?: bool,
+   "stt_url"?: string, "tts_url"?: string, "tts_voice"?: string}`
   → `200` (same shape as GET). Unknown `search_provider` values normalize to
   `auto`; unknown `brave_mode` values normalize to `web`; `brave_key: ""` clears
   the stored (encrypted) key; omitted `linkwarden_token`/`brave_key` leave the
@@ -563,7 +567,9 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
   `maps_provider` values normalize to `auto` (which still resolves to OSM);
   `maps_units` normalizes to `metric`|`imperial`; `maps_region: ""` clears it.
   `serper_configured` in GET reflects only the server-wide `SERPER_API_KEY`; the
-  per-user key is exposed by `GET /api/me/serper` (§8.9).
+  per-user key is exposed by `GET /api/me/serper` (§8.9). An empty
+  `stt_url`/`tts_url`/`tts_voice` clears the override (falls back to the env
+  default).
 
 Non-admin callers of any of these get `403`.
 
@@ -784,3 +790,56 @@ returned to the client.
 Write tools return a clear read-only error on an ICS backend. Recurrence is
 expanded server-side on CalDAV (`<C:expand>`) and client-side for ICS feeds;
 v1 edits whole series only.
+
+## 14. Speech — STT (3.5) + TTS (3.6)
+
+Voice input and spoken replies, backed by **persistent HTTP services** (models
+stay warm) — **not** Ollama (LLMs + embeddings only). Full design:
+`docs/3.5-3.6-speech.md`. The Go client is **OpenAI-compatible** so a local
+`whisper-server`/Piper server, a Proxmox GPU shim, or the hosted OpenAI audio
+APIs are all drop-in.
+
+### 14.1 Endpoints (per-user, session required)
+
+- `POST /api/stt` — `multipart/form-data`, field **`audio`** (the generic `file`
+  field is also accepted) + optional `language`. Limits: 25 MB, non-empty.
+  `200 {"text":"…","duration_ms":N}`. `400` missing/empty audio or malformed;
+  `413` over 25 MB; `503` when STT is disabled/unconfigured or the service is
+  unreachable; `502` other engine failures.
+- `POST /api/tts` — JSON `{"text":"…","voice"?:"…"}` (an ignored `format` field
+  is accepted). `200` raw audio bytes (`Content-Type: audio/wav`,
+  `Cache-Control: no-store`). `400` empty text or > 4000 chars; `503`
+  disabled/unconfigured/unreachable; `502` other engine failures.
+- `GET /api/speech/status` — any signed-in user:
+  `{"stt_available": bool, "stt_enabled": bool, "tts_available": bool,
+   "tts_enabled": bool, "tts_voice": string}`. `stt_available`/`tts_available`
+  mean a service is **configured**; the `*_enabled` flags are the admin toggles.
+
+### 14.2 Settings
+
+`GET`/`PATCH /api/settings` gain (admin):
+`stt_enabled` (bool, default true), `tts_enabled` (bool, default true),
+`stt_available`/`tts_available` (read-only status), `stt_url` (string override),
+`tts_url` (string override), `tts_voice` (string override). Empty strings clear
+the override and fall back to the env default.
+
+### 14.3 Env config
+
+`MYOGCHAT_STT` (`auto`|`off`), `MYOGCHAT_STT_URL`
+(default `http://127.0.0.1:8080`), `MYOGCHAT_STT_MODEL` (default `base.en`),
+`MYOGCHAT_STT_LANGUAGE`, `MYOGCHAT_STT_TIMEOUT` (default `120s`),
+`MYOGCHAT_STT_KEY`; `MYOGCHAT_TTS` (`auto`|`off`), `MYOGCHAT_TTS_URL`
+(default `http://127.0.0.1:5000`), `MYOGCHAT_TTS_VOICE` (default
+`en_US-lessac-medium`), `MYOGCHAT_TTS_FORMAT` (`openai`|`piper`, default
+`openai`), `MYOGCHAT_TTS_MODEL` (default `tts-1`), `MYOGCHAT_TTS_TIMEOUT`
+(default `30s`), `MYOGCHAT_TTS_KEY`.
+
+### 14.4 Frontend
+
+- Composer **mic button** (`MediaRecorder` → `POST /api/stt`; transcript
+  appended, not clobbered; falls back to an `accept="audio/*"` file input).
+- **Speak button** on assistant messages (`POST /api/tts` → `new Audio(blob)`;
+  blob cached per message; toggles Speak/Stop; Web Speech API fallback when no
+  server TTS is configured).
+- **Settings → Voice** (admin): enable toggles, STT/TTS URLs, default voice,
+  status line.

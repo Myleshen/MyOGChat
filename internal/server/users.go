@@ -271,6 +271,12 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		MapsProvider *string `json:"maps_provider"`
 		MapsRegion   *string `json:"maps_region"`
 		MapsUnits    *string `json:"maps_units"`
+		// Speech (features 3.5 / 3.6).
+		STTEnabled *bool   `json:"stt_enabled"`
+		TTSEnabled *bool   `json:"tts_enabled"`
+		STTURL     *string `json:"stt_url"`
+		TTSURL     *string `json:"tts_url"`
+		TTSVoice   *string `json:"tts_voice"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -315,6 +321,38 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	if req.OCREnabled != nil {
 		if err := s.setOCREnabled(r.Context(), *req.OCREnabled); err != nil {
 			s.log.Error("set ocr_enabled", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	// Speech (features 3.5 / 3.6).
+	if req.STTEnabled != nil {
+		if err := s.setBoolSetting(r.Context(), settingSTTEnabled, *req.STTEnabled); err != nil {
+			s.log.Error("set stt_enabled", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.TTSEnabled != nil {
+		if err := s.setBoolSetting(r.Context(), settingTTSEnabled, *req.TTSEnabled); err != nil {
+			s.log.Error("set tts_enabled", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	for _, upd := range []struct {
+		val *string
+		key string
+	}{
+		{req.STTURL, settingSTTURL},
+		{req.TTSURL, settingTTSURL},
+		{req.TTSVoice, settingTTSVoice},
+	} {
+		if upd.val == nil {
+			continue
+		}
+		if err := s.st.SetSetting(r.Context(), upd.key, strings.TrimSpace(*upd.val)); err != nil {
+			s.log.Error("set "+upd.key, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
 		}
@@ -436,6 +474,10 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// Feature 3.4: maps (self-contained block).
 	for k, v := range s.mapsSettings(r.Context()) {
+		out[k] = v
+	}
+	// Features 3.5 / 3.6: speech (self-contained block).
+	for k, v := range s.speechSettings(r.Context()) {
 		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)

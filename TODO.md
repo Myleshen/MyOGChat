@@ -287,13 +287,16 @@ merges sequentially and resolves the small additive conflicts in shared files
   Photon/Overpass (places). Four `maps_*` tools reusing the 2.4 loop; global
   1 req/s limiter + a SQLite result cache (policy). See `docs/3.4-maps.md`.
 
-### 3.5 Speech-to-text (STT) — scoped (~2–3 d)
+### 3.5 Speech-to-text (STT) — ✅ done (implemented, pending deploy)
 - **Ollama does NOT serve STT** (LLMs + embeddings only). Pi default:
   **whisper.cpp `base.en`** (MIT, ~1.5–2× real-time, HTTP server). GPU option:
   faster-whisper `large-v3` int8. Design: `internal/speech` + `POST /api/stt` +
-  a PWA mic button. See `docs/SCOPING.md` §3.5 / `docs/research/3.5-3.6-tts-stt.md`.
+  a PWA mic button (`MediaRecorder`). Persistent HTTP service (not one-shot
+  Docker), OpenAI-compatible so a Proxmox shim is a drop-in.
+  See `docs/3.5-3.6-speech.md` / `docs/SCOPING.md` §3.5 /
+  `docs/research/3.5-3.6-tts-stt.md`.
 
-### 3.6 Text-to-speech (TTS) — scoped (~2–3 d)
+### 3.6 Text-to-speech (TTS) — ✅ done (implemented, pending deploy)
 - Pi default: **Piper** (real-time on the Pi; GPL-3.0 — note). GPU: Kokoro-82M
-  (Apache-2.0). Design: `POST /api/tts` + a speaker button; Web Speech API fallback.
-  See `docs/SCOPING.md` §3.6.
+  (Apache-2.0). Design: `internal/speech` + `POST /api/tts` + a speaker button;
+  Web Speech API fallback. See `docs/3.5-3.6-speech.md` / `docs/SCOPING.md` §3.6.
