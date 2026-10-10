@@ -69,10 +69,19 @@ self.addEventListener("fetch", (event) => {
   // API: network-only, never cached.
   if (url.pathname === "/api" || url.pathname.startsWith("/api/")) return;
 
-  // Navigations: serve the cached app shell, fall back to network.
+  // Navigations: network-first so a fresh index.html (with the current
+  // ?v=<hash> asset URLs) always wins; fall back to the cached shell offline.
   if (request.mode === "navigate") {
     event.respondWith(
-      caches.match("index.html").then((cached) => cached || fetch(request))
+      fetch(request)
+        .then((res) => {
+          if (res.ok) {
+            const clone = res.clone();
+            caches.open(CACHE).then((cache) => cache.put("index.html", clone));
+          }
+          return res;
+        })
+        .catch(() => caches.match("index.html"))
     );
     return;
   }
