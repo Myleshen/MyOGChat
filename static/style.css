@@ -718,6 +718,57 @@ button { font: inherit; }
 }
 .attach-btn:disabled { opacity: 0.5; cursor: default; }
 
+/* ===== Image generation (feature 3.1) — self-contained ===== */
+.image-btn {
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+.image-btn:disabled { opacity: 0.5; cursor: default; }
+.image-btn.active { color: var(--accent); border-color: var(--accent); }
+
+.image-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 8px;
+}
+.image-bar-icon { font-size: 1rem; }
+.image-prompt {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 14px;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  font: inherit;
+}
+.image-prompt:focus { outline: none; border-color: var(--accent); }
+.image-generate { flex-shrink: 0; }
+.image-cancel { flex-shrink: 0; border-radius: 50%; }
+
+/* Generated images rendered inside a message */
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0;
+}
+.msg-image {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  max-height: 420px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-overlay);
+}
+.image-generating {
+  color: var(--text-dim);
+  font-style: italic;
+}
+/* ===== end image generation ===== */
+
 /* "N file(s) attached" line inside a user message */
 .msg-attachments {
   margin-top: 6px;

@@ -30,20 +30,23 @@ type Server struct {
 	static fs.FS
 	log    *slog.Logger
 
-	encKey    []byte          // AES-256 key for per-user API keys (§2.1)
-	serverKey string          // optional shared OpenCode Go key (may be empty)
-	search    SearchDefaults  // env-derived web-search defaults (Phase 2.4)
-	sbx       *sandbox.Runner // code sandbox runner; nil when disabled (2.6/2.7)
-	ocrEngine ocr.Engine      // image OCR backend (feature 2.5); nil when disabled
+	encKey        []byte          // AES-256 key for per-user API keys (§2.1)
+	serverKey     string          // optional shared OpenCode Go key (may be empty)
+	search        SearchDefaults  // env-derived web-search defaults (Phase 2.4)
+	sbx           *sandbox.Runner // code sandbox runner; nil when disabled (2.6/2.7)
+	ocrEngine     ocr.Engine      // image OCR backend (feature 2.5); nil when disabled
+	imagegenURL   string          // env default ComfyUI URL (feature 3.1); may be empty
+	imagegenToken string          // env default image-gen bearer token; may be empty
 }
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
 // optional shared key (empty when the deployment is pure BYOK); search holds the
 // env-derived web-search defaults (keys, provider, result count, region); sbx
 // runs the code sandbox tools (nil when the sandbox is disabled by env);
-// ocrEngine enables image OCR and may be nil.
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine) *Server {
-	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, search: search, sbx: sbx, ocrEngine: ocrEngine}
+// ocrEngine enables image OCR and may be nil; imagegenURL/imagegenToken are the
+// env defaults for self-hosted image generation (both may be empty).
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, imagegenURL, imagegenToken string) *Server {
+	return &Server{st: st, up: up, auth: a, static: staticFS, log: log, encKey: encKey, serverKey: serverKey, search: search, sbx: sbx, ocrEngine: ocrEngine, imagegenURL: imagegenURL, imagegenToken: imagegenToken}
 }
 
 // Handler returns the root handler: routes + auth + request logging.
@@ -86,6 +89,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/attachments", s.handleUploadAttachment)
 	mux.HandleFunc("GET /api/attachments/{id}", s.handleGetAttachment)
 	mux.HandleFunc("DELETE /api/attachments/{id}", s.handleDeleteAttachment)
+
+	// Image generation (per-user, 3.1).
+	mux.HandleFunc("POST /api/images", s.handleCreateImage)
+	mux.HandleFunc("GET /api/images/{id}", s.handleGetImage)
+	mux.HandleFunc("DELETE /api/images/{id}", s.handleDeleteImage)
 
 	// Admin: users and settings (§9.4).
 	mux.HandleFunc("GET /api/users", s.handleListUsers)

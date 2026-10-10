@@ -238,7 +238,9 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		SearchProvider    *string `json:"search_provider"`
 		BraveKey          *string `json:"brave_key"`
 		SandboxEnabled    *bool   `json:"sandbox_enabled"`
-		OCREnabled        *bool   `json:"ocr_enabled"` // feature 2.5
+		OCREnabled        *bool   `json:"ocr_enabled"`    // feature 2.5
+		ImagegenURL       *string `json:"imagegen_url"`   // feature 3.1
+		ImagegenToken     *string `json:"imagegen_token"` // feature 3.1
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -314,6 +316,19 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.ImagegenURL != nil || req.ImagegenToken != nil {
+		rawURL := ""
+		if req.ImagegenURL != nil {
+			rawURL = *req.ImagegenURL
+		} else if v, _, err := s.st.GetSetting(r.Context(), settingImagegenURL); err == nil {
+			rawURL = v
+		}
+		if err := s.setImagegen(r.Context(), rawURL, req.ImagegenToken); err != nil {
+			s.log.Error("set imagegen settings", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
 	s.writeSettings(w, r)
 }
 
@@ -346,6 +361,10 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// Feature 2.5: image OCR (self-contained block).
 	for k, v := range s.ocrSettings(r.Context()) {
+		out[k] = v
+	}
+	// Feature 3.1: self-hosted image generation (self-contained block).
+	for k, v := range s.imagegenSettings(r.Context()) {
 		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)

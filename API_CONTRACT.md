@@ -471,17 +471,21 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "search_active": "tavily"|"brave"|"ddg", "linkwarden_url": string,
    "linkwarden_configured": bool, "linkwarden_token_hint": string,
    "sandbox_enabled": bool, "sandbox_available": bool,
-   "ocr_enabled": bool, "ocr_available": bool}`
+   "ocr_enabled": bool, "ocr_available": bool,
+   "imagegen_url": string, "imagegen_configured": bool,
+   "imagegen_available": bool, "imagegen_token_hint": string}`
   (`share_server_key` §2.1; tools/Linkwarden §2.4/2.8; search §8.9; sandbox §10;
-   OCR §8.10)
+   OCR §8.10; image generation §11)
 - `PATCH /api/settings` accepts any subset of
   `{"allow_registration"?: bool, "share_server_key"?: bool,
    "tools_enabled"?: bool, "linkwarden_url"?: string, "linkwarden_token"?: string,
    "search_provider"?: "auto"|"tavily"|"brave"|"ddg", "brave_key"?: string,
-   "sandbox_enabled"?: bool, "ocr_enabled"?: bool}`
+   "sandbox_enabled"?: bool, "ocr_enabled"?: bool,
+   "imagegen_url"?: string, "imagegen_token"?: string}`
   → `200` (same shape as GET). Unknown `search_provider` values normalize to
   `auto`; `brave_key: ""` clears the stored (encrypted) key; omitted
-  `linkwarden_token`/`brave_key` leave the stored value untouched.
+  `linkwarden_token`/`brave_key`/`imagegen_token` leave the stored value
+  untouched (`imagegen_token: ""` clears it).
 
 Non-admin callers of any of these get `403`.
 
@@ -549,3 +553,63 @@ container and return stdout/stderr. Full design: `docs/2.6-2.7-sandbox.md`.
   `MYOGCHAT_SANDBOX_MAX_OUTPUT`.
 - `GET`/`PATCH /api/settings` gain `sandbox_enabled` (admin) and
   `sandbox_available` (read-only status).
+
+## 11. Image generation (3.1)
+
+Self-hosted text-to-image via a ComfyUI instance (SD-Turbo, 512²). Full design:
+`docs/3.1-imagegen.md`. Bytes are stored in a new **`images`** table (the
+`attachments` table is text-only) and served owner-scoped.
+
+### 11.1 Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS images (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  prompt     TEXT NOT NULL,
+  model      TEXT,
+  mime       TEXT NOT NULL,
+  width      INTEGER NOT NULL,
+  height     INTEGER NOT NULL,
+  size       INTEGER NOT NULL,
+  data       BLOB NOT NULL,          -- the PNG bytes
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id);
+-- messages gains an additive TEXT column:
+--   images TEXT   -- JSON array {id,prompt,mime,width,height,size}
+```
+
+### 11.2 Endpoints
+
+- `POST /api/images` — body `{"prompt": string, "size"?: "WxH", "conversation_id"?: string}`
+  (`prompt` non-empty, ≤2000 chars; `size` defaults to `512x512`). Generates via
+  ComfyUI, stores the bytes owner-scoped, and returns `201`:
+  ```json
+  {"id":"…","prompt":"…","mime":"image/png","width":512,"height":512,
+   "size":123456,"created_at":1760000000000,"url":"/api/images/…",
+   "conversation_id":"…","message_id":"…"}
+  ```
+  When `conversation_id` is supplied (and owned) the prompt and image are also
+  persisted as a user + assistant message (the assistant message carries the
+  image reference) and the conversation is touched/auto-titled. Errors: `400`
+  empty/oversized prompt; `404` unknown conversation; `503` not configured;
+  `502` backend failure (unreachable / timeout / render error).
+- `GET /api/images/{id}` — raw bytes with the stored `Content-Type` and a long
+  `Cache-Control`; owner-scoped `404`.
+- `DELETE /api/images/{id}` — `204`; owner-scoped `404`.
+
+### 11.3 Config
+
+`imagegen_url` / `imagegen_token` DB settings (admin) over the
+`MYOGCHAT_IMAGEGEN_URL` / `MYOGCHAT_IMAGEGEN_TOKEN` env defaults; the token is
+stored encrypted and only a 4-char hint is exposed. `GET`/`PATCH /api/settings`
+surface `imagegen_url`, `imagegen_configured`, `imagegen_available` (a live
+ComfyUI `GET /system_stats` probe) and `imagegen_token_hint`.
+
+### 11.4 Message JSON
+
+Assistant messages may include `"images": [{"id","prompt","mime","width","height","size"}]`
+(§8.4); the SPA renders `<img src="/api/images/{id}">`. The retention janitor
+purges images older than the retention window alongside conversations and
+attachments.

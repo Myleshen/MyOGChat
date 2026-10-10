@@ -65,6 +65,13 @@ const attachBtn = document.getElementById("attach-btn");
 const fileInput = document.getElementById("file-input");
 const attachmentsBar = document.getElementById("attachments-bar");
 
+/* Image generation (feature 3.1) — self-contained composer affordance. */
+const imageBtn = document.getElementById("image-btn");
+const imageBar = document.getElementById("image-bar");
+const imagePrompt = document.getElementById("image-prompt");
+const imageGenerate = document.getElementById("image-generate");
+const imageCancel = document.getElementById("image-cancel");
+
 const toastEl = document.getElementById("toast");
 
 const hljsDark = document.getElementById("hljs-dark");
@@ -121,6 +128,14 @@ const linkwardenToken = document.getElementById("linkwarden-token");
 const linkwardenStatus = document.getElementById("linkwarden-status");
 const linkwardenError = document.getElementById("linkwarden-error");
 const linkwardenClear = document.getElementById("linkwarden-clear");
+
+/* Image generation (feature 3.1) — self-contained settings block. */
+const imagegenUrl = document.getElementById("imagegen-url");
+const imagegenToken = document.getElementById("imagegen-token");
+const imagegenStatus = document.getElementById("imagegen-status");
+const imagegenError = document.getElementById("imagegen-error");
+const imagegenSave = document.getElementById("imagegen-save");
+const imagegenClear = document.getElementById("imagegen-clear");
 
 /* ==== BEGIN code-sandbox tools (2.6/2.7) — self-contained, safe to relocate ==== */
 const toolsSection = document.getElementById("tools-section");
@@ -927,6 +942,7 @@ async function loadSettingsInfo(silent) {
     applyIntegrationSettings(s);
     applySandboxSettings(s); /* code-sandbox tools (2.6/2.7) */
     applyOCRSettings(s);
+    applyImagegenSettings(s); /* image generation (3.1) */
   } catch (err) {
     if (err instanceof AuthError) return;
     if (isForbidden(err)) {
@@ -1141,6 +1157,75 @@ async function clearLinkwarden() {
     toast(isForbidden(err) ? "Admin access required" : err.message);
   }
 }
+
+/* ===== Image generation (feature 3.1) — self-contained settings block ===== */
+/* Populate the admin Image generation block from GET /api/settings. */
+function applyImagegenSettings(s) {
+  if (!s) return;
+  if (imagegenUrl) imagegenUrl.value = s.imagegen_url || "";
+  if (imagegenToken) imagegenToken.value = "";
+  if (imagegenStatus) {
+    if (!s.imagegen_configured) {
+      imagegenStatus.textContent = "Not configured.";
+    } else if (s.imagegen_available) {
+      imagegenStatus.textContent =
+        "Configured and online." +
+        (s.imagegen_token_hint ? " (token …" + s.imagegen_token_hint + ")" : "");
+    } else {
+      imagegenStatus.textContent = "Configured, but the backend is unreachable.";
+    }
+  }
+}
+
+async function saveImagegen() {
+  setFormError(imagegenError, "");
+  const url = imagegenUrl ? imagegenUrl.value.trim() : "";
+  if (!url) {
+    setFormError(imagegenError, "Enter the ComfyUI URL.");
+    return;
+  }
+  const body = { imagegen_url: url };
+  // Only send the token when provided so saving the URL keeps the stored one.
+  const token = imagegenToken ? imagegenToken.value.trim() : "";
+  if (token) body.imagegen_token = token;
+  if (imagegenSave) imagegenSave.disabled = true;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    applyImagegenSettings(s);
+    toast("Image generation saved");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (isForbidden(err)) {
+      toast("Admin access required");
+      return;
+    }
+    setFormError(imagegenError, err.message);
+  } finally {
+    if (imagegenSave) imagegenSave.disabled = false;
+  }
+}
+
+async function clearImagegen() {
+  if (!confirm("Clear the image generation URL and token?")) return;
+  setFormError(imagegenError, "");
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ imagegen_url: "", imagegen_token: "" }),
+    });
+    applyImagegenSettings(s);
+    toast("Image generation cleared");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
+  }
+}
+/* ===== end image generation settings ===== */
 
 /* Users section header "Users (N pending)" + optional gear badge. */
 function setPendingCount(n) {
@@ -2167,12 +2252,40 @@ function buildAssistantMessage(m, isLast) {
   if (Array.isArray(m.tools) && m.tools.length > 0) {
     bubble.appendChild(buildToolsBlock(m.tools));
   }
-  const content = el("div", "msg-content markdown");
-  content.innerHTML = renderMarkdown(m.content);
-  enhanceMarkdown(content);
-  bubble.appendChild(content);
-  bubble.appendChild(buildAssistantFooter(m, isLast));
+  const hasImages = Array.isArray(m.images) && m.images.length > 0;
+  if (hasImages) bubble.appendChild(buildImagesBlock(m.images));
+  const hasText = typeof m.content === "string" && m.content.trim() !== "";
+  if (hasText) {
+    const content = el("div", "msg-content markdown");
+    content.innerHTML = renderMarkdown(m.content);
+    enhanceMarkdown(content);
+    bubble.appendChild(content);
+  }
+  // An image-only message has no cost/model footer (and no Retry, which would
+  // replace the image with a text reply).
+  if (hasText || !hasImages) bubble.appendChild(buildAssistantFooter(m, isLast));
   wrap.appendChild(bubble);
+  return wrap;
+}
+
+/* Render generated images (feature 3.1) referenced by an assistant message.
+   Bytes are served by GET /api/images/{id}; clicking opens the full size. */
+function buildImagesBlock(images) {
+  const wrap = el("div", "msg-images");
+  for (const img of images) {
+    if (!img || !img.id) continue;
+    const link = document.createElement("a");
+    link.href = "/api/images/" + enc(img.id);
+    link.target = "_blank";
+    link.rel = "noopener";
+    const pic = document.createElement("img");
+    pic.className = "msg-image";
+    pic.src = "/api/images/" + enc(img.id);
+    pic.alt = img.prompt || "Generated image";
+    pic.loading = "lazy";
+    link.appendChild(pic);
+    wrap.appendChild(link);
+  }
   return wrap;
 }
 
@@ -2819,6 +2932,70 @@ async function onFilesSelected() {
   }
 }
 
+/* ============================== Image generation (3.1) ============================== */
+
+/* Show/hide the inline image-prompt bar; prefill it from the composer text. */
+function setImageBar(open) {
+  if (!imageBar) return;
+  imageBar.hidden = !open;
+  if (imageBtn) imageBtn.classList.toggle("active", open);
+  if (open && imagePrompt) {
+    if (!imagePrompt.value && input.value.trim()) imagePrompt.value = input.value.trim();
+    imagePrompt.focus({ preventScroll: true });
+  }
+}
+
+/* Generate an image into the open conversation. The server persists the prompt
+   and the resulting image as messages, so a refresh renders them. */
+async function generateImage(prompt) {
+  prompt = (prompt || "").trim();
+  if (!prompt) {
+    toast("Enter an image prompt");
+    return;
+  }
+  if (state.streaming) {
+    toast("Wait for the current reply to finish");
+    return;
+  }
+
+  let conv;
+  try {
+    conv = await ensureConversation();
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message);
+    return;
+  }
+
+  setImageBar(false);
+  if (imageGenerate) imageGenerate.disabled = true;
+  // Optimistic placeholder bubble (replaced by the persisted messages below).
+  const wrap = el("div", "msg msg-assistant");
+  const bubble = el("div", "msg-bubble");
+  const note = el("div", "msg-content image-generating");
+  note.textContent = "🎨 Generating image…";
+  bubble.appendChild(note);
+  wrap.appendChild(bubble);
+  messagesEl.appendChild(wrap);
+  scrollToBottom();
+
+  try {
+    await api("/api/images", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ prompt: prompt, conversation_id: conv.id }),
+    });
+    if (state.current && state.current.id === conv.id) {
+      await refreshCurrentConversation();
+    }
+  } catch (err) {
+    wrap.remove();
+    if (!(err instanceof AuthError)) toast(err.message || "Image generation failed");
+  } finally {
+    if (imageGenerate) imageGenerate.disabled = false;
+    if (imagePrompt) imagePrompt.value = "";
+  }
+}
+
 /* ============================== Composer ============================== */
 
 function autosizeInput() {
@@ -3084,6 +3261,10 @@ function wireEvents() {
   linkwardenForm.addEventListener("submit", saveLinkwarden);
   linkwardenClear.addEventListener("click", clearLinkwarden);
 
+  /* Image generation settings block (admin, feature 3.1). */
+  if (imagegenSave) imagegenSave.addEventListener("click", saveImagegen);
+  if (imagegenClear) imagegenClear.addEventListener("click", clearImagegen);
+
   /* Web search block (self-contained; safe to relocate). */
   if (searchSave) searchSave.addEventListener("click", saveSearch);
   if (searchClearKey) searchClearKey.addEventListener("click", clearBraveKey);
@@ -3203,6 +3384,19 @@ function wireEvents() {
     if (!attachBtn.disabled) fileInput.click();
   });
   fileInput.addEventListener("change", onFilesSelected);
+
+  /* Image generation (feature 3.1): the image button toggles the prompt bar. */
+  if (imageBtn) imageBtn.addEventListener("click", () => setImageBar(imageBar.hidden));
+  if (imageCancel) imageCancel.addEventListener("click", () => setImageBar(false));
+  if (imageGenerate) imageGenerate.addEventListener("click", () => generateImage(imagePrompt.value));
+  if (imagePrompt) {
+    imagePrompt.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) {
+        e.preventDefault();
+        generateImage(imagePrompt.value);
+      }
+    });
+  }
 }
 
 /* ============================== Service worker ============================== */

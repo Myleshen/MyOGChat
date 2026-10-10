@@ -95,6 +95,19 @@ CREATE TABLE IF NOT EXISTS group_members (
 CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(owner_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id);
+CREATE TABLE IF NOT EXISTS images (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  prompt     TEXT NOT NULL,
+  model      TEXT,
+  mime       TEXT NOT NULL,
+  width      INTEGER NOT NULL,
+  height     INTEGER NOT NULL,
+  size       INTEGER NOT NULL,
+  data       BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id);
 `
 
 // User mirrors a row of the users table (§9.1).
@@ -124,20 +137,21 @@ type Conversation struct {
 
 // Message mirrors a row of the messages table.
 type Message struct {
-	ID               string         `json:"id"`
-	ConversationID   string         `json:"conversation_id"`
-	Role             string         `json:"role"`
-	Content          string         `json:"content"`
-	Reasoning        *string        `json:"reasoning"`
-	Model            *string        `json:"model"`
-	PromptTokens     *int64         `json:"prompt_tokens"`
-	CompletionTokens *int64         `json:"completion_tokens"`
-	CachedTokens     *int64         `json:"cached_tokens"`
-	CostMicros       *int64         `json:"cost_micros"`
-	ReasoningTokens  *int64         `json:"reasoning_tokens"`
-	DurationMs       *int64         `json:"duration_ms"`
-	Attachments      []AttachedFile `json:"attachments,omitempty"`
-	CreatedAt        int64          `json:"created_at"`
+	ID               string           `json:"id"`
+	ConversationID   string           `json:"conversation_id"`
+	Role             string           `json:"role"`
+	Content          string           `json:"content"`
+	Reasoning        *string          `json:"reasoning"`
+	Model            *string          `json:"model"`
+	PromptTokens     *int64           `json:"prompt_tokens"`
+	CompletionTokens *int64           `json:"completion_tokens"`
+	CachedTokens     *int64           `json:"cached_tokens"`
+	CostMicros       *int64           `json:"cost_micros"`
+	ReasoningTokens  *int64           `json:"reasoning_tokens"`
+	DurationMs       *int64           `json:"duration_ms"`
+	Attachments      []AttachedFile   `json:"attachments,omitempty"`
+	Images           []GeneratedImage `json:"images,omitempty"`
+	CreatedAt        int64            `json:"created_at"`
 }
 
 // AttachedFile is the display metadata of a file attached to a user message.
@@ -149,6 +163,33 @@ type AttachedFile struct {
 	Name string `json:"name"`
 	Mime string `json:"mime,omitempty"`
 	Size int64  `json:"size"`
+}
+
+// GeneratedImage is the display metadata of an image generated into a message
+// (3.1). The bytes live in the images table; a message stores only a reference
+// so history reloads can render it with GET /api/images/{id}.
+type GeneratedImage struct {
+	ID     string `json:"id"`
+	Prompt string `json:"prompt"`
+	Mime   string `json:"mime,omitempty"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	Size   int64  `json:"size"`
+}
+
+// Image mirrors a row of the images table (3.1). Data holds the PNG bytes;
+// it is never serialized to JSON.
+type Image struct {
+	ID        string `json:"id"`
+	UserID    string `json:"-"`
+	Prompt    string `json:"prompt"`
+	Model     string `json:"model,omitempty"`
+	Mime      string `json:"mime"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	Size      int64  `json:"size"`
+	Data      []byte `json:"-"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 // Attachment mirrors a row of the attachments table (2.3). Text is the
@@ -244,6 +285,7 @@ func (s *Store) migrate() error {
 		{"projects", "user_id", `ALTER TABLE projects ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE`},
 		{"users", "status", `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`},
 		{"users", "api_key_enc", `ALTER TABLE users ADD COLUMN api_key_enc TEXT`},
+		{"messages", "images", `ALTER TABLE messages ADD COLUMN images TEXT`},
 	}
 	cache := map[string]map[string]bool{}
 	for _, st := range steps {
@@ -611,16 +653,16 @@ func (s *Store) DeleteOlderThan(ctx context.Context, cutoff int64) (int64, error
 
 const messageCols = "id, conversation_id, role, content, reasoning, model, " +
 	"prompt_tokens, completion_tokens, cached_tokens, cost_micros, " +
-	"reasoning_tokens, duration_ms, attachments, created_at"
+	"reasoning_tokens, duration_ms, attachments, images, created_at"
 
 func scanMessage(sc scanner) (Message, error) {
 	var m Message
-	var reasoning, model, attachments sql.NullString
+	var reasoning, model, attachments, images sql.NullString
 	var promptTokens, completionTokens, cachedTokens, costMicros sql.NullInt64
 	var reasoningTokens, durationMs sql.NullInt64
 	err := sc.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content,
 		&reasoning, &model, &promptTokens, &completionTokens, &cachedTokens,
-		&costMicros, &reasoningTokens, &durationMs, &attachments, &m.CreatedAt)
+		&costMicros, &reasoningTokens, &durationMs, &attachments, &images, &m.CreatedAt)
 	if err != nil {
 		return Message{}, err
 	}
@@ -636,26 +678,42 @@ func scanMessage(sc scanner) (Message, error) {
 		// A malformed value must not fail the whole history load; drop it.
 		_ = json.Unmarshal([]byte(attachments.String), &m.Attachments)
 	}
+	if images.Valid && images.String != "" {
+		_ = json.Unmarshal([]byte(images.String), &m.Images)
+	}
 	return m, nil
 }
 
 // InsertMessage inserts a new message row.
 func (s *Store) InsertMessage(ctx context.Context, m *Message) error {
-	var attachments any
-	if len(m.Attachments) > 0 {
-		b, err := json.Marshal(m.Attachments)
-		if err != nil {
-			return err
-		}
-		attachments = string(b)
+	attachments, err := marshalJSON(m.Attachments)
+	if err != nil {
+		return err
 	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	images, err := marshalJSON(m.Images)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ConversationID, m.Role, m.Content, nullString(m.Reasoning),
 		nullString(m.Model), nullInt(m.PromptTokens), nullInt(m.CompletionTokens),
 		nullInt(m.CachedTokens), nullInt(m.CostMicros), nullInt(m.ReasoningTokens),
-		nullInt(m.DurationMs), attachments, m.CreatedAt)
+		nullInt(m.DurationMs), attachments, images, m.CreatedAt)
 	return err
+}
+
+// marshalJSON encodes a non-empty slice as a JSON string for a TEXT column,
+// returning nil (SQL NULL) for an empty slice.
+func marshalJSON[T any](v []T) (any, error) {
+	if len(v) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
 }
 
 // ListMessages returns all messages of a conversation ascending by created_at.
@@ -1053,6 +1111,63 @@ func (s *Store) DeleteAttachment(ctx context.Context, id, userID string) (int64,
 // ms) across all users, for the retention janitor.
 func (s *Store) DeleteAttachmentsOlderThan(ctx context.Context, cutoff int64) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM attachments WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ---------- images (3.1) ----------
+
+const imageCols = "id, user_id, prompt, model, mime, width, height, size, data, created_at"
+
+func scanImage(sc scanner) (Image, error) {
+	var img Image
+	var model sql.NullString
+	if err := sc.Scan(&img.ID, &img.UserID, &img.Prompt, &model, &img.Mime,
+		&img.Width, &img.Height, &img.Size, &img.Data, &img.CreatedAt); err != nil {
+		return Image{}, err
+	}
+	if model.Valid {
+		img.Model = model.String
+	}
+	return img, nil
+}
+
+// InsertImage stores a generated image (bytes + metadata) for its owner.
+func (s *Store) InsertImage(ctx context.Context, img *Image) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO images (`+imageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		img.ID, img.UserID, img.Prompt, nullString(&img.Model), img.Mime,
+		img.Width, img.Height, img.Size, img.Data, img.CreatedAt)
+	return err
+}
+
+// GetImage loads one image (including bytes) owned by userID, else ErrNotFound.
+// The owner guard makes cross-user access indistinguishable from a missing row.
+func (s *Store) GetImage(ctx context.Context, id, userID string) (Image, error) {
+	img, err := scanImage(s.db.QueryRowContext(ctx,
+		`SELECT `+imageCols+` FROM images WHERE id = ? AND user_id = ?`, id, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Image{}, ErrNotFound
+	}
+	return img, err
+}
+
+// DeleteImage removes an owner's image. It returns the number of rows removed
+// (0 when not owned by userID).
+func (s *Store) DeleteImage(ctx context.Context, id, userID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM images WHERE id = ? AND user_id = ?`, id, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteImagesOlderThan purges images created before cutoff (unix ms) across
+// all users, for the retention janitor.
+func (s *Store) DeleteImagesOlderThan(ctx context.Context, cutoff int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM images WHERE created_at < ?`, cutoff)
 	if err != nil {
 		return 0, err
 	}
