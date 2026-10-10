@@ -177,7 +177,10 @@ merges sequentially and resolves the small additive conflicts in shared files
 
 ## Phase 2.x — polish & extensions (scoped, approved, not started)
 
-> Scoped and ready to build as the next parallel batch. **Not implemented yet.**
+> **Finalized scopes live in [`docs/SCOPING.md`](SCOPING.md);** full research
+> reports in [`docs/research/`](research/). Owner approved building
+> **2.10 · 2.11 · 2.12 · 2.13 · 3.2 · 3.3 · 3.4**; **3.1 is de-scoped** (a
+> self-host path is documented). Not implemented yet.
 
 ### 2.10 Persist tool activity
 - **Problem:** the inline tool block (`web_search · done · …`) is rendered live
@@ -232,17 +235,18 @@ merges sequentially and resolves the small additive conflicts in shared files
 
 ## Phase 3 (scoped — exploratory, not scheduled)
 
-### 3.1 Image generation
-- **Key finding:** **OpenCode Go does not provide image generation.** Its models
-  output **text only** — `gpt-6-luna` accepts image *input* (vision) but returns
-  text; there is no image-output model in the registry or the OpenCode Go docs.
-- **So it needs a separate image provider** (BYOK), e.g.:
-  - **OpenAI Images API** (`gpt-image-1` / "GPT Image 2.5") — hosted, pay-per-image.
-  - **Replicate / fal.ai** (Flux, SDXL, …) — hosted, many models.
-  - **Self-hosted** ComfyUI / SDXL — needs a GPU (the Pi 4B can't do it well).
-- **Plan:** a new provider abstraction + `POST /api/images` (prompt, size, model),
-  store generated images as attachments, render in chat, track cost.
-- **Effort:** medium–large. **Blocker:** needs a chosen image provider + key.
+### 3.1 Image generation — DE-SCOPED (self-host path documented)
+- **Key finding:** **OpenCode Go does not provide image generation** (text-only
+  models; `gpt-6-luna` accepts image *input* but returns text). External providers
+  (OpenAI Images, Replicate/fal.ai) are out — the owner isn't getting one.
+- **Self-host option (Proxmox box `asus-rog`):** GPU is a **GTX 1650 Ti Mobile
+  (Turing, CC 7.5, 4 GB)** — driver installed, `intel_iommu=on`, `vfio-pci`
+  available. Fits **SD 1.5 / SD-Turbo at 512²** via **ComfyUI** in an LXC (device
+  passthrough) behind a tiny OpenAI-compatible shim; SDXL/Flux do **not** fit 4 GB.
+  App side needs a new **binary store** (`attachments` is text-only) +
+  `POST /api/images` + `GET /api/images/{id}`.
+- **Gate:** time one SD-Turbo 512² image; **< 15 s → proceed**.
+- **See `docs/SCOPING.md` §3.1 and `docs/research/3.1-imagegen-proxmox.md`.**
 
 ### 3.2 IMAP email
 - Read/search/send mail from a connected mailbox. **Needs:** IMAP + SMTP
