@@ -17,13 +17,18 @@
 
 ## Items
 
-| # | Item | Notes |
-|---|---|---|
-| 4.1 | **Collapsible tool calls + full persistence** | Persist tool args + output (+ error, duration) on `messages.tools`; one collapsible `<details>` per message, per-tool inner `<details>`. Retention is free (message cascade). |
-| 4.2 | **Attachment chips in chat** | Render name/type/size chips under the sent user bubble using the metadata already on `messages.attachments`. No byte storage. |
-| 4.3 | **Image prompt enhancement** | LLM rewrite (reuse `upstream.ChatOnce` + `resolveKey`) with preview/edit before ComfyUI; positive-prompt safety. Then `generate_image` tool. |
-| 4.4 | **Settings IA + UX overhaul** | Merge the two "Web search" surfaces; categorize into ~9 sections with desktop/tablet nav rail + mobile drill-down; a11y + touch-target pass. |
-| 4.5 | **File formats** | Dispatcher in `internal/extract`: OOXML/ODF/EPUB/RTF (stdlib), XLSX (stdlib-first); media (.mp3/.mp4/…) via a hardened ffmpeg container → whisper STT, **async**. |
+| # | Item | Status | Notes |
+|---|---|---|---|
+| 4.1 | **Collapsible tool calls + full persistence** | ✅ done | Persist tool args + output (+ error, duration, truncated) on `messages.tools` (JSON, size-capped 16 KB args / 64 KB output / 4 KB error, UTF-8-safe); one collapsible `<details>` per message, per-tool inner Input/Output. Retention is free (message cascade). |
+| 4.2 | **Attachment chips in chat** | ✅ done | Render name/type/size chips under the sent user bubble using the metadata already on `messages.attachments`. No byte storage. |
+| 4.3a | **Image prompt enhancement** | ✅ done | `POST /api/images/enhance` — LLM rewrite (reuses the caller's key) with a deterministic template fallback (`enhanced:false`); preview/edit modal before ComfyUI. |
+| 4.3b | **`generate_image` model tool** | 🚧 in progress | Mid-conversation generation with context, over the 2.4 tool loop. |
+| 4.4 | **Settings IA + UX overhaul** | ✅ done | Categorized into ~9 sections with desktop/tablet nav rail + mobile chip bar; admin web-search block relabelled "Server web search (admin)"; per-user Serper under Integrations → Web search. UI battery 45/45 on mobile. |
+| 4.5a | **Document extraction** | ✅ done | `internal/extract` dispatcher: OOXML (`.docx/.xlsx/.pptx`), ODF (`.odt/.ods/.odp`), `.epub`, `.rtf` — stdlib only (no new deps). |
+| 4.5b | **Media transcription** | ✅ done | Audio/video (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) via the configured STT service (`internal/extract.Options{OCR,Transcribe}`). **Synchronous** — long media may exceed the tunnel timeout; async is future work. |
+
+> **Status:** Phase 4 is in progress — 4.1, 4.2, 4.3a, 4.4, 4.5a, 4.5b are
+> **done** (merged to `main` and deployed); **4.3b is in progress**.
 
 ## Order & parallelism
 

@@ -257,7 +257,11 @@ merges sequentially and resolves the small additive conflicts in shared files
 
 ---
 
-## Phase 3 (scoped — exploratory, not scheduled)
+## Phase 3 — complete (deployed)
+
+> All Phase 3 items shipped and deployed. See `docs/3.1-imagegen.md`,
+> `docs/3.2-imap.md`, `docs/3.3-calendar.md`, `docs/3.4-maps.md`,
+> `docs/3.5-3.6-speech.md`.
 
 ### 3.1 Image generation — ✅ done (app side deployed; ComfyUI on the Proxmox box)
 - **External providers out** (owner isn't getting one; OpenCode Go has no
@@ -324,3 +328,45 @@ merges sequentially and resolves the small additive conflicts in shared files
 - Pi default: **Piper** (real-time on the Pi; GPL-3.0 — note). GPU: Kokoro-82M
   (Apache-2.0). Design: `internal/speech` + `POST /api/tts` + a speaker button;
   Web Speech API fallback. See `docs/3.5-3.6-speech.md` / `docs/SCOPING.md` §3.6.
+
+---
+
+## Phase 4 — UX polish, tool depth, formats
+
+> Plan of record: [`docs/PHASE4.md`](PHASE4.md); research reports in
+> [`docs/research/phase4/`](research/phase4/). UI items land sequentially (all
+> touch `static/app.js` / `index.html` / `style.css`).
+
+### 4.1 Collapsible tool calls + full persistence — ✅ done
+- Assistant messages persist tool args/output/error/duration/truncated in
+  `messages.tools` (JSON, size-capped 16 KB args / 64 KB output / 4 KB error,
+  UTF-8-safe). The UI renders a collapsible `<details>` per message with per-tool
+  Input/Output. Retention is free (message cascade).
+
+### 4.2 Attachment chips in chat — ✅ done
+- Sent user messages render file type-icon + name + size chips from the metadata
+  already on `messages.attachments`. **No byte storage.**
+
+### 4.3 Image generation flow
+- **4.3a Prompt enhancement — ✅ done:** `POST /api/images/enhance` rewrites a
+  brief into a rich SD-Turbo prompt (LLM via the caller's key; deterministic
+  template fallback with `enhanced:false`). The SPA shows a preview & edit modal
+  before generating.
+- **4.3b `generate_image` model tool — 🚧 in progress.**
+
+### 4.4 Settings IA + UX overhaul — ✅ done
+- Settings categorized into Account / Appearance / AI & access / Integrations /
+  Tools / Voice / Usage / Users / About, with a left nav rail (≥768px) and a
+  horizontal chip bar on mobile. The admin web-search block is relabelled
+  "Server web search (admin)"; the per-user Serper key lives under
+  Integrations → Web search. UI battery 45/45 on mobile.
+
+### 4.5 File formats
+- **4.5a Document extraction — ✅ done:** `internal/extract` handles
+  `.docx/.xlsx/.pptx` (OOXML), `.odt/.ods/.odp` (ODF), `.epub`, and `.rtf` using
+  the **standard library only** (no new deps).
+- **4.5b Media transcription — ✅ done:** audio/video attachments
+  (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) are transcribed via the
+  configured speech-to-text service (`internal/extract.Options{OCR,Transcribe}`).
+  **Caveat:** synchronous — long media may exceed the tunnel timeout; async is
+  future work.

@@ -19,7 +19,8 @@ Raspberry Pi 4B.
   thinking badge on models that surface reasoning
 - Per-message **cost** and **tokens/sec**, plus a conversation running total
 - **Regenerate** and copy tools; auto-generated chat titles
-- **Light / dark / system** themes and a settings panel
+- **Light / dark / system** themes and a categorized **settings page** (Account,
+  Appearance, AI & access, Integrations, Tools, Voice, Usage, Users, About)
 - Installable **PWA** (mobile-first; add to home screen on Android/iOS)
 - Configurable retention (default 30 days, max 60) and shared-token login,
   designed to sit behind a Cloudflare Tunnel

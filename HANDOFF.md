@@ -12,7 +12,9 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 
 - **Live:** `https://chat.example.com` (also `http://raspberrypi.local:8787` on LAN)
 - **Repo:** `github.com/Myleshen/MyOGChat` — `main` is the source of truth
-- **Phase 1:** complete. **Phase 2:** core items shipped through 2.11 (see status below).
+- **Phase 1:** complete. **Phase 2:** complete (2.1–2.13). **Phase 3:** complete.
+  **Phase 4:** in progress — 4.1/4.2/4.3a/4.4/4.5a/4.5b shipped, 4.3b in progress
+  (see status below; plan of record `docs/PHASE4.md`).
 
 ## Live deployment
 
@@ -50,7 +52,7 @@ internal/
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
 deploy/       systemd unit + deploy.sh + sandbox-setup.sh + ocr-setup.sh + ocr/ (Dockerfile) + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.13-vision-ocr.md, 3.4-maps.md, 3.5-3.6-speech.md
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.13-vision-ocr.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, research/phase4/
 ```
 
 ## Docs index
@@ -63,6 +65,8 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2
 - `docs/` — `2.2-groups.md`, `2.3-attachments.md`, `2.4-tools.md`,
   `2.4-search-providers.md`, `2.8-linkwarden.md`, `2.10-2.11-tool-activity-usage.md`,
   `2.13-vision-ocr.md`, `3.4-maps.md`, `3.5-3.6-speech.md`
+- `docs/PHASE4.md` — Phase 4 plan of record; `docs/research/phase4/` — the 1..5
+  research reports behind it
 
 ## Conventions & hard constraints
 
@@ -155,10 +159,24 @@ All Phase 2 items (2.1–2.11) are implemented. Provision the host with
 `deploy/sandbox-setup.sh` and `deploy/ocr-setup.sh`.
 Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
-**Phase 3 — in progress:** **3.4 Maps (keyless OSM)** is implemented on branch
-`feat/maps` (`docs/3.4-maps.md`): `maps_geocode` / `maps_reverse` /
-`maps_directions` / `maps_places` over the 2.4 loop, with a global 1 req/s
-limiter and a SQLite result cache. Not yet merged/deployed.
+**Phase 3 — complete (deployed).** 3.1 image generation (self-hosted
+ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`),
+3.2 IMAP read-only email (`docs/3.2-imap.md`), 3.3 calendar CalDAV/ICS
+(`docs/3.3-calendar.md`), 3.4 keyless OSM maps (`docs/3.4-maps.md`), and
+3.5/3.6 speech STT/TTS (`docs/3.5-3.6-speech.md`).
+
+**Phase 4 — in progress** (plan of record `docs/PHASE4.md`; research reports in
+`docs/research/phase4/`):
+
+| # | Item | Status |
+|---|---|---|
+| 4.1 | Collapsible tool calls + full persistence | ✅ done — assistant messages persist tool args/output/error/duration/truncated in `messages.tools` (JSON, size-capped 16 KB args / 64 KB output / 4 KB error, UTF-8-safe); UI renders a collapsible `<details>` per message with per-tool Input/Output |
+| 4.2 | Attachment chips in chat | ✅ done — sent user messages show file type-icon + name + size chips (metadata only; original bytes are **not** stored) |
+| 4.3a | Image prompt enhancement | ✅ done — `POST /api/images/enhance` rewrites a brief into a rich SD-Turbo prompt (LLM via the caller's key, deterministic template fallback with `enhanced:false`); the SPA shows a preview & edit modal before generating |
+| 4.3b | `generate_image` model tool | 🚧 in progress |
+| 4.4 | Settings IA/UX overhaul | ✅ done — settings categorized (left nav rail ≥768px, horizontal chip bar on mobile) into Account / Appearance / AI & access / Integrations / Tools / Voice / Usage / Users / About; admin web-search block relabelled "Server web search (admin)"; per-user Serper under Integrations → Web search; UI battery 45/45 on mobile |
+| 4.5a | Document extraction | ✅ done — `internal/extract` handles `.docx/.xlsx/.pptx` (OOXML), `.odt/.ods/.odp` (ODF), `.epub`, `.rtf` with the standard library only (no new deps) |
+| 4.5b | Media transcription | ✅ done — audio/video attachments (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) transcribed via the configured speech-to-text service (`internal/extract.Options{OCR,Transcribe}`); **synchronous** (long media may exceed the tunnel timeout — async is future work) |
 
 ## Known gaps / caveats (be honest)
 
@@ -175,7 +193,12 @@ limiter and a SQLite result cache. Not yet merged/deployed.
   live "member uses the owner's key" round-trip hasn't been done.
 - **PDF** is unit-tested (+ a fixture) and the UI attach/send works; a real
   multi-page PDF hasn't been pushed through the UI yet.
-- Linkwarden client is unit-tested (`httptest`); not exercised against a real instance.
+- **Document extraction (4.5a)** now covers OOXML/ODF/EPUB/RTF entirely with the
+  standard library; still **not** exercised against large/complex real-world
+  files through the UI (unit-tested with fixtures).
+- **Media transcription (4.5b)** is **synchronous**, so a long audio/video clip
+  can exceed the Cloudflare Tunnel request timeout; async transcription is future
+  work. Requires the configured speech-to-text service (`docs/3.5-3.6-speech.md`).
 - **OCR (2.5)** is unit-tested (fake docker runner) and the extract path is
   covered; the live Docker smoke test was **not run** here (no Docker daemon /
   not in the `docker` group on the workstation). Build the image on the Pi with
