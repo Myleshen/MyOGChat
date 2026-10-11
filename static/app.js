@@ -45,6 +45,7 @@ const projectsEmpty = document.getElementById("projects-empty");
 const convoList = document.getElementById("convo-list");
 const convoEmpty = document.getElementById("convo-empty");
 const convoLoading = document.getElementById("convo-loading");
+const genCount = document.getElementById("gen-count");
 
 const modelSelect = document.getElementById("model-select");
 const modelThinkingBadge = document.getElementById("model-thinking-badge");
@@ -258,8 +259,10 @@ const state = {
   activeProjectId: null,   // project new chats are filed into
   current: null,           // open conversation object (with messages)
   currentMessages: [],     // messages of the open conversation
-  streaming: false,
-  abort: null,             // AbortController while streaming
+  // Per-conversation generations (Phase 5.7): convId -> {controller, ui,
+  // status, pollTimer}. A reply keeps running in the background while the user
+  // is elsewhere; navigation never aborts it.
+  gens: new Map(),
   pendingAttachments: [],  // uploaded files awaiting send: {id,name,mime,size,chars,uploading?}
   speech: {                // GET /api/speech/status (features 3.5 / 3.6)
     stt_available: false,
@@ -538,7 +541,17 @@ async function readError(res) {
 }
 
 function handleUnauthorized() {
-  if (state.abort) state.abort.abort();
+  for (const gen of state.gens.values()) {
+    if (gen.pollTimer) clearTimeout(gen.pollTimer);
+    if (gen.controller) {
+      try {
+        gen.controller.abort();
+      } catch {
+        /* already aborted */
+      }
+    }
+  }
+  state.gens.clear();
   state.user = null;
   userNameEl.textContent = "";
   userAdminBadge.hidden = true;
@@ -2505,7 +2518,15 @@ function buildConvoItem(conv) {
   menuBtn2.innerHTML = ICONS.more;
   menuBtn2.setAttribute("aria-label", "Options for " + title);
 
-  li.append(link, pinBtn, menuBtn2);
+  li.append(link);
+  /* A reply generating in the background gets a small spinner (Phase 5.7). */
+  if (state.gens.has(conv.id)) {
+    const sp = el("span", "convo-spinner");
+    sp.setAttribute("role", "status");
+    sp.setAttribute("aria-label", "Generating reply");
+    li.appendChild(sp);
+  }
+  li.append(pinBtn, menuBtn2);
   return li;
 }
 
@@ -2600,12 +2621,16 @@ function toggleProject(id) {
 function openConvoMenu(id, anchor) {
   const conv = state.conversations.find((c) => c.id === id);
   if (!conv) return;
-  showMenu(anchor, [
-    { label: "Rename", onClick: () => renameConversation(id) },
+  const items = [{ label: "Rename", onClick: () => renameConversation(id) }];
+  if (state.gens.has(id)) {
+    items.push({ label: "Stop generating", onClick: () => stopGeneration(id) });
+  }
+  items.push(
     { label: "Move to project…", onClick: () => openMoveMenu(id, anchor) },
     { separator: true },
-    { label: "Delete", danger: true, onClick: () => deleteConversation(id) },
-  ]);
+    { label: "Delete", danger: true, onClick: () => deleteConversation(id) }
+  );
+  showMenu(anchor, items);
 }
 
 function openMoveMenu(id, anchor) {
@@ -2956,10 +2981,20 @@ function setCurrentConversation(conv) {
   updateEffortVisibility();
   effortSelect.value = conv.effort || "medium";
   renderMessages();
+  // A reply may already be running for this conversation (started here, or from
+  // another device / before a reload). Re-render the live bubble, or probe the
+  // server snapshot to reattach.
+  const gen = state.gens.get(conv.id);
+  if (gen) {
+    renderStream(gen.ui);
+  } else {
+    probeGeneration(conv.id);
+  }
   renderConvoList();
   updateNewChatLabel();
   renderTotalCost();
-  if (settingsPage.hidden) input.focus({ preventScroll: true });
+  syncComposerState();
+  if (!currentGenerating() && settingsPage.hidden) input.focus({ preventScroll: true });
 }
 
 /* Build the POST /api/conversations body for a new chat. When a project is
@@ -3041,8 +3076,10 @@ function renderMessages() {
     if (m.role === "user") {
       const node = buildUserMessage(m);
       // A conversation that ends on a user message (e.g. a restart interrupted
-      // the reply) gets a Retry affordance so the turn is recoverable.
-      if (i === last && lastAssistant < i) {
+      // the reply) gets a Retry affordance so the turn is recoverable — unless a
+      // reply is currently generating for it (5.7).
+      const generating = state.current && state.gens.has(state.current.id);
+      if (i === last && lastAssistant < i && !generating) {
         const actions = node.querySelector(".msg-actions");
         if (actions) actions.appendChild(actionButton("Retry", () => regenerate()));
       }
@@ -3052,6 +3089,14 @@ function renderMessages() {
     }
   });
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+/* Re-render the visible conversation, then re-attach the live reply bubble if
+   one is generating for it (5.7). */
+function renderMessagesWithStream() {
+  renderMessages();
+  const gen = state.current ? state.gens.get(state.current.id) : null;
+  if (gen) renderStream(gen.ui);
 }
 
 /* ============================== Export ============================== */
@@ -3151,7 +3196,7 @@ function buildUserMessage(m) {
 /* Inline edit of a user message (feature 5). On Save: POST the edit, drop the
    trailing messages, then reuse regenerate() to stream a fresh reply. */
 function startEditUserMessage(m, textEl, bubble, footer) {
-  if (state.streaming) {
+  if (currentGenerating()) {
     toast("Wait for the current reply to finish");
     return;
   }
@@ -3483,23 +3528,60 @@ function createSSEParser(onEvent) {
 
 /* ============================== Streaming chat ============================== */
 
-function setStreaming(on) {
-  state.streaming = on;
+/* ==== Generation bookkeeping (Phase 5.7): per-conversation, never aborted on
+   navigation. A reply keeps streaming (or polling) in the background. ==== */
+
+function isVisibleConv(convId) {
+  return !!state.current && state.current.id === convId;
+}
+
+function genFor(convId) {
+  return state.gens.get(convId) || null;
+}
+
+/* Display title for a conversation id (for background-completion toasts). */
+function convTitle(convId) {
+  const conv = state.conversations.find((c) => c.id === convId);
+  if (conv && conv.title) return conv.title;
+  if (state.current && state.current.id === convId && state.current.title) {
+    return state.current.title;
+  }
+  return "chat";
+}
+
+/* True when the conversation currently on screen is generating a reply. */
+function currentGenerating() {
+  return !!(state.current && state.gens.has(state.current.id));
+}
+
+/* The composer (send/stop/attach/mic) reflects the visible conversation only. */
+function syncComposerState() {
+  const on = currentGenerating();
   input.disabled = on;
   sendBtn.hidden = on;
   stopBtn.hidden = !on;
   updateSendBtn();
   updateAttachBtn();
   updateMicBtn();
-  if (!on) input.focus({ preventScroll: true });
+}
+
+/* Refresh the "N generating" chip and the sidebar (per-row spinners). */
+function updateGenIndicators() {
+  if (genCount) {
+    const n = state.gens.size;
+    genCount.hidden = n === 0;
+    genCount.textContent = n + " generating";
+  }
+  renderConvoList();
 }
 
 function updateSendBtn() {
-  sendBtn.disabled = state.streaming || isUploading() || input.value.trim() === "";
+  sendBtn.disabled = currentGenerating() || isUploading() || input.value.trim() === "";
 }
 
 function newStreamUI() {
   return {
+    convId: null,
     bubble: null,
     contentEl: null,
     thinkingEl: null,
@@ -3520,21 +3602,57 @@ function newStreamUI() {
   };
 }
 
+/* Ensure the live bubble exists AND is attached to the visible conversation.
+   Returns false when the conversation is not on screen (nothing is rendered) or
+   when the bubble was detached by a re-render (it is rebuilt). */
 function ensureStreamBubble(ui) {
-  if (ui.bubble) return;
+  if (!isVisibleConv(ui.convId)) return false;
+  if (ui.bubble && ui.bubble.isConnected) return true;
+  ui.bubble = null;
+  ui.contentEl = null;
+  ui.thinkingEl = null;
+  ui.thinkingBody = null;
+  ui.toolsEl = null;
+  ui.footerEl = null;
+  ui.footerMeta = null;
   const wrap = el("div", "msg msg-assistant");
   ui.bubble = el("div", "msg-bubble");
   wrap.appendChild(ui.bubble);
   messagesEl.appendChild(wrap);
+  return true;
 }
 
 function renderStreamThinking(ui) {
+  if (!ensureStreamBubble(ui)) return;
   if (!ui.thinkingEl) {
     ui.thinkingEl = buildThinking("", { summary: "Thinking…" });
     ui.thinkingBody = ui.thinkingEl.querySelector(".thinking-body");
     ui.bubble.insertBefore(ui.thinkingEl, ui.bubble.firstChild);
   }
   ui.thinkingBody.textContent = ui.reasoningBuf;
+}
+
+/* Rebuild the live bubble from accumulated buffers. Used when returning to a
+   conversation that is still generating, or after a reattach poll. */
+function renderStream(ui) {
+  if (!ensureStreamBubble(ui)) return;
+  ui.bubble.innerHTML = "";
+  ui.thinkingEl = null;
+  ui.thinkingBody = null;
+  ui.toolsEl = null;
+  ui.contentEl = null;
+  ui.footerEl = null;
+  ui.footerMeta = null;
+  if (ui.reasoningBuf) renderStreamThinking(ui);
+  if (ui.tools && ui.tools.length) renderStreamTools(ui);
+  if (ui.textBuf) {
+    ui.contentEl = el("div", "msg-content markdown");
+    ui.contentEl.innerHTML = renderMarkdown(ui.textBuf);
+    enhanceMarkdown(ui.contentEl);
+    ui.bubble.appendChild(ui.contentEl);
+  }
+  renderStreamFooter(ui);
+  scrollToBottom();
 }
 
 /* ============================== Tool activity (Phase 2.4, collapsible 4.1) ============================== */
@@ -3657,7 +3775,7 @@ function updateToolActivity(ui, payload) {
 
 function renderStreamTools(ui) {
   if (!ui.tools || ui.tools.length === 0) return;
-  ensureStreamBubble(ui);
+  if (!ensureStreamBubble(ui)) return;
   if (!ui.toolsEl) {
     ui.toolsEl = el("div", "msg-tools-slot");
     ui.bubble.insertBefore(ui.toolsEl, ui.bubble.firstChild);
@@ -3679,7 +3797,7 @@ function liveTps(ui) {
 }
 
 function renderStreamFooter(ui) {
-  ensureStreamBubble(ui);
+  if (!ensureStreamBubble(ui)) return;
   if (!ui.footerEl) {
     ui.footerEl = el("div", "msg-footer");
     ui.footerMeta = el("span", "msg-meta");
@@ -3692,7 +3810,7 @@ function renderStreamFooter(ui) {
 }
 
 function showStreamError(ui, message) {
-  ensureStreamBubble(ui);
+  if (!ensureStreamBubble(ui)) return;
   const err = el("div", "msg-error");
   err.textContent = "⚠ " + message;
   ui.bubble.appendChild(err);
@@ -3700,7 +3818,7 @@ function showStreamError(ui, message) {
 }
 
 function markStopped(ui) {
-  if (!ui.bubble) return;
+  if (!ensureStreamBubble(ui)) return;
   const note = el("div", "msg-footer");
   note.textContent = "Stopped";
   ui.bubble.appendChild(note);
@@ -3715,38 +3833,42 @@ function handleStreamEvent(type, data, ui) {
       payload = {};
     }
   }
+  const visible = isVisibleConv(ui.convId);
   switch (type) {
     case "meta":
       ui.messageId = payload.message_id || null;
       ui.model = payload.model || null;
-      ensureStreamBubble(ui);
+      if (visible) ensureStreamBubble(ui);
       break;
     case "reasoning":
-      ensureStreamBubble(ui);
       if (!ui.firstTokenAt) ui.firstTokenAt = performance.now();
       ui.reasoningBuf += payload.delta || "";
-      renderStreamThinking(ui);
-      renderStreamFooter(ui);
+      if (visible) {
+        renderStreamThinking(ui);
+        renderStreamFooter(ui);
+      }
       break;
     case "text": {
-      ensureStreamBubble(ui);
       if (!ui.firstTokenAt) ui.firstTokenAt = performance.now();
-      const stick = isNearBottom();
+      const stick = visible && isNearBottom();
       ui.textBuf += payload.delta || "";
-      if (!ui.contentEl) {
-        ui.contentEl = el("div", "msg-content markdown");
-        if (ui.footerEl) ui.bubble.insertBefore(ui.contentEl, ui.footerEl);
-        else ui.bubble.appendChild(ui.contentEl);
+      if (visible) {
+        ensureStreamBubble(ui);
+        if (!ui.contentEl) {
+          ui.contentEl = el("div", "msg-content markdown");
+          if (ui.footerEl) ui.bubble.insertBefore(ui.contentEl, ui.footerEl);
+          else ui.bubble.appendChild(ui.contentEl);
+        }
+        ui.contentEl.innerHTML = renderMarkdown(ui.textBuf);
+        enhanceMarkdown(ui.contentEl);
+        renderStreamFooter(ui);
+        if (stick) scrollToBottom();
       }
-      ui.contentEl.innerHTML = renderMarkdown(ui.textBuf);
-      enhanceMarkdown(ui.contentEl);
-      renderStreamFooter(ui);
-      if (stick) scrollToBottom();
       break;
     }
     case "usage":
       ui.usage = payload;
-      renderStreamFooter(ui);
+      if (visible) renderStreamFooter(ui);
       break;
     case "tool":
       updateToolActivity(ui, payload);
@@ -3754,16 +3876,19 @@ function handleStreamEvent(type, data, ui) {
     case "done":
       ui.done = true;
       ui.durationMs = ui.firstTokenAt ? Math.round(performance.now() - ui.firstTokenAt) : null;
-      if (payload.title && state.current) {
-        state.current.title = payload.title;
-        const conv = state.conversations.find((c) => c.id === state.current.id);
+      if (payload.title) {
+        const conv = state.conversations.find((c) => c.id === ui.convId);
         if (conv) conv.title = payload.title;
+        if (state.current && state.current.id === ui.convId) state.current.title = payload.title;
       }
       finalizeStream(ui);
+      renderConvoList();
+      if (!visible) toast("Reply ready in " + convTitle(ui.convId));
       break;
     case "error":
       ui.failed = true;
-      showStreamError(ui, payload.message || "Something went wrong");
+      if (visible) showStreamError(ui, payload.message || "Something went wrong");
+      else toast("Reply failed in " + convTitle(ui.convId));
       break;
   }
 }
@@ -3807,11 +3932,20 @@ function rollbackOptimisticUserMessage(text) {
 /* Shared SSE POST path. `body` is JSON-encoded when present. `onFatal` runs
    when the request fails before/without streaming (rollback hook). */
 async function streamAssistant(opts) {
-  setStreaming(true);
+  const convId = opts.convId;
+  if (!convId) return;
+  if (state.gens.has(convId)) {
+    toast("A reply is already generating in this chat");
+    if (opts.onFatal) opts.onFatal();
+    return;
+  }
   const controller = new AbortController();
-  state.abort = controller;
   const ui = newStreamUI();
-  ui.convId = opts.convId || null;
+  ui.convId = convId;
+  const gen = { convId, controller, ui, status: "running", pollTimer: null };
+  state.gens.set(convId, gen);
+  updateGenIndicators();
+  syncComposerState();
 
   let res;
   try {
@@ -3822,8 +3956,7 @@ async function streamAssistant(opts) {
       signal: controller.signal,
     });
   } catch (err) {
-    setStreaming(false);
-    state.abort = null;
+    endGeneration(convId);
     if (err.name !== "AbortError") {
       toast("Network error — message not sent");
       if (opts.onFatal) opts.onFatal();
@@ -3832,8 +3965,7 @@ async function streamAssistant(opts) {
   }
 
   if (res.status === 401) {
-    setStreaming(false);
-    state.abort = null;
+    endGeneration(convId);
     handleUnauthorized();
     return;
   }
@@ -3845,8 +3977,7 @@ async function streamAssistant(opts) {
     } catch {
       /* keep default */
     }
-    setStreaming(false);
-    state.abort = null;
+    endGeneration(convId);
     toast(message);
     if (opts.onFatal) opts.onFatal();
     return;
@@ -3864,15 +3995,117 @@ async function streamAssistant(opts) {
     parser.feed(decoder.decode());
     parser.end();
   } catch (err) {
-    if (err.name === "AbortError") {
-      markStopped(ui);
-    } else {
-      showStreamError(ui, "Connection interrupted");
-    }
+    if (err.name === "AbortError") markStopped(ui);
+    else showStreamError(ui, "Connection interrupted");
   } finally {
-    setStreaming(false);
-    state.abort = null;
+    endGeneration(convId);
+    // A reply that ended without a done/error frame was stopped: drop the
+    // partial live bubble and re-render so the Retry affordance appears.
+    if (!ui.done && !ui.failed && isVisibleConv(convId)) refreshCurrentConversation();
   }
+}
+
+/* Drop a generation record and refresh the composer/indicators. */
+function endGeneration(convId) {
+  const gen = state.gens.get(convId);
+  if (!gen) return;
+  if (gen.pollTimer) clearTimeout(gen.pollTimer);
+  state.gens.delete(convId);
+  updateGenIndicators();
+  syncComposerState();
+}
+
+/* Explicitly stop the reply generating in convId (server-side cancel + local
+   abort of the relay fetch). */
+async function stopGeneration(convId) {
+  if (!convId) return;
+  const gen = state.gens.get(convId);
+  try {
+    await api("/api/conversations/" + enc(convId) + "/generation/stop", { method: "POST" });
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    /* 404 = already finished; fall through and clean up locally */
+  }
+  if (gen && gen.controller) {
+    try {
+      gen.controller.abort();
+    } catch {
+      /* already aborted */
+    }
+  } else if (gen) {
+    markStopped(gen.ui);
+    endGeneration(convId);
+    if (isVisibleConv(convId)) refreshCurrentConversation();
+  }
+}
+
+/* ==== Reattach after a reload: poll the server snapshot for a running reply. ==== */
+
+function applySnapshot(ui, snap) {
+  ui.messageId = snap.message_id || null;
+  ui.model = snap.model || null;
+  ui.reasoningBuf = snap.reasoning || "";
+  ui.tools = Array.isArray(snap.tools) ? snap.tools : [];
+  ui.textBuf = snap.content || "";
+  ui.usage = snap.usage || null;
+  if (ui.textBuf && !ui.firstTokenAt) ui.firstTokenAt = performance.now();
+}
+
+async function probeGeneration(convId) {
+  if (state.gens.has(convId)) return;
+  let snap;
+  try {
+    snap = await api("/api/conversations/" + enc(convId) + "/generation");
+  } catch {
+    return;
+  }
+  if (!snap || !snap.active) {
+    // The job finished between the conversation load and this probe: pull the
+    // persisted reply (the load may have raced it).
+    if (snap && snap.status === "done" && isVisibleConv(convId)) refreshCurrentConversation();
+    return;
+  }
+  if (state.gens.has(convId)) return;
+  const ui = newStreamUI();
+  ui.convId = convId;
+  applySnapshot(ui, snap);
+  state.gens.set(convId, { convId, controller: null, ui, status: "running", pollTimer: null });
+  updateGenIndicators();
+  if (isVisibleConv(convId)) {
+    renderMessages();
+    renderStream(ui);
+    syncComposerState();
+  }
+  schedulePoll(convId);
+}
+
+function schedulePoll(convId) {
+  const gen = state.gens.get(convId);
+  if (!gen) return;
+  gen.pollTimer = setTimeout(() => pollGeneration(convId), 1000);
+}
+
+async function pollGeneration(convId) {
+  const gen = state.gens.get(convId);
+  if (!gen) return;
+  let snap;
+  try {
+    snap = await api("/api/conversations/" + enc(convId) + "/generation");
+  } catch {
+    schedulePoll(convId);
+    return;
+  }
+  if (!snap || !snap.active) {
+    const status = snap ? snap.status : "none";
+    const wasVisible = isVisibleConv(convId);
+    endGeneration(convId);
+    if (wasVisible) refreshCurrentConversation();
+    else if (status === "done") toast("Reply ready in " + convTitle(convId));
+    return;
+  }
+  applySnapshot(gen.ui, snap);
+  if (isVisibleConv(convId)) renderStream(gen.ui);
+  schedulePoll(convId);
 }
 
 async function sendMessage(conv, text) {
@@ -3912,7 +4145,7 @@ async function sendMessage(conv, text) {
 }
 
 async function regenerate() {
-  if (!state.current || state.streaming) return;
+  if (!state.current || currentGenerating()) return;
   const msgs = state.currentMessages;
   let lastUser = -1;
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -3955,7 +4188,7 @@ function isUploading() {
 
 function updateAttachBtn() {
   attachBtn.disabled =
-    state.streaming ||
+    currentGenerating() ||
     isUploading() ||
     state.pendingAttachments.length >= MAX_ATTACHMENTS;
 }
@@ -4114,7 +4347,7 @@ async function downscaleImage(file) {
 
 /* Upload a batch of files (picker, paste, or drop), adding a chip per file. */
 async function addFiles(files) {
-  if (!files || files.length === 0 || state.streaming) return;
+  if (!files || files.length === 0 || currentGenerating()) return;
 
   const room = MAX_ATTACHMENTS - state.pendingAttachments.length;
   if (room <= 0) {
@@ -4224,7 +4457,7 @@ async function loadSpeechStatus() {
 function updateMicBtn() {
   if (!micBtn) return;
   micBtn.hidden = !speechReady("stt");
-  micBtn.disabled = state.streaming || micState === "transcribing";
+  micBtn.disabled = currentGenerating() || micState === "transcribing";
 }
 
 function setMicState(next) {
@@ -4240,11 +4473,11 @@ function setMicState(next) {
         : "Record voice message";
   micBtn.setAttribute("aria-label", label);
   micBtn.title = label;
-  micBtn.disabled = state.streaming || next === "transcribing";
+  micBtn.disabled = currentGenerating() || next === "transcribing";
 }
 
 function toggleMic() {
-  if (!speechReady("stt") || state.streaming) return;
+  if (!speechReady("stt") || currentGenerating()) return;
   if (micState === "recording") {
     stopRecording();
     return;
@@ -4512,7 +4745,7 @@ async function openImageGen(brief) {
     toast("Enter an image prompt");
     return;
   }
-  if (state.streaming) {
+  if (currentGenerating()) {
     toast("Wait for the current reply to finish");
     return;
   }
@@ -4578,7 +4811,7 @@ async function runImageGeneration(prompt) {
     toast("Enter an image prompt");
     return;
   }
-  if (state.streaming) {
+  if (currentGenerating()) {
     toast("Wait for the current reply to finish");
     return;
   }
@@ -4987,13 +5220,13 @@ function wireEvents() {
       if (!r.checked) return;
       settings.thinking = r.value;
       lsSet("myogchat.thinking", r.value);
-      if (state.current && !state.streaming) renderMessages();
+      if (state.current) renderMessagesWithStream();
     });
   });
   settingShowTps.addEventListener("change", () => {
     settings.showTps = settingShowTps.checked;
     lsSet("myogchat.showTps", settings.showTps ? "1" : "0");
-    if (state.current && !state.streaming) renderMessages();
+    if (state.current) renderMessagesWithStream();
   });
   settingEnterToSend.addEventListener("change", () => {
     settings.enterToSend = settingEnterToSend.checked;
@@ -5145,7 +5378,7 @@ function wireEvents() {
 
   composer.addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (state.streaming || isUploading()) return;
+    if (currentGenerating() || isUploading()) return;
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
@@ -5174,7 +5407,7 @@ function wireEvents() {
   });
 
   stopBtn.addEventListener("click", () => {
-    if (state.abort) state.abort.abort();
+    stopGeneration(state.current && state.current.id);
   });
 
   /* Attachments: paperclip opens the picker, chips render above the composer. */

@@ -408,10 +408,11 @@ merges sequentially and resolves the small additive conflicts in shared files
 ### 5.6 Paste image into composer — ✅ merged ([`docs/5-vision.md`](5-vision.md))
 - Pasting a screenshot attaches it (shares 5.1's pipeline).
 
-### 5.7 Background / concurrent generation — planned ([`docs/5.7-background-generation.md`](5.7-background-generation.md))
-- Start a reply in chat A, switch to B, come back to A's finished reply. Phase 1
-  is client-side per-conversation streams; Phase 2 is server-detached jobs so it
-  survives reload/tab-close. Fixes the global `state.streaming` freeze.
+### 5.7 Background / concurrent generation — ✅ implemented, branch `feat/p57-background` ([`docs/5.7-background-generation.md`](5.7-background-generation.md))
+- **Server-detached jobs**: start a reply in chat A, switch to B, come back to
+  A's finished reply; it also survives a reload/tab close. New endpoints
+  `GET /api/conversations/{id}/generation` + `POST …/generation/stop`. Replaces
+  the global `state.streaming` freeze with a per-conversation map.
 
 ### 5.8 Sandbox file output — planned ([`docs/5.8-sandbox-artifacts.md`](5.8-sandbox-artifacts.md))
 - Give the agent a writable workspace and harvest produced files (PDF/CSV/XLSX/

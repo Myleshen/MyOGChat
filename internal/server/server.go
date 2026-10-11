@@ -4,6 +4,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"myogchat/internal/auth"
@@ -71,6 +73,24 @@ type Server struct {
 
 	// mediaSem bounds concurrent background media-transcription workers (4.5b).
 	mediaSem chan struct{}
+
+	// jobs owns detached reply generations (Phase 5.7). It is created lazily so
+	// test servers built with a struct literal still work.
+	jobs     *jobHub
+	jobsOnce sync.Once
+	// streamAgentFn runs the upstream agent loop for a reply. It is a field so
+	// tests can inject a deterministic stream; production uses up.StreamAgent.
+	streamAgentFn func(ctx context.Context, p upstream.Params, exec upstream.ExecuteTool) <-chan upstream.Event
+}
+
+// hub returns the reply-job hub, creating it on first use.
+func (s *Server) hub() *jobHub {
+	s.jobsOnce.Do(func() {
+		if s.jobs == nil {
+			s.jobs = newJobHub()
+		}
+	})
+	return s.jobs
 }
 
 // New builds a Server. encKey encrypts per-user API keys; serverKey is the
@@ -87,7 +107,8 @@ type Server struct {
 func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool, speechDefaults SpeechDefaults, imagegenURL, imagegenToken, linkwardenURL, linkwardenToken string) *Server {
 	s := &Server{
 		st: st, up: up, auth: a, static: staticFS, log: log,
-		encKey: encKey, serverKey: serverKey, search: search, geo: geo, sbx: sbx,
+		streamAgentFn: up.StreamAgent,
+		encKey:        encKey, serverKey: serverKey, search: search, geo: geo, sbx: sbx,
 		ocrEngine: ocrEngine, ocrEngineName: ocrEngineName, ocrVisionAvailable: ocrVisionAvailable,
 		speechCfg:       speechDefaults,
 		imagegenURL:     imagegenURL,
@@ -203,6 +224,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/conversations/{id}/messages", s.handlePostMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/messages/{messageId}/edit", s.handleEditMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/regenerate", s.handleRegenerate)
+	// Detached generation (Phase 5.7): snapshot for reattach/poll, and stop.
+	mux.HandleFunc("GET /api/conversations/{id}/generation", s.handleGetGeneration)
+	mux.HandleFunc("POST /api/conversations/{id}/generation/stop", s.handleStopGeneration)
 	// Export & backup (§19).
 	mux.HandleFunc("GET /api/conversations/{id}/export", s.handleExportConversation)
 	mux.HandleFunc("GET /api/admin/backup", s.handleAdminBackup)
