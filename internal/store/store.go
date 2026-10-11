@@ -146,6 +146,19 @@ CREATE TABLE IF NOT EXISTS images (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id);
+CREATE TABLE IF NOT EXISTS artifacts (
+  id              TEXT PRIMARY KEY,
+  user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  mime            TEXT NOT NULL,
+  size            INTEGER NOT NULL,
+  sha256          TEXT,
+  data            BLOB NOT NULL,
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_user ON artifacts(user_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts(conversation_id);
 `
 
 // User mirrors a row of the users table (§9.1).
@@ -209,6 +222,7 @@ type Message struct {
 	Attachments      []AttachedFile   `json:"attachments,omitempty"`
 	Tools            []ToolActivity   `json:"tools,omitempty"`
 	Images           []GeneratedImage `json:"images,omitempty"`
+	Artifacts        []ArtifactRef    `json:"artifacts,omitempty"`
 	CreatedAt        int64            `json:"created_at"`
 }
 
@@ -265,6 +279,31 @@ type Image struct {
 	Size      int64  `json:"size"`
 	Data      []byte `json:"-"`
 	CreatedAt int64  `json:"created_at"`
+}
+
+// ArtifactRef is the display metadata of a file the agent produced into a
+// message (5.8). The bytes live in the artifacts table; a message stores only a
+// reference so history reloads can render a download chip with
+// GET /api/artifacts/{id}.
+type ArtifactRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Mime string `json:"mime,omitempty"`
+	Size int64  `json:"size"`
+}
+
+// Artifact mirrors a row of the artifacts table (5.8). Data holds the raw file
+// bytes and is never serialized to JSON; it is served opaque as an attachment.
+type Artifact struct {
+	ID             string  `json:"id"`
+	UserID         string  `json:"-"`
+	ConversationID *string `json:"conversation_id,omitempty"`
+	Name           string  `json:"name"`
+	Mime           string  `json:"mime"`
+	Size           int64   `json:"size"`
+	SHA256         string  `json:"sha256,omitempty"`
+	Data           []byte  `json:"-"`
+	CreatedAt      int64   `json:"created_at"`
 }
 
 // Attachment mirrors a row of the attachments table (2.3). Text is the
@@ -387,6 +426,7 @@ func (s *Store) migrate() error {
 		{"users", "linkwarden_url", `ALTER TABLE users ADD COLUMN linkwarden_url TEXT`},
 		{"users", "linkwarden_token_enc", `ALTER TABLE users ADD COLUMN linkwarden_token_enc TEXT`},
 		{"messages", "images", `ALTER TABLE messages ADD COLUMN images TEXT`},
+		{"messages", "artifacts", `ALTER TABLE messages ADD COLUMN artifacts TEXT`},
 		{"attachments", "status", `ALTER TABLE attachments ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'`},
 		{"attachments", "error", `ALTER TABLE attachments ADD COLUMN error TEXT`},
 		// Pinned chats (feature B): additive, defaults to unpinned.
@@ -949,16 +989,16 @@ func (s *Store) DeleteOlderThan(ctx context.Context, cutoff int64) (int64, error
 
 const messageCols = "id, conversation_id, role, content, reasoning, model, " +
 	"prompt_tokens, completion_tokens, cached_tokens, cost_micros, " +
-	"reasoning_tokens, duration_ms, attachments, tools, images, created_at"
+	"reasoning_tokens, duration_ms, attachments, tools, images, artifacts, created_at"
 
 func scanMessage(sc scanner) (Message, error) {
 	var m Message
-	var reasoning, model, attachments, tools, images sql.NullString
+	var reasoning, model, attachments, tools, images, artifacts sql.NullString
 	var promptTokens, completionTokens, cachedTokens, costMicros sql.NullInt64
 	var reasoningTokens, durationMs sql.NullInt64
 	err := sc.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content,
 		&reasoning, &model, &promptTokens, &completionTokens, &cachedTokens,
-		&costMicros, &reasoningTokens, &durationMs, &attachments, &tools, &images, &m.CreatedAt)
+		&costMicros, &reasoningTokens, &durationMs, &attachments, &tools, &images, &artifacts, &m.CreatedAt)
 	if err != nil {
 		return Message{}, err
 	}
@@ -981,6 +1021,9 @@ func scanMessage(sc scanner) (Message, error) {
 	if images.Valid && images.String != "" {
 		_ = json.Unmarshal([]byte(images.String), &m.Images)
 	}
+	if artifacts.Valid && artifacts.String != "" {
+		_ = json.Unmarshal([]byte(artifacts.String), &m.Artifacts)
+	}
 	return m, nil
 }
 
@@ -998,12 +1041,16 @@ func (s *Store) InsertMessage(ctx context.Context, m *Message) error {
 	if err != nil {
 		return err
 	}
+	artifacts, err := marshalJSON(m.Artifacts)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ConversationID, m.Role, m.Content, nullString(m.Reasoning),
 		nullString(m.Model), nullInt(m.PromptTokens), nullInt(m.CompletionTokens),
 		nullInt(m.CachedTokens), nullInt(m.CostMicros), nullInt(m.ReasoningTokens),
-		nullInt(m.DurationMs), attachments, tools, images, m.CreatedAt)
+		nullInt(m.DurationMs), attachments, tools, images, artifacts, m.CreatedAt)
 	return err
 }
 
@@ -1848,6 +1895,67 @@ func (s *Store) DeleteCalendarAccount(ctx context.Context, userID string) (int64
 // all users, for the retention janitor.
 func (s *Store) DeleteImagesOlderThan(ctx context.Context, cutoff int64) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM images WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ---------- artifacts (5.8) ----------
+
+const artifactCols = "id, user_id, conversation_id, name, mime, size, sha256, data, created_at"
+
+func scanArtifact(sc scanner) (Artifact, error) {
+	var a Artifact
+	var convID, sha sql.NullString
+	if err := sc.Scan(&a.ID, &a.UserID, &convID, &a.Name, &a.Mime, &a.Size,
+		&sha, &a.Data, &a.CreatedAt); err != nil {
+		return Artifact{}, err
+	}
+	if convID.Valid {
+		a.ConversationID = &convID.String
+	}
+	if sha.Valid {
+		a.SHA256 = sha.String
+	}
+	return a, nil
+}
+
+// InsertArtifact stores a produced file (bytes + metadata) for its owner.
+func (s *Store) InsertArtifact(ctx context.Context, a *Artifact) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO artifacts (`+artifactCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.UserID, nullString(a.ConversationID), a.Name, a.Mime, a.Size,
+		nullString(&a.SHA256), a.Data, a.CreatedAt)
+	return err
+}
+
+// GetArtifact loads one artifact (including bytes) owned by userID, else
+// ErrNotFound. The owner guard makes cross-user access indistinguishable from a
+// missing row.
+func (s *Store) GetArtifact(ctx context.Context, id, userID string) (Artifact, error) {
+	a, err := scanArtifact(s.db.QueryRowContext(ctx,
+		`SELECT `+artifactCols+` FROM artifacts WHERE id = ? AND user_id = ?`, id, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Artifact{}, ErrNotFound
+	}
+	return a, err
+}
+
+// DeleteArtifact removes an owner's artifact. It returns the number of rows
+// removed (0 when not owned by userID).
+func (s *Store) DeleteArtifact(ctx context.Context, id, userID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM artifacts WHERE id = ? AND user_id = ?`, id, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteArtifactsOlderThan purges artifacts created before cutoff (unix ms)
+// across all users, for the retention janitor.
+func (s *Store) DeleteArtifactsOlderThan(ctx context.Context, cutoff int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM artifacts WHERE created_at < ?`, cutoff)
 	if err != nil {
 		return 0, err
 	}

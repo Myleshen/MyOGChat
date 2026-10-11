@@ -59,7 +59,8 @@ func newTestRunner(cfg Config, f *fakeExec) *Runner {
 	return NewRunnerWithExec(cfg, f.run)
 }
 
-func testConfig() Config {
+func testConfig(t *testing.T) Config {
+	t.Helper()
 	c := DefaultConfig()
 	c.Docker = "/usr/bin/docker"
 	c.Network = "myogchat-sbx"
@@ -67,12 +68,13 @@ func testConfig() Config {
 	c.PythonImage = "python:3.14-slim"
 	c.Timeout = 5 * time.Second
 	c.MaxOutput = DefaultMaxOutput
+	c.WorkDir = t.TempDir()
 	return c
 }
 
 func TestRunArgsBash(t *testing.T) {
-	r := NewRunner(testConfig())
-	got := r.runArgs("bash:5.3", []string{"bash", "-s"}, "myogchat-sbx-abc")
+	r := NewRunner(testConfig(t))
+	got := r.runArgs("bash:5.3", []string{"bash", "-s"}, "myogchat-sbx-abc", "/host/work")
 	want := []string{
 		"run",
 		"--rm",
@@ -83,7 +85,7 @@ func TestRunArgsBash(t *testing.T) {
 		"--security-opt", "no-new-privileges",
 		"--user", "65534:65534",
 		"--read-only",
-		"--tmpfs", "/work:rw,exec,size=64m",
+		"-v", "/host/work:/work:rw",
 		"--tmpfs", "/tmp:rw,size=16m",
 		"--workdir", "/work",
 		"--memory", "256m",
@@ -91,6 +93,7 @@ func TestRunArgsBash(t *testing.T) {
 		"--cpus", "1",
 		"--pids-limit", "128",
 		"--ulimit", "nofile=256:256",
+		"--ulimit", "fsize=10485760:10485760",
 		"--stop-timeout", "2",
 		"--pull", "never",
 		"-e", "HOME=/work",
@@ -105,8 +108,8 @@ func TestRunArgsBash(t *testing.T) {
 }
 
 func TestRunArgsPython(t *testing.T) {
-	r := NewRunner(testConfig())
-	got := r.runArgs("python:3.14-slim", []string{"python", "-"}, "myogchat-sbx-xyz")
+	r := NewRunner(testConfig(t))
+	got := r.runArgs("python:3.14-slim", []string{"python", "-"}, "myogchat-sbx-xyz", "/host/work")
 	// The command must read from stdin, never carry the code itself.
 	if got[len(got)-2] != "python" || got[len(got)-1] != "-" {
 		t.Fatalf("python command = %q, want [python -]", got[len(got)-2:])
@@ -120,7 +123,7 @@ func TestRunArgsPython(t *testing.T) {
 // argv) and a non-zero container exit becomes Result.ExitCode, not an error.
 func TestRunFeedsCodeOnStdinAndMapsExitCode(t *testing.T) {
 	f := &fakeExec{}
-	r := newTestRunner(testConfig(), f)
+	r := newTestRunner(testConfig(t), f)
 	exitErr := exec.Command("sh", "-c", "exit 3").Run()
 	f.fn = func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
 		switch args[0] {
@@ -159,7 +162,7 @@ func TestRunFeedsCodeOnStdinAndMapsExitCode(t *testing.T) {
 
 func TestRunTimeoutCleansUp(t *testing.T) {
 	f := &fakeExec{}
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.Timeout = 40 * time.Millisecond
 	r := newTestRunner(cfg, f)
 	f.fn = func(ctx context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
@@ -201,7 +204,7 @@ func TestRunTimeoutCleansUp(t *testing.T) {
 
 func TestRunTruncation(t *testing.T) {
 	f := &fakeExec{}
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.MaxOutput = 10
 	r := newTestRunner(cfg, f)
 	f.fn = func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
@@ -227,7 +230,7 @@ func TestRunTruncation(t *testing.T) {
 
 func TestRunTruncationKeepsStderrInBudget(t *testing.T) {
 	f := &fakeExec{}
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.MaxOutput = 10
 	r := newTestRunner(cfg, f)
 	f.fn = func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
@@ -260,7 +263,7 @@ func TestRunErrorMapping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeExec{}
-			r := newTestRunner(testConfig(), f)
+			r := newTestRunner(testConfig(t), f)
 			f.fn = func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
 				if args[0] == "run" {
 					return nil, []byte(tc.stderr), tc.execEr
@@ -277,7 +280,7 @@ func TestRunErrorMapping(t *testing.T) {
 
 func TestRunDockerNotFound(t *testing.T) {
 	f := &fakeExec{}
-	r := newTestRunner(testConfig(), f)
+	r := newTestRunner(testConfig(t), f)
 	f.fn = func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
 		if args[0] == "run" {
 			return nil, nil, exec.ErrNotFound
@@ -292,7 +295,7 @@ func TestRunDockerNotFound(t *testing.T) {
 
 func TestRunValidation(t *testing.T) {
 	f := &fakeExec{}
-	r := newTestRunner(testConfig(), f)
+	r := newTestRunner(testConfig(t), f)
 	if _, err := r.Run(context.Background(), Spec{Language: "ruby", Code: "puts 1"}); err == nil {
 		t.Error("unknown language should error")
 	}
@@ -303,7 +306,7 @@ func TestRunValidation(t *testing.T) {
 
 func TestEnsureNetworkCreatesOnce(t *testing.T) {
 	f := &fakeExec{}
-	r := NewRunnerWithExec(testConfig(), f.run)
+	r := NewRunnerWithExec(testConfig(t), f.run)
 	f.fn = func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
 		switch {
 		case args[0] == "network" && args[1] == "inspect":
@@ -332,7 +335,7 @@ func TestEnsureNetworkCreatesOnce(t *testing.T) {
 
 func TestEnsureNetworkFailure(t *testing.T) {
 	f := &fakeExec{}
-	r := NewRunnerWithExec(testConfig(), f.run)
+	r := NewRunnerWithExec(testConfig(t), f.run)
 	f.fn = func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
 		if args[0] == "network" {
 			return nil, []byte("cannot create"), errors.New("exit status 1")
@@ -347,7 +350,7 @@ func TestEnsureNetworkFailure(t *testing.T) {
 
 func TestAvailableProbeCaches(t *testing.T) {
 	f := &fakeExec{}
-	r := NewRunnerWithExec(testConfig(), f.run)
+	r := NewRunnerWithExec(testConfig(t), f.run)
 	calls := 0
 	f.fn = func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
 		if args[0] == "info" {

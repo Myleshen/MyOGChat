@@ -413,10 +413,14 @@ merges sequentially and resolves the small additive conflicts in shared files
   is client-side per-conversation streams; Phase 2 is server-detached jobs so it
   survives reload/tab-close. Fixes the global `state.streaming` freeze.
 
-### 5.8 Sandbox file output — planned ([`docs/5.8-sandbox-artifacts.md`](5.8-sandbox-artifacts.md))
-- Give the agent a writable workspace and harvest produced files (PDF/CSV/XLSX/
-  DOCX/TXT/charts) into a downloadable `artifacts` table + chips on the assistant
-  message.
+### 5.8 Sandbox file output — done ([`docs/5.8-sandbox-artifacts.md`](5.8-sandbox-artifacts.md))
+- The sandbox `/work` is now a per-run writable host workspace (under
+  `~/.local/share/myogchat/sandbox`); regular files are harvested (symlinks
+  skipped, caps enforced), stored owner-scoped in an `artifacts` table, attached
+  to the assistant message, and served as opaque attachments via
+  `GET/DELETE /api/artifacts/{id}` with download chips in the SPA. PDF/XLSX/DOCX
+  come from the prebuilt `myogchat-sandbox-python` image (built by
+  `deploy/sandbox-setup.sh`).
 
 ### 5.9 Email digest tool + standard — planned ([`docs/5.9-email-digest.md`](5.9-email-digest.md))
 - `email_digest` resolves ranges (`today`, `unread`, …) server-side and returns a

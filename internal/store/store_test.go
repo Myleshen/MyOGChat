@@ -618,6 +618,76 @@ func TestImagesRoundTripAndScoping(t *testing.T) {
 	}
 }
 
+// TestArtifactsRoundTripAndScoping covers the artifacts store (5.8):
+// round-trip, owner scoping, the retention janitor, and the message ref list.
+func TestArtifactsRoundTripAndScoping(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-alice", "alice", false)
+	bob := seedUser(t, s, "u-bob", "bob", false)
+	if err := s.InsertConversation(ctx, &Conversation{
+		ID: "ca1", UserID: &alice.ID, Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+
+	conv := "ca1"
+	art := &Artifact{
+		ID: "art-1", UserID: alice.ID, ConversationID: &conv, Name: "report.csv",
+		Mime: "text/csv", Size: 4, SHA256: "deadbeef", Data: []byte("a,b\n"), CreatedAt: 1000,
+	}
+	if err := s.InsertArtifact(ctx, art); err != nil {
+		t.Fatalf("InsertArtifact: %v", err)
+	}
+
+	got, err := s.GetArtifact(ctx, "art-1", alice.ID)
+	if err != nil {
+		t.Fatalf("owner cannot read own artifact: %v", err)
+	}
+	if got.Name != "report.csv" || string(got.Data) != "a,b\n" || got.Mime != "text/csv" ||
+		got.ConversationID == nil || *got.ConversationID != "ca1" || got.SHA256 != "deadbeef" {
+		t.Errorf("GetArtifact = %+v", got)
+	}
+
+	// Cross-user read and delete are indistinguishable from a missing row.
+	if _, err := s.GetArtifact(ctx, "art-1", bob.ID); err != ErrNotFound {
+		t.Errorf("cross-user read = %v, want ErrNotFound", err)
+	}
+	if n, err := s.DeleteArtifact(ctx, "art-1", bob.ID); err != nil || n != 0 {
+		t.Errorf("cross-user delete = %d, %v; want 0, nil", n, err)
+	}
+
+	// The reference survives a message round-trip.
+	if err := s.InsertMessage(ctx, &Message{
+		ID: "ma1", ConversationID: "ca1", Role: "assistant",
+		Artifacts: []ArtifactRef{{ID: "art-1", Name: "report.csv", Mime: "text/csv", Size: 4}},
+		CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := s.ListMessages(ctx, "ca1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 || len(msgs[0].Artifacts) != 1 || msgs[0].Artifacts[0].Name != "report.csv" {
+		t.Fatalf("message artifacts not round-tripped: %+v", msgs)
+	}
+
+	// Retention purge by age, then owner delete.
+	if n, err := s.DeleteArtifactsOlderThan(ctx, 500); err != nil || n != 0 {
+		t.Errorf("DeleteArtifactsOlderThan(500) = %d, %v; want 0, nil", n, err)
+	}
+	if n, err := s.DeleteArtifactsOlderThan(ctx, 2000); err != nil || n != 1 {
+		t.Errorf("DeleteArtifactsOlderThan(2000) = %d, %v; want 1, nil", n, err)
+	}
+	if err := s.InsertArtifact(ctx, art); err != nil {
+		t.Fatalf("re-InsertArtifact: %v", err)
+	}
+	if n, err := s.DeleteArtifact(ctx, "art-1", alice.ID); err != nil || n != 1 {
+		t.Errorf("owner delete = %d, %v; want 1, nil", n, err)
+	}
+}
+
 func int64p(v int64) *int64 { return &v }
 
 // seedUsageMessage inserts an assistant message with the given counters.

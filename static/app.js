@@ -3364,6 +3364,8 @@ function buildAssistantMessage(m, isLast) {
   }
   const hasImages = Array.isArray(m.images) && m.images.length > 0;
   if (hasImages) bubble.appendChild(buildImagesBlock(m.images));
+  const hasArtifacts = Array.isArray(m.artifacts) && m.artifacts.length > 0;
+  if (hasArtifacts) bubble.appendChild(buildArtifactsBlock(m.artifacts));
   const hasText = typeof m.content === "string" && m.content.trim() !== "";
   if (hasText) {
     const content = el("div", "msg-content markdown");
@@ -3371,9 +3373,9 @@ function buildAssistantMessage(m, isLast) {
     enhanceMarkdown(content);
     bubble.appendChild(content);
   }
-  // An image-only message has no cost/model footer (and no Retry, which would
-  // replace the image with a text reply).
-  if (hasText || !hasImages) bubble.appendChild(buildAssistantFooter(m, isLast));
+  // A media-only message (image/artifact, no text) has no cost/model footer
+  // (and no Retry, which would replace it with a text reply).
+  if (hasText || !(hasImages || hasArtifacts)) bubble.appendChild(buildAssistantFooter(m, isLast));
   wrap.appendChild(bubble);
   return wrap;
 }
@@ -3397,6 +3399,39 @@ function buildImagesBlock(images) {
     wrap.appendChild(link);
   }
   return wrap;
+}
+
+/* Render agent-produced files (feature 5.8) referenced by an assistant message
+   as download chips. Bytes are served by GET /api/artifacts/{id} as an
+   attachment, so the chip is a plain download link. */
+function buildArtifactsBlock(artifacts) {
+  const wrap = el("div", "msg-artifacts");
+  for (const a of artifacts) {
+    if (!a || !a.id) continue;
+    wrap.appendChild(artifactChip(a));
+  }
+  return wrap;
+}
+
+/* A download chip for one produced file, reusing the attachment-chip styling. */
+function artifactChip(a) {
+  const link = document.createElement("a");
+  link.className = "attachment-chip";
+  link.href = "/api/artifacts/" + enc(a.id);
+  link.setAttribute("download", a.name || "file");
+  link.title = "Download " + (a.mime ? a.mime + " · " : "") + (a.name || "file");
+  const icon = el("span", "attachment-chip-icon");
+  icon.textContent = fileGlyph(a.name, a.mime);
+  const name = el("span", "attachment-chip-name");
+  name.textContent = a.name || "file";
+  link.append(icon, name);
+  const size = fmtBytes(a.size);
+  if (size) {
+    const s = el("span", "attachment-chip-size");
+    s.textContent = size;
+    link.appendChild(s);
+  }
+  return link;
 }
 
 function renderTotalCost() {

@@ -135,3 +135,31 @@ func TestSandboxToolNilRunner(t *testing.T) {
 		t.Error("nil runner should error")
 	}
 }
+
+func TestSandboxToolArtifactListAndCollector(t *testing.T) {
+	f := &fakeRunner{res: sandbox.Result{
+		ExitCode:  0,
+		Stdout:    "done\n",
+		Artifacts: []sandbox.Artifact{{Name: "report.csv", MIME: "text/csv", Data: []byte("a,b\n")}},
+	}}
+	var collected []sandbox.Artifact
+	tool := NewRunPythonToolWithCollect(f, func(a sandbox.Artifact) { collected = append(collected, a) })
+	out, err := tool.Run(context.Background(), json.RawMessage(`{"code":"print(1)"}`))
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if !strings.Contains(out, "--- artifacts ---") || !strings.Contains(out, "report.csv") {
+		t.Errorf("output missing artifact list: %q", out)
+	}
+	if len(collected) != 1 || collected[0].Name != "report.csv" {
+		t.Fatalf("collector got %+v", collected)
+	}
+}
+
+func TestSandboxToolNilCollectorIsSafe(t *testing.T) {
+	f := &fakeRunner{res: sandbox.Result{Artifacts: []sandbox.Artifact{{Name: "x.txt", Data: []byte("x")}}}}
+	tool := NewRunBashTool(f) // no collector
+	if _, err := tool.Run(context.Background(), json.RawMessage(`{"code":"true"}`)); err != nil {
+		t.Fatalf("Run with no collector: %v", err)
+	}
+}

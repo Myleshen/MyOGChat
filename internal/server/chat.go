@@ -13,6 +13,7 @@ import (
 
 	"myogchat/internal/extract"
 	"myogchat/internal/models"
+	"myogchat/internal/sandbox"
 	"myogchat/internal/store"
 	"myogchat/internal/upstream"
 )
@@ -258,11 +259,19 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	}
 	// Build the per-request tool set (Phase 2.4). An empty registry disables
 	// tool calling but still runs the same agentic code path. Images generated
-	// by the generate_image tool (4.3b) are collected here and attached to the
-	// assistant message below.
+	// by the generate_image tool (4.3b) and files produced by the code sandbox
+	// (5.8) are collected here and attached to the assistant message below.
 	var generatedImages []store.GeneratedImage
-	reg := s.toolRegistryWithImage(ctx, u, func(img store.GeneratedImage) {
+	var generatedArtifacts []store.ArtifactRef
+	reg := s.toolRegistryWith(ctx, u, func(img store.GeneratedImage) {
 		generatedImages = append(generatedImages, img)
+	}, func(a sandbox.Artifact) {
+		ref, err := s.storeArtifact(ctx, u.ID, conv.ID, a)
+		if err != nil {
+			s.log.Error("store sandbox artifact", "name", a.Name, "error", err)
+			return
+		}
+		generatedArtifacts = append(generatedArtifacts, ref)
 	})
 	events := s.up.StreamAgent(ctx, upstream.Params{
 		Dialect:      m.Dialect,
@@ -386,6 +395,7 @@ stream:
 		DurationMs:       &durationMs,
 		Tools:            tools,
 		Images:           generatedImages,
+		Artifacts:        generatedArtifacts,
 		CreatedAt:        time.Now().UnixMilli(),
 	}
 	if reasoningStr := reasoning.String(); reasoningStr != "" {

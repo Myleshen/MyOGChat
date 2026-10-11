@@ -244,10 +244,17 @@ func (s *Server) setUserLinkwarden(ctx context.Context, u store.User, rawURL str
 
 // toolRegistry builds the per-request set of tools with no image collector.
 func (s *Server) toolRegistry(ctx context.Context, u store.User) *tools.Registry {
-	return s.toolRegistryWithImage(ctx, u, nil)
+	return s.toolRegistryWith(ctx, u, nil, nil)
 }
 
-// toolRegistryWithImage builds the per-request set of tools. It is empty when
+// toolRegistryWithImage builds the per-request set of tools, reporting generated
+// images through onImage (and no sandbox artifacts). Retained for callers that
+// do not collect artifacts.
+func (s *Server) toolRegistryWithImage(ctx context.Context, u store.User, onImage func(store.GeneratedImage)) *tools.Registry {
+	return s.toolRegistryWith(ctx, u, onImage, nil)
+}
+
+// toolRegistryWith builds the per-request set of tools. It is empty when
 // tools are disabled. web_search is present whenever any search provider is
 // usable (DuckDuckGo needs no key, so it is always available); fetch_url is
 // always available; Linkwarden tools require the integration; the read-only
@@ -255,8 +262,9 @@ func (s *Server) toolRegistry(ctx context.Context, u store.User) *tools.Registry
 // supplies the caller's per-user search credentials (Serper key, 2.12) and
 // connected calendar (3.3). When onImage is non-nil and a ComfyUI backend is
 // configured, the generate_image tool (4.3b) is registered and reports generated
-// images through onImage.
-func (s *Server) toolRegistryWithImage(ctx context.Context, u store.User, onImage func(store.GeneratedImage)) *tools.Registry {
+// images through onImage. onArtifact (5.8) reports files produced by the code
+// sandbox.
+func (s *Server) toolRegistryWith(ctx context.Context, u store.User, onImage func(store.GeneratedImage), onArtifact tools.ArtifactCollector) *tools.Registry {
 	reg := tools.NewRegistry()
 	if !s.toolsEnabled(ctx) {
 		return reg
@@ -290,8 +298,8 @@ func (s *Server) toolRegistryWithImage(ctx context.Context, u store.User, onImag
 	// Code sandbox (Phase 2.6 / 2.7): registered only when the DB toggle is on
 	// AND Docker is reachable. Missing images surface a clear error at call time.
 	if s.sbx != nil && s.sandboxEnabled(ctx) && s.sbx.Available(ctx) {
-		reg.Add(tools.NewRunBashTool(s.sbx))
-		reg.Add(tools.NewRunPythonTool(s.sbx))
+		reg.Add(tools.NewRunBashToolWithCollect(s.sbx, onArtifact))
+		reg.Add(tools.NewRunPythonToolWithCollect(s.sbx, onArtifact))
 	}
 	// Read-only email (feature 3.2): only when the user has an enabled mailbox.
 	if connect, ok := s.mailConnector(ctx, u.ID); ok {

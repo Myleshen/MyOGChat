@@ -894,6 +894,20 @@ button { font: inherit; }
 }
 .attachment-chip-icon { font-size: 0.95rem; line-height: 1; }
 
+/* Agent-produced file chips inside an assistant message (feature 5.8). They are
+   download links reusing the attachment-chip look. */
+.msg-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0;
+}
+a.attachment-chip {
+  text-decoration: none;
+  cursor: pointer;
+}
+a.attachment-chip:hover { background: var(--bg-overlay); }
+
 .composer textarea {
   flex: 1;
   min-width: 0;
