@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,7 +82,7 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	if err != nil {
 		t.Fatalf("columns(conversations): %v", err)
 	}
-	for _, col := range []string{"project_id", "user_id"} {
+	for _, col := range []string{"project_id", "user_id", "pinned"} {
 		if !convCols[col] {
 			t.Errorf("migration did not add conversations.%s", col)
 		}
@@ -910,5 +911,202 @@ func TestMailAccountRoundTrip(t *testing.T) {
 	}
 	if _, err := s.GetMailAccount(ctx, u.ID); err != ErrNotFound {
 		t.Fatalf("GetMailAccount after delete = %v, want ErrNotFound", err)
+	}
+}
+
+// seedSearchConv inserts a conversation with an optional title and one message,
+// returning the conversation id.
+func seedSearchConv(t *testing.T, s *Store, id, userID, title, content string, updatedAt int64) {
+	t.Helper()
+	uid := userID
+	if err := s.InsertConversation(context.Background(), &Conversation{
+		ID: id, UserID: &uid, Title: title, Model: "glm-5.3-flash",
+		CreatedAt: updatedAt, UpdatedAt: updatedAt,
+	}); err != nil {
+		t.Fatalf("InsertConversation(%s): %v", id, err)
+	}
+	if content != "" {
+		if err := s.InsertMessage(context.Background(), &Message{
+			ID: id + "-m1", ConversationID: id, Role: "user", Content: content, CreatedAt: updatedAt,
+		}); err != nil {
+			t.Fatalf("InsertMessage(%s): %v", id, err)
+		}
+	}
+}
+
+// TestSearchConversations covers title + content matching, case-insensitivity,
+// user scoping, ordering, the result cap, and snippet generation.
+func TestSearchConversations(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-alice", "alice", false)
+	bob := seedUser(t, s, "u-bob", "bob", false)
+
+	seedSearchConv(t, s, "c-rust", alice.ID, "Rust notes",
+		"A short intro. The "+strings.Repeat("x", 200)+" borrow checker rules apply here.", 100)
+	seedSearchConv(t, s, "c-bake", alice.ID, "Baking Bread", "sourdough starter and proofing", 300)
+	seedSearchConv(t, s, "c-bob", bob.ID, "Bob's chat", "borrow checker appears for bob too", 999)
+
+	// Content match, case-insensitive, scoped to the owner.
+	hits, err := s.SearchConversations(ctx, alice.ID, "BORROW", 50)
+	if err != nil {
+		t.Fatalf("SearchConversations(content): %v", err)
+	}
+	if len(hits) != 1 || hits[0].ConversationID != "c-rust" {
+		t.Fatalf("content hits = %+v, want only c-rust", hits)
+	}
+	if hits[0].Title != "Rust notes" || hits[0].UpdatedAt != 100 {
+		t.Errorf("hit meta = %+v", hits[0])
+	}
+	if !strings.Contains(hits[0].Snippet, "borrow checker") {
+		t.Errorf("snippet = %q, want it to contain the match", hits[0].Snippet)
+	}
+	if n := len([]rune(hits[0].Snippet)); n > 122 {
+		t.Errorf("snippet is %d runes, want <= 122", n)
+	}
+
+	// Title-only match: returned, with an empty snippet (no matching message).
+	hits, err = s.SearchConversations(ctx, alice.ID, "baking", 50)
+	if err != nil {
+		t.Fatalf("SearchConversations(title): %v", err)
+	}
+	if len(hits) != 1 || hits[0].ConversationID != "c-bake" || hits[0].Snippet != "" {
+		t.Fatalf("title hits = %+v, want c-bake with empty snippet", hits)
+	}
+
+	// A term that only exists in another user's chat does not leak.
+	if hits, _ := s.SearchConversations(ctx, alice.ID, "for bob", 50); len(hits) != 0 {
+		t.Errorf("cross-user leak: %+v", hits)
+	}
+	if hits, _ := s.SearchConversations(ctx, bob.ID, "borrow", 50); len(hits) != 1 || hits[0].ConversationID != "c-bob" {
+		t.Errorf("bob hits = %+v, want c-bob", hits)
+	}
+
+	// No match, empty query, and a zero/negative cap.
+	if hits, _ := s.SearchConversations(ctx, alice.ID, "nonexistent", 50); len(hits) != 0 {
+		t.Errorf("no-match hits = %+v, want none", hits)
+	}
+	if hits, _ := s.SearchConversations(ctx, alice.ID, "   ", 50); len(hits) != 0 {
+		t.Errorf("blank query hits = %+v, want none", hits)
+	}
+}
+
+// TestSearchConversationsOrderAndLimit covers ordering (updated_at DESC) and
+// the result cap.
+func TestSearchConversationsOrderAndLimit(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	u := seedUser(t, s, "u1", "owner", false)
+
+	seedSearchConv(t, s, "c-old", u.ID, "alpha old", "contains alpha", 100)
+	seedSearchConv(t, s, "c-mid", u.ID, "alpha mid", "contains alpha", 200)
+	seedSearchConv(t, s, "c-new", u.ID, "alpha new", "contains alpha", 300)
+
+	hits, err := s.SearchConversations(ctx, u.ID, "alpha", 50)
+	if err != nil {
+		t.Fatalf("SearchConversations: %v", err)
+	}
+	got := []string{hits[0].ConversationID, hits[1].ConversationID, hits[2].ConversationID}
+	want := []string{"c-new", "c-mid", "c-old"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+
+	capped, err := s.SearchConversations(ctx, u.ID, "alpha", 2)
+	if err != nil {
+		t.Fatalf("SearchConversations(cap): %v", err)
+	}
+	if len(capped) != 2 || capped[0].ConversationID != "c-new" || capped[1].ConversationID != "c-mid" {
+		t.Errorf("capped hits = %+v, want the two newest", capped)
+	}
+}
+
+// TestPinnedRoundTripAndScoping covers the pinned flag (feature B): default,
+// owner-guarded toggle, ordering pinned-first, and cross-user isolation.
+func TestPinnedRoundTripAndScoping(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-alice", "alice", false)
+	bob := seedUser(t, s, "u-bob", "bob", false)
+
+	seedSearchConv(t, s, "a1", alice.ID, "Recent", "x", 300)
+	seedSearchConv(t, s, "a2", alice.ID, "Older", "x", 100)
+	seedSearchConv(t, s, "b1", bob.ID, "Bob", "x", 999)
+
+	// A fresh row is unpinned.
+	if c, _ := s.GetConversation(ctx, "a1", alice.ID); c.Pinned {
+		t.Error("new conversation is pinned by default")
+	}
+
+	// Pin the older alice chat; it must sort first.
+	if err := s.SetConversationPinned(ctx, "a2", alice.ID, true); err != nil {
+		t.Fatalf("SetConversationPinned: %v", err)
+	}
+	if c, _ := s.GetConversation(ctx, "a2", alice.ID); !c.Pinned {
+		t.Error("pinned flag did not persist")
+	}
+	list, err := s.ListConversations(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(list) != 2 || list[0].ID != "a2" || !list[0].Pinned {
+		t.Fatalf("pinned-first order = %+v, want a2 first", list)
+	}
+
+	// Cross-user toggle is indistinguishable from missing.
+	if err := s.SetConversationPinned(ctx, "a2", bob.ID, true); err != ErrNotFound {
+		t.Errorf("cross-user pin = %v, want ErrNotFound", err)
+	}
+	if c, _ := s.GetConversation(ctx, "a2", alice.ID); !c.Pinned {
+		t.Error("cross-user attempt changed the row")
+	}
+
+	// InsertConversation round-trips an explicitly pinned row.
+	pinned := true
+	if err := s.InsertConversation(ctx, &Conversation{
+		ID: "a3", UserID: &alice.ID, Model: "glm-5.3-flash", Pinned: pinned, CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertConversation(pinned): %v", err)
+	}
+	if c, _ := s.GetConversation(ctx, "a3", alice.ID); !c.Pinned {
+		t.Error("InsertConversation did not persist pinned")
+	}
+
+	// Unpin and confirm the ordering returns to updated_at DESC.
+	if err := s.SetConversationPinned(ctx, "a2", alice.ID, false); err != nil {
+		t.Fatalf("SetConversationPinned(unpin): %v", err)
+	}
+	if c, _ := s.GetConversation(ctx, "a2", alice.ID); c.Pinned {
+		t.Error("unpin did not persist")
+	}
+}
+
+// TestUpdateConversationPersists guards the owner guard on UpdateConversation:
+// GetConversation must load user_id so the WHERE clause matches (regression for
+// a latent bug where the guard compared against NULL and every update no-op'd).
+func TestUpdateConversationPersists(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-alice", "alice", false)
+	seedSearchConv(t, s, "c1", alice.ID, "Old", "x", 1)
+
+	conv, err := s.GetConversation(ctx, "c1", alice.ID)
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+	if conv.UserID == nil || *conv.UserID != alice.ID {
+		t.Fatalf("GetConversation UserID = %v, want %q", conv.UserID, alice.ID)
+	}
+	conv.Title = "New title"
+	conv.Model = "glm-5.2"
+	conv.UpdatedAt = 99
+	if err := s.UpdateConversation(ctx, &conv); err != nil {
+		t.Fatalf("UpdateConversation: %v", err)
+	}
+	got, _ := s.GetConversation(ctx, "c1", alice.ID)
+	if got.Title != "New title" || got.Model != "glm-5.2" || got.UpdatedAt != 99 {
+		t.Errorf("update did not persist: %+v", got)
 	}
 }

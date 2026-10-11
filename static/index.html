@@ -107,8 +107,29 @@
           </svg>
           <span id="new-chat-label" class="new-chat-label">New chat</span>
         </button>
+        <!-- ===== BEGIN chat search (feature A) — self-contained, safe to relocate ===== -->
+        <div id="search-box" class="search-box">
+          <label class="visually-hidden" for="search-input">Search chats</label>
+          <input id="search-input" class="search-input" type="search" autocomplete="off"
+                 enterkeyhint="search" placeholder="Search chats…">
+          <button id="search-clear" class="icon-btn search-clear" type="button"
+                  aria-label="Clear search" title="Clear search" hidden>✕</button>
+        </div>
+        <!-- ===== END chat search ===== -->
       </div>
       <nav class="convo-nav" aria-label="Projects and conversations">
+        <!-- ===== BEGIN chat search results (feature A) — self-contained, safe to relocate ===== -->
+        <div id="search-results" class="nav-section search-results" hidden>
+          <div class="nav-section-head">
+            <span class="nav-section-title">Search results</span>
+          </div>
+          <ul id="search-results-list" class="convo-list" aria-label="Search results"></ul>
+          <p id="search-empty" class="nav-empty" hidden>No matches.</p>
+          <div id="search-loading" class="spinner-row" hidden>
+            <span class="spinner" role="status" aria-label="Searching"></span>
+          </div>
+        </div>
+        <!-- ===== END chat search results ===== -->
         <div class="nav-section">
           <div class="nav-section-head">
             <span class="nav-section-title">Projects</span>

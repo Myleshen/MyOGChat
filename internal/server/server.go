@@ -195,6 +195,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
 	mux.HandleFunc("GET /api/conversations", s.handleListConversations)
 	mux.HandleFunc("POST /api/conversations", s.handleCreateConversation)
+	// Cross-conversation search (feature A).
+	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	mux.HandleFunc("PATCH /api/conversations/{id}", s.handlePatchConversation)
 	mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
@@ -277,6 +279,41 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 		convs = out
 	}
 	writeJSON(w, http.StatusOK, convs)
+}
+
+// searchQueryMax bounds the search term (runes); longer input yields no
+// results rather than a store query.
+const searchQueryMax = 200
+
+// searchResultLimit caps how many conversations one search returns.
+const searchResultLimit = 50
+
+// handleSearch returns the caller's conversations whose title or message
+// content matches ?q=, most recently active first (feature A). An empty or
+// oversized query returns an empty result set.
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	type searchResponse struct {
+		Results []store.ConversationHit `json:"results"`
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" || len([]rune(q)) > searchQueryMax {
+		writeJSON(w, http.StatusOK, searchResponse{Results: []store.ConversationHit{}})
+		return
+	}
+	hits, err := s.st.SearchConversations(r.Context(), u.ID, q, searchResultLimit)
+	if err != nil {
+		s.log.Error("search conversations", "error", err)
+		writeError(w, http.StatusInternalServerError, "search failed")
+		return
+	}
+	if hits == nil {
+		hits = []store.ConversationHit{}
+	}
+	writeJSON(w, http.StatusOK, searchResponse{Results: hits})
 }
 
 func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +425,7 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 		Model     *string `json:"model"`
 		Effort    *string `json:"effort"`
 		ProjectID *string `json:"project_id"`
+		Pinned    *bool   `json:"pinned"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -443,6 +481,20 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 	// when the model was switched across dialects.
 	if m, ok := models.ByID(conv.Model); ok && m.Dialect != models.DialectResponses {
 		conv.Effort = nil
+	}
+	// Pinned chats (feature B) are toggled through a dedicated owner-guarded
+	// update so the flag round-trips even when no other field changes.
+	if req.Pinned != nil {
+		if err := s.st.SetConversationPinned(r.Context(), conv.ID, u.ID, *req.Pinned); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "conversation not found")
+				return
+			}
+			s.log.Error("set conversation pinned", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update conversation")
+			return
+		}
+		conv.Pinned = *req.Pinned
 	}
 	conv.UpdatedAt = time.Now().UnixMilli()
 	if err := s.st.UpdateConversation(r.Context(), &conv); err != nil {

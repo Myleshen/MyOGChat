@@ -77,8 +77,9 @@ with messages ascending by `created_at` (full message rows as in §2, snake_case
 
 ### `PATCH /api/conversations/{id}`
 Body may contain `title` (string, ≤200 chars), `model` (valid registry id),
-`effort` (valid for the conversation's dialect). Updates `updated_at`. Returns
-updated conversation (without messages).
+`effort` (valid for the conversation's dialect), `project_id` (string to move,
+`""`/`null` to unfile), and `pinned` (bool — feature B, see §18). Updates
+`updated_at`. Returns updated conversation (without messages).
 
 ### `DELETE /api/conversations/{id}` → `204`.
 
@@ -1061,3 +1062,57 @@ is used only when the caller has not stored their own instance.
 directly in the DB (no login), encrypting with `internal/secret` (key = the DB
 `encryption_key` setting). An empty value clears that field; omitted fields are
 untouched. Output is redacted (never the secret).
+
+## 18. Search & pinned chats (features A / B)
+
+Cross-conversation search and chat pinning. Full design: `docs/5-search-pin.md`.
+
+### 18.1 Schema (additive)
+
+```sql
+-- conversations gains:
+--   pinned INTEGER NOT NULL DEFAULT 0
+```
+
+Added by `store.migrate()` as an additive step (existing rows default to
+unpinned); never dropped. `Conversation` JSON gains `"pinned": bool`, and
+`ListConversations` orders `pinned DESC, updated_at DESC`.
+
+### 18.2 `GET /api/search?q=<query>` (session required)
+
+Searches the **caller's own** conversations, matching the conversation title
+**or** any message content case-insensitively (`LIKE '%q%'`, scoped by
+`conversations.user_id`). Returns up to 50 hits ordered by `updated_at` DESC:
+
+```json
+{"results":[{"id":"…","title":"…","snippet":"…","updated_at":1760000000000}]}
+```
+
+- Empty/whitespace `q`, or `q` longer than **200 characters**, returns
+  `{"results":[]}` (HTTP `200`, never an error).
+- `snippet` is a ~120-char window around the first matching message, with `…`
+  ellipses marking truncation. A **title-only** match has an empty snippet
+  (there is no matching message to quote).
+- `404` is never returned; another user's chats are simply absent.
+
+### 18.3 `PATCH /api/conversations/{id}` — `pinned`
+
+The existing PATCH endpoint additionally accepts `{"pinned": bool}` (alongside
+the existing `title` / `model` / `effort` / `project_id` handling). The flag is
+stored with an owner-guarded update (`store.SetConversationPinned`); a
+conversation that is missing or not the caller's returns `404`. The response is
+the updated conversation object, including `pinned`.
+
+### 18.4 Frontend
+
+- **Search**: an input at the top of the sidebar. Input is debounced (~250 ms),
+  calls `GET /api/search`, and **replaces** the Projects/Chats sections with a
+  results list (title + snippet) while non-empty; a result click opens that
+  conversation and clears the search. An empty state is shown for no matches.
+  The block is self-contained (`search-*` classes + a `searching` class on
+  `.convo-nav`) so it merges cleanly, and is mobile-first with no horizontal
+  overflow.
+- **Pinned chats**: each conversation row has a pin/unpin button (≥44px target,
+  always tappable on touch, revealed on hover/focus on pointer devices) plus a
+  subtle indicator (accented pin + heavier title when pinned). Pinned chats sort
+  to the top via the server order.
