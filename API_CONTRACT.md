@@ -665,13 +665,14 @@ model-generated code in a hardened, resource-limited, **ephemeral** Docker
 container and return stdout/stderr. Full design: `docs/2.6-2.7-sandbox.md`.
 
 - Each call is a fresh `docker run --rm` container; **nothing persists** between
-  calls (read-only rootfs, writable `/work` tmpfs).
+  calls. The writable `/work` is a per-run host bind mount (5.8) whose produced
+  files are harvested into download chips; `/tmp` stays a tmpfs.
 - The code is piped to the interpreter over **stdin** (`bash -s` / `python -`);
   it is never interpolated into the command line.
 - Hardening: dedicated user-defined bridge network (no published ports → no
   inbound path), `--cap-drop ALL`, `--security-opt no-new-privileges`,
-  `--user 65534:65534`, `--read-only`, tmpfs `/work` + `/tmp`,
-  `--memory 256m --memory-swap 256m --cpus 1 --pids-limit 128
+  `--user 65534:65534`, `--read-only`, `/tmp` tmpfs + `--ulimit fsize` per-file
+  cap, `--memory 256m --memory-swap 256m --cpus 1 --pids-limit 128
   --ulimit nofile=256:256`, `--stop-timeout 2`, `--pull never`.
 - Outbound network is available (the owner's choice). Optional LAN-egress
   hardening is applied by `sudo deploy/sandbox-setup.sh --harden`
@@ -684,9 +685,9 @@ container and return stdout/stderr. Full design: `docs/2.6-2.7-sandbox.md`.
   clear error pointing at `deploy/sandbox-setup.sh`.
 - Env config: `MYOGCHAT_SANDBOX` (hard on/off), `MYOGCHAT_DOCKER`,
   `MYOGCHAT_SANDBOX_NETWORK`, `MYOGCHAT_SANDBOX_IMAGE_BASH` (default `bash:5.3`),
-  `MYOGCHAT_SANDBOX_IMAGE_PYTHON` (default `python:3.14-slim`),
+  `MYOGCHAT_SANDBOX_IMAGE_PYTHON` (default `myogchat-sandbox-python`),
   `MYOGCHAT_SANDBOX_TIMEOUT`, `MYOGCHAT_SANDBOX_MEMORY`, `MYOGCHAT_SANDBOX_CPUS`,
-  `MYOGCHAT_SANDBOX_MAX_OUTPUT`.
+  `MYOGCHAT_SANDBOX_MAX_OUTPUT`, `MYOGCHAT_SANDBOX_WORKDIR` (5.8).
 - `GET`/`PATCH /api/settings` gain `sandbox_enabled` (admin) and
   `sandbox_available` (read-only status).
 
@@ -1188,3 +1189,72 @@ the updated conversation object, including `pinned`.
   always tappable on touch, revealed on hover/focus on pointer devices) plus a
   subtle indicator (accented pin + heavier title when pinned). Pinned chats sort
   to the top via the server order.
+
+## 21. Sandbox file output — agent-produced artifacts (5.8)
+
+The `run_bash` / `run_python` tools (2.6/2.7) write files to a **per-run writable
+host workspace** bind-mounted rw at `/work` (replacing the old `/work` tmpfs).
+After the run the server harvests regular files, stores them owner-scoped, and
+attaches a reference to the assistant message so the SPA renders a download
+chip. Files are stored as opaque bytes and **never extracted**. Design:
+`docs/5.8-sandbox-artifacts.md`.
+
+### 21.1 Schema (additive)
+
+```sql
+CREATE TABLE IF NOT EXISTS artifacts (
+  id              TEXT PRIMARY KEY,
+  user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  mime            TEXT NOT NULL,
+  size            INTEGER NOT NULL,
+  sha256          TEXT,
+  data            BLOB NOT NULL,          -- raw file bytes, served opaque
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_user ON artifacts(user_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts(conversation_id);
+-- messages gains an additive TEXT column:
+--   artifacts TEXT   -- JSON array {id,name,mime,size}
+```
+
+### 21.2 Workspace & harvest (security)
+
+- Workspace root: `MYOGCHAT_SANDBOX_WORKDIR` (default
+  `~/.local/share/myogchat/sandbox`; **never `/tmp`** — the unit sets
+  `PrivateTmp=true`). Parent `0700`; each run gets a `0777` subdir so the
+  container user `65534` can write. The dir is `os.RemoveAll`'d on completion; a
+  startup/hourly janitor sweep removes crash leftovers older than 1 h.
+- The container keeps `--read-only`, `--cap-drop ALL`, `no-new-privileges`,
+  `--user 65534:65534`, mem/cpu/pids caps, a 30 s timeout, a `/tmp` tmpfs, and
+  gains `--ulimit fsize=10485760:10485760` (hard per-file cap).
+- Harvest keeps **regular files only**, skips symlinks (opened `O_NOFOLLOW`,
+  re-checked regular) so a container cannot link to a host file; names are
+  sanitized to a base name; caps: **10 MB per file, 25 MB total, 20 files**.
+  MIME is sniffed (`http.DetectContentType`, with an extension map for text
+  formats).
+
+### 21.3 Endpoints (session required, per-user)
+
+- `GET /api/artifacts/{id}` — the raw bytes. `Content-Type` comes from a closed
+  allowlist (escaping types like `text/html` degrade to `text/plain`;
+  anything else to `application/octet-stream`), `X-Content-Type-Options:
+  nosniff`, and **always** `Content-Disposition: attachment` with a sanitized
+  filename. Owner-scoped `404`.
+- `DELETE /api/artifacts/{id}` — `204`; owner-scoped `404`.
+
+### 21.4 Model tool result & message JSON
+
+The sandbox tool result gains a `--- artifacts ---` list (`name (mime, N bytes)`)
+so the model knows what it produced. Assistant messages may include
+`"artifacts": [{"id","name","mime","size"}]`; the SPA renders an
+`a.attachment-chip` download link to `GET /api/artifacts/{id}`. The retention
+janitor purges artifacts older than the retention window.
+
+### 21.5 Deploy
+
+`deploy/sandbox-setup.sh` pulls `bash:5.3` and **builds**
+`myogchat-sandbox-python` from `deploy/sandbox/Dockerfile` (reportlab, openpyxl,
+python-docx, Pillow, matplotlib) — CSV/TXT/JSON/Markdown need no libraries.
+`MYOGCHAT_SANDBOX_IMAGE_PYTHON` defaults to that image.

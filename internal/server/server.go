@@ -227,6 +227,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/images/enhance", s.handleEnhanceImagePrompt)
 	mux.HandleFunc("GET /api/images/{id}", s.handleGetImage)
 	mux.HandleFunc("DELETE /api/images/{id}", s.handleDeleteImage)
+	// Agent-produced artifacts (per-user, 5.8): opaque downloads only.
+	mux.HandleFunc("GET /api/artifacts/{id}", s.handleGetArtifact)
+	mux.HandleFunc("DELETE /api/artifacts/{id}", s.handleDeleteArtifact)
 
 	// Admin: users and settings (§9.4).
 	mux.HandleFunc("GET /api/users", s.handleListUsers)

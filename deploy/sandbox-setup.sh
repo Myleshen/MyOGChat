@@ -6,8 +6,11 @@
 #
 # Part A (no sudo needed — the user is in the `docker` group):
 #   * creates the dedicated user-defined bridge network (no published ports, so
-#     there is no inbound path into a sandbox container), and
-#   * pulls the Bash and Python images so `docker run --pull=never` works.
+#     there is no inbound path into a sandbox container),
+#   * pulls the Bash image, and
+#   * builds the Python image (reportlab, openpyxl, python-docx, Pillow,
+#     matplotlib) so the agent can produce PDF/XLSX/DOCX files (5.8); run_bash
+#     and run_python use `docker run --pull=never`.
 #
 # Part B (needs sudo) adds DOCKER-USER iptables rules that DROP sandbox egress
 # to RFC1918 / link-local / loopback / CGNAT ranges, leaving only the public
@@ -20,8 +23,9 @@ set -euo pipefail
 
 NETWORK="${MYOGCHAT_SANDBOX_NETWORK:-myogchat-sbx}"
 BASH_IMAGE="${MYOGCHAT_SANDBOX_IMAGE_BASH:-bash:5.3}"
-PYTHON_IMAGE="${MYOGCHAT_SANDBOX_IMAGE_PYTHON:-python:3.14-slim}"
+PYTHON_IMAGE="${MYOGCHAT_SANDBOX_IMAGE_PYTHON:-myogchat-sandbox-python}"
 DOCKER="${MYOGCHAT_DOCKER:-docker}"
+IMAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sandbox"
 
 echo "== [1/3] docker reachable =="
 if ! "$DOCKER" info --format '{{.ServerVersion}}' >/dev/null 2>&1; then
@@ -40,10 +44,14 @@ else
 fi
 
 echo "== [3/3] images =="
-for img in "$BASH_IMAGE" "$PYTHON_IMAGE"; do
-  echo "   pulling $img"
-  "$DOCKER" pull "$img"
-done
+echo "   pulling $BASH_IMAGE"
+"$DOCKER" pull "$BASH_IMAGE"
+if "$DOCKER" image inspect "$PYTHON_IMAGE" >/dev/null 2>&1; then
+  echo "   $PYTHON_IMAGE already present (rebuild with: $DOCKER build -t $PYTHON_IMAGE $IMAGE_DIR)"
+else
+  echo "   building $PYTHON_IMAGE from $IMAGE_DIR (reportlab, openpyxl, python-docx, Pillow, matplotlib)"
+  "$DOCKER" build -t "$PYTHON_IMAGE" "$IMAGE_DIR"
+fi
 
 SUBNET="$("$DOCKER" network inspect "$NETWORK" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | awk '{print $1}')"
 echo

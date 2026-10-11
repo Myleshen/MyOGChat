@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,15 +39,27 @@ const (
 	DefaultDocker      = "/usr/bin/docker"
 	DefaultNetwork     = "myogchat-sbx"
 	DefaultBashImage   = "bash:5.3"
-	DefaultPythonImage = "python:3.14-slim"
+	DefaultPythonImage = "myogchat-sandbox-python"
 	DefaultMemory      = "256m"
 	DefaultCPUs        = "1"
 	DefaultPidsLimit   = 128
 	DefaultNoFile      = "256:256"
-	DefaultWorkSize    = "64m"
 	DefaultTmpSize     = "16m"
 	DefaultMaxOutput   = 100_000
 	DefaultTimeout     = 30 * time.Second
+
+	// Artifact harvest caps (5.8). A per-file docker --ulimit fsize gives the
+	// hard in-container cap; the harvest caps are the second line of defence
+	// against storing too much.
+	DefaultMaxFileSize   = 10 << 20 // 10 MB
+	DefaultMaxTotalSize  = 25 << 20 // 25 MB
+	DefaultMaxFiles      = 20
+	DefaultFileSizeLimit = "10485760:10485760" // docker --ulimit fsize soft:hard
+	DefaultWorkDirName   = "myogchat/sandbox"  // under ~/.local/share
+
+	// workspaceMaxAge bounds how long a crashed run's workspace may survive
+	// before the startup/hourly sweep removes it. Real runs are <= Timeout.
+	workspaceMaxAge = time.Hour
 
 	// LabelKey/Value tag every sandbox container so leaked containers can be
 	// cleaned up with `docker rm -f $(docker ps -aq --filter label=...)`.
@@ -94,9 +107,14 @@ type Config struct {
 	CPUs        string        // docker --cpus value
 	PidsLimit   int           // docker --pids-limit value
 	NoFile      string        // docker --ulimit nofile= value (soft:hard)
-	WorkSize    string        // size of the /work tmpfs
 	TmpSize     string        // size of the /tmp tmpfs
 	MaxOutput   int           // max characters of stdout+stderr returned
+	// Workspace + artifact harvest (5.8).
+	WorkDir       string // host directory root for per-run workspaces (never /tmp)
+	FileSizeLimit string // docker --ulimit fsize= value (soft:hard)
+	MaxFileSize   int64  // per-file harvest cap (bytes)
+	MaxTotalSize  int64  // total harvest cap (bytes)
+	MaxFiles      int    // max harvested files per run
 }
 
 // DefaultConfig returns the built-in defaults.
@@ -111,9 +129,14 @@ func DefaultConfig() Config {
 		CPUs:        DefaultCPUs,
 		PidsLimit:   DefaultPidsLimit,
 		NoFile:      DefaultNoFile,
-		WorkSize:    DefaultWorkSize,
 		TmpSize:     DefaultTmpSize,
 		MaxOutput:   DefaultMaxOutput,
+
+		WorkDir:       resolveWorkDir(""),
+		FileSizeLimit: DefaultFileSizeLimit,
+		MaxFileSize:   DefaultMaxFileSize,
+		MaxTotalSize:  DefaultMaxTotalSize,
+		MaxFiles:      DefaultMaxFiles,
 	}
 }
 
@@ -122,11 +145,13 @@ func DefaultConfig() Config {
 //	MYOGCHAT_DOCKER               docker CLI path (default /usr/bin/docker, else LookPath)
 //	MYOGCHAT_SANDBOX_NETWORK      network name (default myogchat-sbx)
 //	MYOGCHAT_SANDBOX_IMAGE_BASH   bash image (default bash:5.3)
-//	MYOGCHAT_SANDBOX_IMAGE_PYTHON python image (default python:3.14-slim)
+//	MYOGCHAT_SANDBOX_IMAGE_PYTHON python image (default myogchat-sandbox-python)
 //	MYOGCHAT_SANDBOX_MEMORY       memory limit (default 256m)
 //	MYOGCHAT_SANDBOX_CPUS         CPU limit (default 1)
 //	MYOGCHAT_SANDBOX_TIMEOUT      seconds (default 30)
 //	MYOGCHAT_SANDBOX_MAX_OUTPUT   characters (default 100000)
+//	MYOGCHAT_SANDBOX_WORKDIR      host root for per-run workspaces (default
+//	                              ~/.local/share/myogchat/sandbox)
 func ConfigFromEnv() Config {
 	c := DefaultConfig()
 	c.Docker = resolveDocker(os.Getenv("MYOGCHAT_DOCKER"))
@@ -154,6 +179,9 @@ func ConfigFromEnv() Config {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.MaxOutput = n
 		}
+	}
+	if v := os.Getenv("MYOGCHAT_SANDBOX_WORKDIR"); v != "" {
+		c.WorkDir = v
 	}
 	return c
 }
@@ -189,6 +217,23 @@ func resolveDocker(explicit string) string {
 	return DefaultDocker
 }
 
+// resolveWorkDir picks the host root for per-run sandbox workspaces. An explicit
+// value wins; otherwise ~/.local/share/myogchat/sandbox. /tmp is deliberately
+// avoided: the systemd unit sets PrivateTmp=true, so a container in a separate
+// mount namespace could not see a host /tmp path anyway.
+func resolveWorkDir(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Degenerate fallback (no home dir); the per-run dir is still created
+		// with a random name and removed on completion.
+		return filepath.Join(os.TempDir(), "myogchat-sandbox")
+	}
+	return filepath.Join(home, ".local", "share", filepath.FromSlash(DefaultWorkDirName))
+}
+
 // Spec is one execution request.
 type Spec struct {
 	Language string // LanguageBash or LanguagePython
@@ -203,6 +248,18 @@ type Result struct {
 	TimedOut  bool
 	Truncated bool
 	Duration  time.Duration
+	// Artifacts are the regular files the script left in /work, harvested after
+	// the run (name sanitized, MIME sniffed, caps enforced). Empty when none.
+	Artifacts []Artifact
+}
+
+// Artifact is one file produced by a sandbox run: a sanitized base name, a
+// sniffed MIME type and the raw bytes. The bytes are stored opaque and served
+// only as a download (5.8).
+type Artifact struct {
+	Name string
+	MIME string
+	Data []byte
 }
 
 // ExecFunc runs one command and returns captured stdout/stderr. It is injectable
@@ -288,7 +345,12 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
 	}
 
 	name := r.containerName()
-	args := r.runArgs(image, command, name)
+	runDir, cleanupDir, err := r.prepareWorkspace(name)
+	if err != nil {
+		return Result{}, err
+	}
+	defer cleanupDir()
+	args := r.runArgs(image, command, name, runDir)
 
 	runCtx, cancel := context.WithTimeout(ctx, r.cfg.Timeout)
 	defer cancel()
@@ -300,6 +362,10 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
 		Stderr:   string(stderr),
 		Duration: time.Since(start),
 	}
+	// Harvest the workspace before the container is force-removed and before the
+	// deferred RemoveAll. The harvest never follows symlinks and enforces the
+	// per-file/count/total caps (5.8).
+	res.Artifacts = harvest(runDir, r.cfg)
 	res.Truncated = r.truncate(&res)
 
 	// Timeout: the container must not leak, so force-remove it by name.
@@ -342,8 +408,59 @@ func (r *Runner) imageAndCommand(spec Spec) (string, []string, error) {
 	}
 }
 
+// prepareWorkspace creates a fresh per-run host directory that is bind-mounted
+// rw into the container as /work. The parent root is 0700 (only the service
+// user can traverse it); the per-run dir is made group/other-writable so the
+// unprivileged container user 65534 can write into it. The returned cleanup
+// removes the dir; callers defer it.
+func (r *Runner) prepareWorkspace(name string) (string, func(), error) {
+	root := r.cfg.WorkDir
+	if root == "" {
+		return "", func() {}, errors.New("sandbox workdir is not configured")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", func() {}, fmt.Errorf("create sandbox workdir: %w", err)
+	}
+	runDir := filepath.Join(root, name)
+	if err := os.Mkdir(runDir, 0o777); err != nil {
+		return "", func() {}, fmt.Errorf("create sandbox workspace: %w", err)
+	}
+	// Mkdir is filtered by umask, so make the mode explicit: the container user
+	// (65534) is no relation of the service user and must be able to write.
+	if err := os.Chmod(runDir, 0o777); err != nil {
+		_ = os.RemoveAll(runDir)
+		return "", func() {}, fmt.Errorf("chmod sandbox workspace: %w", err)
+	}
+	return runDir, func() { _ = os.RemoveAll(runDir) }, nil
+}
+
+// SweepLeftovers removes per-run workspaces older than workspaceMaxAge. It
+// covers crash leftovers (a SIGKILL mid-run skips the deferred RemoveAll) and is
+// safe to call at startup and hourly from the retention janitor.
+func (r *Runner) SweepLeftovers() {
+	root := r.cfg.WorkDir
+	if root == "" {
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-workspaceMaxAge)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(root, e.Name()))
+	}
+}
+
 // runArgs builds the full hardened `docker run` argv.
-func (r *Runner) runArgs(image string, command []string, name string) []string {
+func (r *Runner) runArgs(image string, command []string, name, workDir string) []string {
 	args := []string{
 		"run",
 		"--rm",
@@ -354,7 +471,9 @@ func (r *Runner) runArgs(image string, command []string, name string) []string {
 		"--security-opt", "no-new-privileges",
 		"--user", containerUser,
 		"--read-only",
-		"--tmpfs", "/work:rw,exec,size=" + r.cfg.WorkSize,
+		// /work is a host bind mount so produced files survive the container and
+		// can be harvested; /tmp stays an ephemeral tmpfs.
+		"-v", workDir + ":/work:rw",
 		"--tmpfs", "/tmp:rw,size=" + r.cfg.TmpSize,
 		"--workdir", "/work",
 		"--memory", r.cfg.Memory,
@@ -362,6 +481,8 @@ func (r *Runner) runArgs(image string, command []string, name string) []string {
 		"--cpus", r.cfg.CPUs,
 		"--pids-limit", strconv.Itoa(r.cfg.PidsLimit),
 		"--ulimit", "nofile=" + r.cfg.NoFile,
+		// A hard per-file size cap so one runaway write cannot exhaust the disk.
+		"--ulimit", "fsize=" + r.cfg.FileSizeLimit,
 		"--stop-timeout", "2",
 		"--pull", "never",
 		"-e", "HOME=/work",

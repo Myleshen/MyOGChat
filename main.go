@@ -716,7 +716,7 @@ func run(cfg config, log *slog.Logger) error {
 	}, sbx, ocrEngine, ocrEngineName, vision != nil, cfg.speech, cfg.imagegenURL, cfg.imagegenToken,
 		cfg.linkwardenURL, cfg.linkwardenToken)
 
-	go janitor(ctx, st, cfg.retentionDays, log)
+	go janitor(ctx, st, cfg.retentionDays, sbx, log)
 
 	httpSrv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -811,8 +811,9 @@ func ensureSecret(ctx context.Context, st *store.Store, log *slog.Logger, name s
 }
 
 // janitor purges conversations older than the retention window on startup and
-// then hourly (contract §7). It runs until ctx is canceled.
-func janitor(ctx context.Context, st *store.Store, retentionDays int, log *slog.Logger) {
+// then hourly (contract §7). It runs until ctx is canceled. When sbx is non-nil
+// it also sweeps crash-leftover sandbox workspaces (5.8).
+func janitor(ctx context.Context, st *store.Store, retentionDays int, sbx *sandbox.Runner, log *slog.Logger) {
 	purge := func() {
 		cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).UnixMilli()
 		n, err := st.DeleteOlderThan(ctx, cutoff)
@@ -841,6 +842,16 @@ func janitor(ctx context.Context, st *store.Store, retentionDays int, log *slog.
 			log.Error("retention janitor", "error", err)
 		} else if img > 0 {
 			log.Info("retention janitor purged images", "count", img, "cutoff", cutoff)
+		}
+		// Agent-produced artifacts share the retention window too (5.8).
+		if art, err := st.DeleteArtifactsOlderThan(ctx, cutoff); err != nil {
+			log.Error("retention janitor", "error", err)
+		} else if art > 0 {
+			log.Info("retention janitor purged artifacts", "count", art, "cutoff", cutoff)
+		}
+		// A crash mid-run can leave a workspace behind; sweep stale ones (5.8).
+		if sbx != nil {
+			sbx.SweepLeftovers()
 		}
 	}
 
