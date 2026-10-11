@@ -1575,3 +1575,16 @@ body.modal-open { overflow: hidden; }
 }
 /* Subtle pinned indicator: the title carries a touch more weight. */
 .convo-item.pinned > .convo-link { font-weight: 600; }
+
+/* ===========================================================================
+   Phase 5 hardening: touch tap targets (self-contained block).
+   Raise the small message/menu controls to >=44px on touch devices (coarse
+   pointer or no hover), leaving the denser desktop sizing untouched.
+   =========================================================================== */
+@media (hover: none), (pointer: coarse) {
+  .msg-action,
+  .msg-edit-actions .btn,
+  .menu-item {
+    min-height: 44px;
+  }
+}

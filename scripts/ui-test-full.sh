@@ -205,6 +205,22 @@ ab eval "document.documentElement.setAttribute('data-theme','dark')" >/dev/null 
 assert "dark theme applies" "document.documentElement.getAttribute('data-theme')==='dark'"
 shot 13-dark.png
 
+echo "-- phase 5 hardening --"
+assert "chat search input present" "!!document.getElementById('search-input')"
+assert "conversation pin toggle present" "!!document.querySelector('.convo-item .convo-pin')"
+assert "no horizontal overflow with chat open" "document.documentElement.scrollWidth <= window.innerWidth + 1 && document.getElementById('messages').scrollWidth <= document.getElementById('messages').clientWidth + 1"
+ab click "#export-btn" >/dev/null 2>&1; sleep 1
+assert "export menu opens with conversation" "!!document.querySelector('.menu') && document.querySelectorAll('.menu-item').length >= 2"
+assert "export anchor aria-expanded true" "document.getElementById('export-btn').getAttribute('aria-expanded')==='true'"
+ab press Escape >/dev/null 2>&1; sleep 1
+assert "export menu closes on Esc" "!document.querySelector('.menu') && document.getElementById('export-btn').getAttribute('aria-expanded')==='false'"
+# Paste an image straight into the composer (5.1/5.6): it becomes a chip.
+ab eval "(function(){try{var b64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';var bin=atob(b64);var arr=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);var f=new File([arr],'pasted.png',{type:'image/png'});var dt=new DataTransfer();dt.items.add(f);document.getElementById('input').dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));return 'ok';}catch(e){return 'err:'+e.message;}})()" >/dev/null 2>&1
+sleep 2
+assert "pasted image becomes a chip" "document.getElementById('attachments-bar').textContent.includes('pasted.png')"
+shot 13a-phase5-paste.png
+clear_attachments
+
 if [ -n "$ADMIN_USER" ] && [ -n "$ADMIN_PASS" ]; then
 echo "-- admin pass --"
 close_drawers
@@ -219,6 +235,7 @@ assert "integrations section visible" "!document.getElementById('integrations-se
 assert "web search block visible" "!document.getElementById('web-search-block').hidden"
 assert "sandbox section visible" "!document.getElementById('tools-section').hidden"
 assert "ocr section visible" "!document.getElementById('ocr-section').hidden"
+assert "backup row visible" "!document.getElementById('backup-row').hidden && !!document.getElementById('download-backup')"
 ab scrollintoview "#tools-section" >/dev/null 2>&1; sleep 1
 shot 14-admin-settings.png
 fi

@@ -2393,11 +2393,14 @@ async function removeGroupMember(group, member) {
 /* ============================== Popup menus ============================== */
 
 let activeMenu = null;
+let activeMenuAnchor = null;
 
 function closeMenu() {
   if (!activeMenu) return;
+  if (activeMenuAnchor) activeMenuAnchor.setAttribute("aria-expanded", "false");
   activeMenu.remove();
   activeMenu = null;
+  activeMenuAnchor = null;
   document.removeEventListener("click", onDocClickForMenu, true);
   document.removeEventListener("contextmenu", onDocClickForMenu, true);
   window.removeEventListener("resize", closeMenu);
@@ -2428,7 +2431,26 @@ function showMenu(anchor, items) {
     });
     menu.appendChild(btn);
   }
+  // Roving focus across the items (ArrowUp/ArrowDown/Home/End) and Esc closes:
+  // a keyboard user can open the menu and pick an item without a mouse.
+  menu.addEventListener("keydown", (e) => {
+    const items = Array.from(menu.querySelectorAll(".menu-item"));
+    if (items.length === 0) return;
+    const i = items.indexOf(document.activeElement);
+    let next;
+    if (e.key === "ArrowDown") next = i < 0 ? 0 : (i + 1) % items.length;
+    else if (e.key === "ArrowUp") next = i <= 0 ? items.length - 1 : i - 1;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = items.length - 1;
+    else return;
+    e.preventDefault();
+    items[next].focus({ preventScroll: true });
+  });
   document.body.appendChild(menu);
+  // The anchor owns aria-expanded; mark it open and move focus into the menu.
+  anchor.setAttribute("aria-expanded", "true");
+  const firstItem = menu.querySelector(".menu-item");
+  if (firstItem) firstItem.focus({ preventScroll: true });
 
   const r = anchor.getBoundingClientRect();
   const mw = menu.offsetWidth;
@@ -2440,6 +2462,7 @@ function showMenu(anchor, items) {
   menu.style.left = left + "px";
   menu.style.top = top + "px";
   activeMenu = menu;
+  activeMenuAnchor = anchor;
 
   setTimeout(() => {
     document.addEventListener("click", onDocClickForMenu, true);
@@ -3056,15 +3079,51 @@ function renderMessages() {
 
 /* ============================== Export ============================== */
 
-/* Download a URL as a file (the server sets Content-Disposition/filename). */
-function downloadUrl(url) {
+/* Pull the filename out of a Content-Disposition header (quoted or RFC 5987). */
+function filenameFromDisposition(header) {
+  if (!header) return "";
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      /* malformed — fall through to the plain form */
+    }
+  }
+  const m = /filename="?([^";]+)"?/i.exec(header);
+  return m ? m[1].trim() : "";
+}
+
+/* Download a URL as a file. Fetches first so an error body (e.g. an expired
+   session's JSON) is never saved as the file: 401 re-prompts for login, any
+   other failure toasts, and only a successful response is blob-downloaded using
+   the server's Content-Disposition filename. */
+async function downloadUrl(url) {
+  let res;
+  try {
+    res = await fetch(url, { credentials: "same-origin" });
+  } catch {
+    toast("Download failed — network error");
+    return;
+  }
+  if (res.status === 401) {
+    handleUnauthorized();
+    return;
+  }
+  if (!res.ok) {
+    toast((await readError(res)) || "Download failed (" + res.status + ")");
+    return;
+  }
+  const blob = await res.blob();
+  const href = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
+  a.href = href;
   a.rel = "noopener";
-  a.download = "";
+  a.download = filenameFromDisposition(res.headers.get("Content-Disposition"));
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 0);
 }
 
 /* Conversation export menu (feature 5): Markdown transcript or raw JSON. */
@@ -3174,20 +3233,25 @@ function startEditUserMessage(m, textEl, bubble, footer) {
   ta.focus();
   ta.setSelectionRange(ta.value.length, ta.value.length);
 
+  // Escape cancels the editor from anywhere — the textarea, Save, or Cancel —
+  // so a document-level handler (removed in restore) is used rather than a
+  // keydown scoped to the textarea.
+  function onEditKeydown(e) {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    restore();
+  }
+
   function restore() {
+    document.removeEventListener("keydown", onEditKeydown, true);
     ta.remove();
     editActions.remove();
     textEl.hidden = false;
     footer.hidden = false;
   }
 
+  document.addEventListener("keydown", onEditKeydown, true);
   cancel.addEventListener("click", restore);
-  ta.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      restore();
-    }
-  });
   save.addEventListener("click", async () => {
     const content = ta.value.trim();
     if (!content) {
@@ -3495,7 +3559,11 @@ function setStreaming(on) {
 }
 
 function updateSendBtn() {
-  sendBtn.disabled = state.streaming || isUploading() || input.value.trim() === "";
+  // An attachment with no text is a valid message (image-only sends), so the
+  // button enables on either typed text or a pending attachment.
+  const hasText = input.value.trim() !== "";
+  sendBtn.disabled =
+    state.streaming || isUploading() || (!hasText && state.pendingAttachments.length === 0);
 }
 
 function newStreamUI() {
@@ -3892,11 +3960,31 @@ async function sendMessage(conv, text) {
 
   const body = { content: text };
   if (attachments.length > 0) body.attachment_ids = attachments.map((a) => a.id);
-  // Vision input (5.1): include the inline bytes of any image attachments so a
-  // vision-capable model can see them (the server ignores them for text models
-  // and folds the OCR text instead). The bytes are never persisted.
-  const images = attachments.filter((a) => a && a.dataUrl).map((a) => a.dataUrl);
-  if (images.length > 0) body.images = images;
+  // Vision input (5.1, hardened): include the inline bytes of image attachments
+  // only when the conversation's model is vision-capable; for any other model
+  // the server ignores them and folds the OCR text instead. The count + total
+  // inline-byte caps keep the request under the server limits so a send can
+  // never fail with 400 on the 5th image or an oversized payload. Bytes are
+  // never persisted.
+  const vmodel = modelById(conv.model);
+  if (vmodel && vmodel.vision) {
+    const images = [];
+    let total = 0;
+    let dropped = 0;
+    for (const a of attachments) {
+      if (!a || !a.dataUrl) continue;
+      if (images.length >= MAX_VISION_IMAGES || total + a.dataUrl.length > MAX_VISION_TOTAL_BYTES) {
+        dropped++;
+        continue;
+      }
+      images.push(a.dataUrl);
+      total += a.dataUrl.length;
+    }
+    if (images.length > 0) body.images = images;
+    if (dropped > 0) {
+      toast("Dropped " + dropped + " image" + (dropped === 1 ? "" : "s") + " over the inline limit");
+    }
+  }
 
   await streamAssistant({
     path: "/api/conversations/" + enc(conv.id) + "/messages",
@@ -4071,6 +4159,11 @@ async function onFilesSelected() {
 // Largest edge kept before sending an image inline; long edge beyond this adds
 // cost without helping the model much. Mirrors the OCR downscale convention.
 const MAX_IMAGE_DIM = 1568;
+// Vision send caps (mirror the server: <=4 images, <=16 MB total inline). The
+// browser budget is a touch smaller (12 MB) so the request stays comfortably
+// under the server's limit even with JSON overhead.
+const MAX_VISION_IMAGES = 4;
+const MAX_VISION_TOTAL_BYTES = 12 * 1024 * 1024;
 
 /* Read a Blob as a base64 data URI (the wire shape both dialects accept). */
 function blobToDataURL(blob) {
@@ -4126,12 +4219,21 @@ async function addFiles(files) {
     toast("Only the first " + MAX_ATTACHMENTS + " files were added");
   }
 
+  // Cap image attachments at the vision limit so the send path can never exceed
+  // the server's 4-image cap. Non-image files are unaffected.
+  let imageCount = state.pendingAttachments.filter((a) => a && a.isImage).length;
+  let imagesDropped = false;
   for (const original of chosen) {
     if (original.size > MAX_ATTACHMENT_BYTES) {
       toast(original.name + " is larger than 10 MB");
       continue;
     }
     const isImage = (original.type || "").startsWith("image/");
+    if (isImage && imageCount >= MAX_VISION_IMAGES) {
+      imagesDropped = true;
+      continue;
+    }
+    if (isImage) imageCount++;
     let file = original;
     if (isImage) {
       file = await downscaleImage(original);
@@ -4162,6 +4264,7 @@ async function addFiles(files) {
     }
     renderAttachments();
   }
+  if (imagesDropped) toast("At most " + MAX_VISION_IMAGES + " images per message");
 }
 
 /* Paste an image (e.g. a screenshot) straight into the composer (5.1/5.6). */
@@ -5147,7 +5250,9 @@ function wireEvents() {
     e.preventDefault();
     if (state.streaming || isUploading()) return;
     const text = input.value.trim();
-    if (!text) return;
+    // Allow an empty composer when an attachment is present: an image-only
+    // message ("what's in this image?") needs no prompt.
+    if (!text && state.pendingAttachments.length === 0) return;
     input.value = "";
     autosizeInput();
     updateSendBtn();
