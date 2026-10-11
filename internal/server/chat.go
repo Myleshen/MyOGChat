@@ -96,18 +96,26 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if strings.TrimSpace(req.Content) == "" {
-		writeError(w, http.StatusBadRequest, "content is required")
-		return
-	}
 	if len(req.Content) > maxContentBytes {
 		writeError(w, http.StatusBadRequest, "content exceeds 100 KB")
 		return
 	}
-	images, err := cleanVisionImages(req.Images)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	// Inline images are only meaningful for a vision-capable model. For any other
+	// model they are ignored (the folded OCR text is used), so image caps must
+	// never reject a message the model cannot even see (5.1 hardening).
+	m, ok := models.ByID(conv.Model)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "conversation has unknown model")
 		return
+	}
+	var images []string
+	if m.Vision {
+		cleaned, cerr := cleanVisionImages(req.Images)
+		if cerr != nil {
+			writeError(w, http.StatusBadRequest, cerr.Error())
+			return
+		}
+		images = cleaned
 	}
 	atts, err := s.loadAttachments(r.Context(), u.ID, req.AttachmentIDs)
 	if errors.Is(err, store.ErrNotFound) {
@@ -122,6 +130,12 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Error("load attachments", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load attachments")
+		return
+	}
+	// A message may carry only an image or an attachment, with no text (asking
+	// "what's in this image?" needs no prompt).
+	if strings.TrimSpace(req.Content) == "" && len(images) == 0 && len(atts) == 0 {
+		writeError(w, http.StatusBadRequest, "content is required")
 		return
 	}
 	apiKey, err := s.resolveKey(r.Context(), u)
@@ -352,6 +366,10 @@ stream:
 		}
 	}
 
+	if usage == nil {
+		writeSSE(w, flusher, "error", errorEvent{Message: "upstream stream ended without usage"})
+		return
+	}
 	reasoningTokens := usage.ReasoningTokens
 	model := conv.Model
 	asstMsg := store.Message{
@@ -473,10 +491,25 @@ func cleanVisionImages(images []string) ([]string, error) {
 	return out, nil
 }
 
-// isImageDataURI reports whether s is a base64-encoded image data URI, the only
-// shape both upstream dialects accept for image parts.
+// isImageDataURI reports whether s is a base64-encoded **raster** image data
+// URI, the only shape both upstream dialects accept for image parts. SVG is
+// rejected (it is a script container, not something the models read), and an
+// empty payload is rejected.
 func isImageDataURI(s string) bool {
-	return strings.HasPrefix(s, "data:image/") && strings.Contains(s, ";base64,")
+	const prefix = "data:image/"
+	if !strings.HasPrefix(s, prefix) {
+		return false
+	}
+	i := strings.Index(s, ";base64,")
+	if i < 0 {
+		return false
+	}
+	switch sub := s[len(prefix):i]; sub {
+	case "png", "jpeg", "jpg", "gif", "webp", "bmp":
+	default:
+		return false
+	}
+	return strings.TrimSpace(s[i+len(";base64,"):]) != ""
 }
 
 // attachImagesToLastUser sets the inline images on the most recent user message

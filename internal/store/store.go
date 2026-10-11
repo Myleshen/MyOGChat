@@ -1081,6 +1081,41 @@ func (s *Store) TruncateAfter(ctx context.Context, conversationID, messageID str
 	return err
 }
 
+// EditUserMessageAndTruncate rewrites a user message and deletes every message
+// after it, in one transaction, so a failed truncate can never leave an edited
+// prompt with its stale reply (Phase 5 hardening). Owner-scoped: a missing /
+// non-user / cross-user target is ErrNotFound.
+func (s *Store) EditUserMessageAndTruncate(ctx context.Context, conversationID, messageID, userID, content string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE messages SET content = ?
+		  WHERE id = ? AND conversation_id = ? AND role = 'user'
+		    AND conversation_id IN (SELECT id FROM conversations WHERE id = ? AND user_id = ?)`,
+		content, messageID, conversationID, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM messages
+		  WHERE conversation_id = ?
+		    AND (created_at, rowid) > (
+		      SELECT created_at, rowid FROM messages WHERE id = ? AND conversation_id = ?)`,
+		conversationID, messageID, conversationID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // Backup writes a consistent snapshot of the live database to destPath using
 // SQLite's VACUUM INTO (which fails if destPath exists). It is used by the
 // admin backup endpoint (§19) to hand an operator a point-in-time copy of the

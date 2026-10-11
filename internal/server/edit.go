@@ -33,26 +33,22 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if strings.TrimSpace(req.Content) == "" {
-		writeError(w, http.StatusBadRequest, "content is required")
-		return
-	}
 	if len(req.Content) > maxContentBytes {
 		writeError(w, http.StatusBadRequest, "content exceeds 100 KB")
 		return
 	}
 	msgID := r.PathValue("messageId")
-	if err := s.st.EditUserMessage(r.Context(), conv.ID, msgID, u.ID, req.Content); err != nil {
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+	if err := s.st.EditUserMessageAndTruncate(r.Context(), conv.ID, msgID, u.ID, content); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "message not found")
 			return
 		}
 		s.log.Error("edit message", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to edit message")
-		return
-	}
-	if err := s.st.TruncateAfter(r.Context(), conv.ID, msgID); err != nil {
-		s.log.Error("truncate after edit", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to edit message")
 		return
 	}

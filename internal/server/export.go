@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -79,18 +80,18 @@ func (s *Server) handleAdminBackup(w http.ResponseWriter, r *http.Request) {
 	if !auth.RequireAdmin(w, u) {
 		return
 	}
-	// VACUUM INTO refuses an existing destination, so reserve a unique name
-	// then remove the empty placeholder before the snapshot runs.
-	f, err := os.CreateTemp(os.TempDir(), "myogchat-backup-*.db")
+	// A private (0700) temp dir: the snapshot holds every user's password hash
+	// and encrypted secrets, so the file must never be world-readable (5.x
+	// hardening). SQLite creates the destination with the daemon's umask, so the
+	// directory is what protects it.
+	dir, err := os.MkdirTemp("", "myogchat-backup-*")
 	if err != nil {
-		s.log.Error("backup: create temp file", "error", err)
+		s.log.Error("backup: create temp dir", "error", err)
 		writeError(w, http.StatusInternalServerError, "backup failed")
 		return
 	}
-	tmp := f.Name()
-	_ = f.Close()
-	_ = os.Remove(tmp)
-	defer os.Remove(tmp)
+	defer os.RemoveAll(dir)
+	tmp := filepath.Join(dir, "backup.db")
 
 	if err := s.st.Backup(r.Context(), tmp); err != nil {
 		s.log.Error("backup: vacuum into", "error", err)
@@ -121,7 +122,7 @@ func (s *Server) handleAdminBackup(w http.ResponseWriter, r *http.Request) {
 // a metadata block, then each message as "## You" / "## Assistant" with a
 // model · time · cost footer line where the fields are present.
 func renderTranscriptMarkdown(conv store.Conversation, msgs []store.Message) string {
-	title := strings.TrimSpace(conv.Title)
+	title := strings.TrimSpace(oneLine(conv.Title))
 	if title == "" {
 		title = "Untitled conversation"
 	}
@@ -138,7 +139,9 @@ func renderTranscriptMarkdown(conv store.Conversation, msgs []store.Message) str
 			role = "You"
 		}
 		fmt.Fprintf(&b, "## %s\n\n", role)
-		b.WriteString(capExportContent(m.Content))
+		// Fence the body so model output (or a crafted message) can never spoof
+		// the transcript structure (5.x hardening).
+		b.WriteString(fenceMarkdown(capExportContent(m.Content)))
 		b.WriteString("\n\n")
 		parts := make([]string, 0, 3)
 		if m.Model != nil && *m.Model != "" {
@@ -151,6 +154,24 @@ func renderTranscriptMarkdown(conv store.Conversation, msgs []store.Message) str
 		fmt.Fprintf(&b, "_%s_\n\n", strings.Join(parts, " · "))
 	}
 	return b.String()
+}
+
+// fenceMarkdown wraps content in a code fence one backtick longer than the
+// longest backtick run inside it, so the content can never break out.
+func fenceMarkdown(s string) string {
+	longest, cur := 0, 0
+	for _, r := range s {
+		if r == '`' {
+			cur++
+			if cur > longest {
+				longest = cur
+			}
+		} else {
+			cur = 0
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	return fence + "\n" + s + "\n" + fence
 }
 
 // capExportContent UTF-8-truncates an over-long message and marks the cut.
