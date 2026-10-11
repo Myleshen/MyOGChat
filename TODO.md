@@ -371,6 +371,7 @@ merges sequentially and resolves the small additive conflicts in shared files
   the **standard library only** (no new deps).
 - **4.5b Media transcription — ✅ done:** audio/video attachments
   (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) are transcribed via the
-  configured speech-to-text service (`internal/extract.Options{OCR,Transcribe}`).
-  **Caveat:** synchronous — long media may exceed the tunnel timeout; async is
-  future work.
+  configured speech-to-text service. **Asynchronous** — the upload returns
+  `202 pending` and a bounded background worker writes the transcript (no
+  tunnel-timeout limit); the SPA polls until ready and a send on a non-ready
+  attachment returns `409`.
