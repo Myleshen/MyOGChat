@@ -2,10 +2,8 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -78,7 +76,53 @@ const (
 	maxToolErrorBytes  = 4 * 1024
 )
 
-// handlePostMessage appends a user message and streams the assistant reply.
+// replySpec describes one detached reply job (Phase 5.7). For a new message the
+// user content/attachments/images are carried; for a regenerate the handler has
+// already validated the request and the trailing reply is replaced.
+type replySpec struct {
+	conv   store.Conversation
+	user   store.User
+	apiKey string
+
+	userContent string             // post: the just-sent user message
+	userAtts    []store.Attachment // post: attachment metadata + folded text
+	images      []string           // post: inline vision image data URIs
+	regenerate  bool               // regenerate instead of appending a user message
+}
+
+// streamAgent runs the upstream agent loop, allowing tests to inject a stream.
+func (s *Server) streamAgent(ctx context.Context, p upstream.Params, exec upstream.ExecuteTool) <-chan upstream.Event {
+	if s.streamAgentFn != nil {
+		return s.streamAgentFn(ctx, p, exec)
+	}
+	return s.up.StreamAgent(ctx, p, exec)
+}
+
+// startReply reserves a job, launches the detached agent loop, and relays the
+// job's SSE frames to the calling client. The job is not tied to the request:
+// if the client disconnects the relay returns and the job keeps running.
+func (s *Server) startReply(w http.ResponseWriter, r *http.Request, spec replySpec) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	j, err := s.hub().start(spec.conv.ID, spec.user.ID, spec.conv.Model)
+	if err != nil {
+		status := http.StatusTooManyRequests
+		if errors.Is(err, errJobRunning) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	// Subscribe before launching the job so no early frame (e.g. meta) is lost.
+	sub := j.subscribe()
+	go s.runReply(j, spec)
+	relayJob(w, r, flusher, j, sub)
+}
+
+// handlePostMessage validates a new user message and starts a detached reply.
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	u, ok := currentUser(w, r)
 	if !ok {
@@ -150,20 +194,14 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	userMsg := store.Message{
-		ID:             newUUID(),
-		ConversationID: conv.ID,
-		Role:           "user",
-		Content:        req.Content,
-		Attachments:    attachmentMeta(atts),
-		CreatedAt:      time.Now().UnixMilli(),
-	}
-	if err := s.st.InsertMessage(r.Context(), &userMsg); err != nil {
-		s.log.Error("insert user message", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to save message")
-		return
-	}
-	s.streamReply(w, r, conv, u, apiKey, atts, images)
+	s.startReply(w, r, replySpec{
+		conv:        conv,
+		user:        u,
+		apiKey:      apiKey,
+		userContent: req.Content,
+		userAtts:    atts,
+		images:      images,
+	})
 }
 
 // handleRegenerate replaces the trailing assistant reply (§8.5).
@@ -196,31 +234,56 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	if _, err := s.st.DeleteAssistantAfterLastUser(r.Context(), conv.ID); err != nil {
-		s.log.Error("delete trailing assistant reply", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to prepare regenerate")
-		return
-	}
-	// Re-fold any attachments the last user message carried (2.3). Inline image
-	// bytes are gone after a reload, so regenerate falls back to folded text.
-	atts := s.attachmentsFromLastUser(r.Context(), u.ID, conv.ID)
-	s.streamReply(w, r, conv, u, apiKey, atts, nil)
+	// The detached job deletes the trailing reply and re-folds the last user
+	// message's attachments (2.3) under its own context.
+	s.startReply(w, r, replySpec{conv: conv, user: u, apiKey: apiKey, regenerate: true})
 }
 
-// streamReply streams one assistant reply for conv over SSE and persists it.
-// images are inline image data URIs for the just-sent user message (Phase 5.1);
-// they are used only when the conversation's model can see images.
-func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, u store.User, apiKey string, atts []store.Attachment, images []string) {
-	ctx := r.Context()
+// runReply owns the detached agent loop and every DB write for one reply
+// (Phase 5.7). It runs on the job's background context — never r.Context() — so
+// a client disconnect, reload, or tab close cannot interrupt it. Progress is
+// published on the job (live SSE + the generation snapshot).
+func (s *Server) runReply(j *genJob, spec replySpec) {
+	defer s.hub().complete(j)
+	ctx := j.ctx
+	conv := spec.conv
+	u := spec.user
+	apiKey := spec.apiKey
+
 	m, ok := models.ByID(conv.Model)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "conversation has unknown model")
+		j.finish(jobError, "", "conversation has unknown model")
 		return
 	}
+
+	atts := spec.userAtts
+	if spec.regenerate {
+		if _, err := s.st.DeleteAssistantAfterLastUser(ctx, conv.ID); err != nil {
+			s.log.Error("delete trailing assistant reply", "error", err)
+			j.finish(jobError, "", "failed to prepare regenerate")
+			return
+		}
+		atts = s.attachmentsFromLastUser(ctx, u.ID, conv.ID)
+	} else {
+		userMsg := store.Message{
+			ID:             newUUID(),
+			ConversationID: conv.ID,
+			Role:           "user",
+			Content:        spec.userContent,
+			Attachments:    attachmentMeta(atts),
+			CreatedAt:      time.Now().UnixMilli(),
+		}
+		if err := s.st.InsertMessage(ctx, &userMsg); err != nil {
+			s.log.Error("insert user message", "error", err)
+			j.finish(jobError, "", "failed to save message")
+			return
+		}
+	}
+
 	history, err := s.st.ListMessages(ctx, conv.ID)
 	if err != nil {
 		s.log.Error("load history", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to load history")
+		j.finish(jobError, "", "failed to load history")
 		return
 	}
 	msgs := make([]upstream.Message, 0, len(history))
@@ -232,8 +295,8 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	// image attachments (the model reads them directly). Otherwise fall back to
 	// the folded OCR text exactly as before.
 	context := foldAttachments(atts)
-	if m.Vision && len(images) > 0 {
-		attachImagesToLastUser(msgs, images)
+	if m.Vision && len(spec.images) > 0 {
+		attachImagesToLastUser(msgs, spec.images)
 		context = foldAttachments(nonImageAttachments(atts))
 	}
 	instructions := s.projectInstructions(ctx, conv.ProjectID, u.ID)
@@ -259,20 +322,8 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 		instructions = joinSystem(instructions, emailDigestStandardWithDate(time.Now(), time.Local))
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming unsupported")
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
 	asstID := newUUID()
-	writeSSE(w, flusher, "meta", map[string]string{"message_id": asstID, "model": conv.Model})
+	j.meta(asstID)
 
 	effort := ""
 	if conv.Effort != nil {
@@ -280,7 +331,7 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	}
 	// Tool calling runs the same agentic code path even when the registry is
 	// empty. The generated images/artifacts were collected above.
-	events := s.up.StreamAgent(ctx, upstream.Params{
+	events := s.streamAgent(ctx, upstream.Params{
 		Dialect:      m.Dialect,
 		Model:        conv.Model,
 		Effort:       effort,
@@ -299,15 +350,21 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	var durationMs int64
 	var firstTokenAt time.Time
 	startedAt := time.Now()
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
 
 stream:
 	for {
 		select {
+		case <-ctx.Done():
+			// Stopped (explicit stop or shutdown); no partial reply is persisted.
+			j.finish(jobStopped, "", "")
+			return
 		case ev, open := <-events:
 			if !open {
-				writeSSE(w, flusher, "error", errorEvent{Message: "upstream stream ended unexpectedly"})
+				if ctx.Err() != nil {
+					j.finish(jobStopped, "", "")
+					return
+				}
+				j.finish(jobError, "", "upstream stream ended unexpectedly")
 				return
 			}
 			switch ev.Kind {
@@ -316,16 +373,16 @@ stream:
 					firstTokenAt = time.Now()
 				}
 				reasoning.WriteString(ev.Delta)
-				writeSSE(w, flusher, "reasoning", deltaEvent{Delta: ev.Delta})
+				j.addReasoning(ev.Delta)
 			case upstream.EventText:
 				if firstTokenAt.IsZero() {
 					firstTokenAt = time.Now()
 				}
 				content.WriteString(ev.Delta)
-				writeSSE(w, flusher, "text", deltaEvent{Delta: ev.Delta})
+				j.addText(ev.Delta)
 			case upstream.EventUsage:
 				if ev.Usage == nil {
-					writeSSE(w, flusher, "error", errorEvent{Message: "upstream sent empty usage"})
+					j.finish(jobError, "", "upstream sent empty usage")
 					return
 				}
 				usage = ev.Usage
@@ -337,7 +394,7 @@ stream:
 				}
 				durationMs = time.Since(from).Milliseconds()
 				costMicros = models.CostMicros(m, usage.PromptTokens, usage.CompletionTokens, usage.CachedTokens, time.Now())
-				writeSSE(w, flusher, "usage", usageEvent{
+				j.addUsage(usageEvent{
 					PromptTokens:     usage.PromptTokens,
 					CompletionTokens: usage.CompletionTokens,
 					CachedTokens:     usage.CachedTokens,
@@ -352,38 +409,21 @@ stream:
 					msg = ev.Err.Error()
 				}
 				s.log.Error("upstream stream failed", "model", conv.Model, "error", msg)
-				writeSSE(w, flusher, "error", errorEvent{Message: msg})
+				j.finish(jobError, "", msg)
 				return
 			case upstream.EventTool:
 				if ev.Tool != nil {
 					// Collect the same activity we stream so it survives a
 					// reload (2.10/4.1).
-					entry := cappedTool(ev.Tool)
 					tools = mergeToolEvent(tools, ev.Tool)
-					writeSSE(w, flusher, "tool", toolEvent{
-						Name:       entry.Name,
-						Status:     entry.Status,
-						Summary:    entry.Summary,
-						Args:       entry.Args,
-						Output:     entry.Output,
-						Error:      entry.Error,
-						DurationMs: entry.DurationMs,
-						Truncated:  entry.Truncated,
-					})
+					j.addTool(ev.Tool)
 				}
 			}
-		case <-ticker.C:
-			if _, err := io.WriteString(w, ": keepalive\n\n"); err == nil {
-				flusher.Flush()
-			}
-		case <-ctx.Done():
-			// Client disconnected; the derived upstream request is canceled.
-			return
 		}
 	}
 
 	if usage == nil {
-		writeSSE(w, flusher, "error", errorEvent{Message: "upstream stream ended without usage"})
+		j.finish(jobError, "", "upstream stream ended without usage")
 		return
 	}
 	reasoningTokens := usage.ReasoningTokens
@@ -410,7 +450,7 @@ stream:
 	}
 	if err := s.st.InsertMessage(ctx, &asstMsg); err != nil {
 		s.log.Error("insert assistant message", "error", err)
-		writeSSE(w, flusher, "error", errorEvent{Message: "failed to save message"})
+		j.finish(jobError, "", "failed to save message")
 		return
 	}
 	if err := s.st.TouchConversation(ctx, conv.ID, time.Now().UnixMilli()); err != nil {
@@ -435,7 +475,7 @@ stream:
 		}
 	}
 
-	writeSSE(w, flusher, "done", doneEvent{MessageID: asstID, Title: title})
+	j.finish(jobDone, title, "")
 }
 
 // attachmentsFromLastUser reloads the attachment texts referenced by the most
@@ -683,15 +723,4 @@ func mergeToolEvent(list []store.ToolActivity, t *upstream.ToolActivity) []store
 		}
 	}
 	return append(list, entry)
-}
-
-// writeSSE writes one SSE frame and flushes it immediately.
-func writeSSE(w io.Writer, f http.Flusher, event string, data any) {
-	b, err := json.Marshal(data)
-	if err != nil {
-		return
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err == nil {
-		f.Flush()
-	}
 }

@@ -955,6 +955,35 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Per-conversation generation spinner (Phase 5.7). */
+.convo-spinner {
+  flex-shrink: 0;
+  width: 14px; height: 14px;
+  margin-right: 2px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* "N generating" chip in the sidebar (Phase 5.7). */
+.gen-count {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: var(--text-dim, var(--muted, inherit));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.gen-count::before {
+  content: "";
+  width: 10px; height: 10px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
 .toast {
   position: fixed;
   z-index: 100;

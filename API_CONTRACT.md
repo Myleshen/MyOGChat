@@ -98,7 +98,10 @@ Server flow:
 2. Load full history (user/assistant messages, `role`+`content` only).
 3. Call upstream via the dialect adapter for the conversation's model, with headers
    `Authorization: Bearer $OPENCODE_API_KEY`, `x-opencode-session: <conversation id>`,
-   `User-Agent: myogchat/1.0`. Abort upstream when client disconnects.
+   `User-Agent: myogchat/1.0`. **Since 5.7 the reply runs detached**: a client
+   disconnect, reload, or tab close does NOT abort it — the job finishes and
+   persists. An explicit stop (§3.7) or a shutdown cancels it (nothing is
+   persisted for a stopped reply; the Retry affordance covers it).
 4. Stream normalized SSE to the client as upstream events arrive.
 5. On completion: insert assistant message (content, reasoning, usage, cost_micros),
    bump conversation `updated_at`.
@@ -121,6 +124,36 @@ every 15 s while waiting on upstream:
 | `usage` | `{"prompt_tokens":N,"completion_tokens":N,"cached_tokens":N,"cost_micros":N}` | after final upstream usage |
 | `done` | `{"message_id":"…","title":"…"}` | successful end; `title` only if newly set |
 | `error` | `{"message":"…"}` | any failure (upstream HTTP status + first 200 chars of body, or local error); stream ends |
+
+### 3.7 Detached generation (5.7)
+
+Each reply is a per-conversation **job** owned by the server, not the HTTP
+request. One running job per conversation (a second `POST …/messages` or
+`/regenerate` while one is running returns `409`); a small global/per-user cap
+returns `429`. Jobs live in memory only. A terminal job is kept for a short grace
+period so a reload can observe its result.
+
+- `GET /api/conversations/{id}/generation` — owner-scoped snapshot (404 if the
+  conversation is not the caller's):
+  ```json
+  {"conversation_id":"…","active":true,"status":"running","message_id":"…",
+   "model":"…","title":"…","content":"…","reasoning":"…",
+   "tools":[{"name":"…","status":"done","…":0}],
+   "usage":{"prompt_tokens":0,"completion_tokens":0,"cached_tokens":0,
+            "reasoning_tokens":0,"cost_micros":0,"duration_ms":0}}
+  ```
+  `status` is `running` | `done` | `error` | `stopped`, or `none` when the
+  conversation has no (recent) job (`active:false`). `content`/`reasoning` are the
+  accumulated text so far; a client re-attaches after a reload by polling this
+  endpoint and re-rendering the live bubble from the snapshot. `usage` is absent
+  until the final upstream usage.
+- `POST /api/conversations/{id}/generation/stop` → `204` cancels the running
+  reply (like a client Stop); `404` when nothing is generating. Nothing is
+  persisted for a stopped reply.
+
+The SPA keeps a per-conversation map of active generations: navigation never
+aborts a reply, a sidebar spinner/“N generating” chip marks background jobs, and
+a background completion raises a one-line toast.
 
 ## 4. Upstream adapters (internal, `internal/upstream`)
 

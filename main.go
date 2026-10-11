@@ -777,6 +777,9 @@ func run(cfg config, log *slog.Logger) error {
 		// client must not make systemd mark the unit FAILED on every restart.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
+		// Cancel detached reply jobs first so their relay handlers unwind
+		// promptly (a canceled reply persists nothing, like an explicit stop).
+		srv.ShutdownJobs(shutdownCtx)
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			log.Warn("graceful shutdown incomplete", "error", err)
 		}
