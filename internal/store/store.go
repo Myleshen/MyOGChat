@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   title      TEXT NOT NULL DEFAULT '',
   model      TEXT NOT NULL,
   effort     TEXT,
+  pinned     INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -175,8 +177,19 @@ type Conversation struct {
 	Model     string  `json:"model"`
 	Effort    *string `json:"effort"`
 	ProjectID *string `json:"project_id"`
+	Pinned    bool    `json:"pinned"`
 	CreatedAt int64   `json:"created_at"`
 	UpdatedAt int64   `json:"updated_at"`
+}
+
+// ConversationHit is one search result (feature A): a conversation that
+// matched the query by title or message content, with a short snippet around
+// the first matching message and its last-activity timestamp.
+type ConversationHit struct {
+	ConversationID string `json:"id"`
+	Title          string `json:"title"`
+	Snippet        string `json:"snippet"`
+	UpdatedAt      int64  `json:"updated_at"`
 }
 
 // Message mirrors a row of the messages table.
@@ -376,6 +389,8 @@ func (s *Store) migrate() error {
 		{"messages", "images", `ALTER TABLE messages ADD COLUMN images TEXT`},
 		{"attachments", "status", `ALTER TABLE attachments ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'`},
 		{"attachments", "error", `ALTER TABLE attachments ADD COLUMN error TEXT`},
+		// Pinned chats (feature B): additive, defaults to unpinned.
+		{"conversations", "pinned", `ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`},
 	}
 	cache := map[string]map[string]bool{}
 	for _, st := range steps {
@@ -695,25 +710,28 @@ func (s *Store) EnsureSetting(ctx context.Context, key, def string) (string, err
 
 // ---------- conversations ----------
 
-const conversationCols = "id, title, model, effort, project_id, created_at, updated_at"
+const conversationCols = "id, user_id, title, model, effort, project_id, pinned, created_at, updated_at"
 
 func scanConversation(sc scanner) (Conversation, error) {
 	var c Conversation
-	var effort, project sql.NullString
-	if err := sc.Scan(&c.ID, &c.Title, &c.Model, &effort, &project, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	var userID, effort, project sql.NullString
+	var pinned int
+	if err := sc.Scan(&c.ID, &userID, &c.Title, &c.Model, &effort, &project, &pinned, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return Conversation{}, err
 	}
+	c.UserID = optString(userID)
 	c.Effort = optString(effort)
 	c.ProjectID = optString(project)
+	c.Pinned = pinned != 0
 	return c, nil
 }
 
 // InsertConversation inserts a new conversation row for its owner.
 func (s *Store) InsertConversation(ctx context.Context, c *Conversation) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO conversations (id, user_id, title, model, effort, project_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, nullString(c.UserID), c.Title, c.Model, nullString(c.Effort), nullString(c.ProjectID), c.CreatedAt, c.UpdatedAt)
+		`INSERT INTO conversations (id, user_id, title, model, effort, project_id, pinned, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, nullString(c.UserID), c.Title, c.Model, nullString(c.Effort), nullString(c.ProjectID), boolToInt(c.Pinned), c.CreatedAt, c.UpdatedAt)
 	return err
 }
 
@@ -727,10 +745,11 @@ func (s *Store) GetConversation(ctx context.Context, id, userID string) (Convers
 	return c, err
 }
 
-// ListConversations returns the user's conversations, updated_at DESC.
+// ListConversations returns the user's conversations, pinned first, then
+// updated_at DESC.
 func (s *Store) ListConversations(ctx context.Context, userID string) ([]Conversation, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+conversationCols+` FROM conversations WHERE user_id = ? ORDER BY updated_at DESC`, userID)
+		`SELECT `+conversationCols+` FROM conversations WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -744,6 +763,126 @@ func (s *Store) ListConversations(ctx context.Context, userID string) ([]Convers
 		convs = append(convs, c)
 	}
 	return convs, rows.Err()
+}
+
+// SetConversationPinned pins or unpins one of the user's conversations. It
+// returns ErrNotFound when the row is missing or not owned by userID.
+func (s *Store) SetConversationPinned(ctx context.Context, id, userID string, pinned bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE conversations SET pinned = ? WHERE id = ? AND user_id = ?`,
+		boolToInt(pinned), id, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SearchConversations matches the user's conversations by title or message
+// content (case-insensitive) and returns up to limit hits, most recently
+// active first. Each hit carries a ~120-char snippet centred on the first
+// matching message; a title-only match has an empty snippet.
+func (s *Store) SearchConversations(ctx context.Context, userID, query string, limit int) ([]ConversationHit, error) {
+	hits := make([]ConversationHit, 0)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return hits, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	like := "%" + strings.ToLower(query) + "%"
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT c.id, c.title, c.updated_at,
+		        (SELECT m.content FROM messages m
+		          WHERE m.conversation_id = c.id AND lower(m.content) LIKE ?
+		          ORDER BY m.created_at ASC, m.rowid ASC LIMIT 1)
+		   FROM conversations c
+		  WHERE c.user_id = ?
+		    AND (lower(c.title) LIKE ?
+		         OR EXISTS (SELECT 1 FROM messages m
+		                     WHERE m.conversation_id = c.id AND lower(m.content) LIKE ?))
+		  ORDER BY c.updated_at DESC
+		  LIMIT ?`,
+		like, userID, like, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id, title string
+			updatedAt int64
+			content   sql.NullString
+		)
+		if err := rows.Scan(&id, &title, &updatedAt, &content); err != nil {
+			return nil, err
+		}
+		var snippet string
+		if content.Valid && content.String != "" {
+			snippet = makeSnippet(content.String, query, 120)
+		}
+		hits = append(hits, ConversationHit{
+			ConversationID: id,
+			Title:          title,
+			Snippet:        snippet,
+			UpdatedAt:      updatedAt,
+		})
+	}
+	return hits, rows.Err()
+}
+
+// makeSnippet returns up to width runes of content around the first
+// case-insensitive occurrence of query, collapsing newlines and marking
+// truncation with an ellipsis. With no match it returns the leading runes.
+func makeSnippet(content, query string, width int) string {
+	if width <= 0 {
+		width = 120
+	}
+	content = strings.TrimSpace(strings.Join(strings.Fields(content), " "))
+	runes := []rune(content)
+	if len(runes) == 0 {
+		return ""
+	}
+	match := -1
+	if query != "" {
+		if idx := strings.Index(strings.ToLower(content), strings.ToLower(query)); idx >= 0 {
+			match = len([]rune(content[:idx]))
+		}
+	}
+	if match < 0 || len(runes) <= width {
+		if match < 0 && len(runes) > width {
+			return string(runes[:width]) + "…"
+		}
+		return string(runes)
+	}
+	qlen := len([]rune(query))
+	start := match - (width-qlen)/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + width
+	if end > len(runes) {
+		end = len(runes)
+		start = end - width
+		if start < 0 {
+			start = 0
+		}
+	}
+	s := string(runes[start:end])
+	if start > 0 {
+		s = "…" + s
+	}
+	if end < len(runes) {
+		s += "…"
+	}
+	return s
 }
 
 // UpdateConversation updates a conversation's mutable fields (owner-guarded).

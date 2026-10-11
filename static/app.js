@@ -289,6 +289,12 @@ const ICONS = {
   folder:
     '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">' +
     '<path d="M1.75 2.5A1.75 1.75 0 0 0 0 4.25v7.5c0 .966.784 1.75 1.75 1.75h12.5A1.75 1.75 0 0 0 16 11.75v-6.5A1.75 1.75 0 0 0 14.25 3.5H7.81L6.56 2.25A1.5 1.5 0 0 0 5.5 1.75H1.75Z"/></svg>',
+  /* Pushpin (feature B): outline when unpinned, filled/accent when pinned. */
+  pin:
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M12 17v5"/>' +
+    '<path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>',
 };
 
 /* ============================== Settings ============================== */
@@ -2478,6 +2484,7 @@ function buildConvoItem(conv) {
   const title = conv.title || "Untitled";
   const li = el("li", "convo-item");
   if (state.current && state.current.id === conv.id) li.classList.add("active");
+  if (conv.pinned) li.classList.add("pinned");
   li.dataset.id = conv.id;
 
   const link = el("button", "convo-link");
@@ -2485,12 +2492,20 @@ function buildConvoItem(conv) {
   link.textContent = title;
   link.title = title;
 
+  /* Pin toggle (feature B): hover/focus on pointer devices, always tappable. */
+  const pinBtn = el("button", "icon-btn convo-pin");
+  pinBtn.type = "button";
+  pinBtn.innerHTML = ICONS.pin;
+  pinBtn.setAttribute("aria-pressed", conv.pinned ? "true" : "false");
+  pinBtn.setAttribute("aria-label", (conv.pinned ? "Unpin " : "Pin ") + title);
+  pinBtn.title = conv.pinned ? "Unpin" : "Pin";
+
   const menuBtn2 = el("button", "icon-btn convo-menu");
   menuBtn2.type = "button";
   menuBtn2.innerHTML = ICONS.more;
   menuBtn2.setAttribute("aria-label", "Options for " + title);
 
-  li.append(link, menuBtn2);
+  li.append(link, pinBtn, menuBtn2);
   return li;
 }
 
@@ -2653,6 +2668,38 @@ async function deleteConversation(id) {
   renderConvoList();
   toast("Conversation deleted");
 }
+
+/* ===== BEGIN pinned chats (feature B) — self-contained, safe to relocate ===== */
+
+/* Re-sort locally to mirror the server's ListConversations order
+   (pinned DESC, updated_at DESC) after a toggle. */
+function sortConversationsPinnedFirst() {
+  state.conversations.sort((a, b) => {
+    const pinned = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+    if (pinned !== 0) return pinned;
+    return (b.updated_at || 0) - (a.updated_at || 0);
+  });
+  renderConvoList();
+}
+
+async function togglePinned(id) {
+  const conv = state.conversations.find((c) => c.id === id);
+  if (!conv) return;
+  const next = !conv.pinned;
+  try {
+    const updated = await api("/api/conversations/" + enc(id), {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ pinned: next }),
+    });
+    applyConvUpdate(updated);
+    sortConversationsPinnedFirst();
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message);
+  }
+}
+
+/* ===== END pinned chats ===== */
 
 /* ============================== Projects ============================== */
 
@@ -4605,6 +4652,12 @@ function onNavClick(e) {
     if (item) openConvoMenu(item.dataset.id, convoMenu);
     return;
   }
+  const convoPin = e.target.closest(".convo-pin");
+  if (convoPin) {
+    const item = convoPin.closest(".convo-item");
+    if (item) togglePinned(item.dataset.id);
+    return;
+  }
   const convoLink = e.target.closest(".convo-link");
   if (convoLink) {
     const item = convoLink.closest(".convo-item");
@@ -4614,6 +4667,130 @@ function onNavClick(e) {
     else closeSidebar();
   }
 }
+
+/* ===== BEGIN chat search (feature A) — self-contained, safe to relocate ===== */
+
+const searchInput = document.getElementById("search-input");
+const searchClear = document.getElementById("search-clear");
+const searchResults = document.getElementById("search-results");
+const searchResultsList = document.getElementById("search-results-list");
+const searchEmpty = document.getElementById("search-empty");
+const searchLoading = document.getElementById("search-loading");
+const convoNav = document.querySelector(".convo-nav");
+
+const SEARCH_DEBOUNCE_MS = 250;
+let searchDebounceTimer = null;
+let searchSeq = 0; // guards against out-of-order responses
+
+/* Toggle the "searching" mode: results replace the Projects/Chats sections. */
+function setSearching(active) {
+  searchResults.hidden = !active;
+  searchClear.hidden = !active;
+  if (convoNav) convoNav.classList.toggle("searching", active);
+}
+
+function clearSearch() {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
+  }
+  searchSeq++;
+  searchInput.value = "";
+  searchResultsList.innerHTML = "";
+  searchEmpty.hidden = true;
+  searchLoading.hidden = true;
+  setSearching(false);
+}
+
+function buildSearchHit(hit) {
+  const li = el("li", "convo-item search-result-item");
+  li.dataset.id = hit.id;
+
+  const link = el("button", "convo-link search-hit");
+  link.type = "button";
+
+  const title = el("span", "search-hit-title");
+  title.textContent = hit.title || "Untitled";
+  link.appendChild(title);
+
+  if (hit.snippet) {
+    const snippet = el("span", "search-hit-snippet");
+    snippet.textContent = hit.snippet;
+    link.appendChild(snippet);
+  }
+
+  li.appendChild(link);
+  return li;
+}
+
+function renderSearchResults(hits) {
+  searchResultsList.innerHTML = "";
+  for (const hit of hits) searchResultsList.appendChild(buildSearchHit(hit));
+  searchEmpty.hidden = hits.length !== 0;
+}
+
+async function runSearch(rawQuery) {
+  const q = (rawQuery || "").trim();
+  if (!q) {
+    clearSearch();
+    return;
+  }
+  setSearching(true);
+  searchEmpty.hidden = true;
+  searchLoading.hidden = false;
+  const seq = ++searchSeq;
+  try {
+    const data = await api("/api/search?q=" + enc(q));
+    if (seq !== searchSeq) return; // a newer query started meanwhile
+    const hits = data && Array.isArray(data.results) ? data.results : [];
+    renderSearchResults(hits);
+  } catch (err) {
+    if (seq !== searchSeq) return;
+    if (!(err instanceof AuthError)) {
+      searchResultsList.innerHTML = "";
+      searchEmpty.hidden = false;
+      toast(err.message || "Search failed");
+    }
+  } finally {
+    if (seq === searchSeq) searchLoading.hidden = true;
+  }
+}
+
+function onSearchInput() {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+  const value = searchInput.value;
+  if (!value.trim()) {
+    clearSearch();
+    return;
+  }
+  setSearching(true);
+  searchEmpty.hidden = true;
+  searchLoading.hidden = false;
+  searchDebounceTimer = setTimeout(() => runSearch(value), SEARCH_DEBOUNCE_MS);
+}
+
+searchInput.addEventListener("input", onSearchInput);
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    clearSearch();
+    searchInput.blur();
+  }
+});
+searchClear.addEventListener("click", () => {
+  clearSearch();
+  searchInput.focus();
+});
+searchResultsList.addEventListener("click", (e) => {
+  const item = e.target.closest(".search-result-item");
+  if (!item) return;
+  const id = item.dataset.id;
+  clearSearch();
+  closeSidebar();
+  openConversation(id);
+});
+
+/* ===== END chat search ===== */
 
 /* ============================== Events ============================== */
 
