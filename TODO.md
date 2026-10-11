@@ -375,3 +375,65 @@ merges sequentially and resolves the small additive conflicts in shared files
   `202 pending` and a bounded background worker writes the transcript (no
   tunnel-timeout limit); the SPA polls until ready and a send on a non-ready
   attachment returns `409`.
+
+## Phase 5 — vision, search, export, editing, background work
+
+> Plan of record is **this file**; per-item design notes live in `docs/`.
+> UI items share `static/app.js` / `index.html` / `style.css` and merge
+> sequentially. Merge state: 5.1–5.6 are on `main` (deploy pending); 5.7–5.11 and
+> the hardening list are planned.
+
+### 5.1 Vision image input — ✅ merged ([`docs/5-vision.md`](5-vision.md))
+- An attached/pasted image is downscaled in the browser and sent inline; a model
+  with `vision:true` sees it as multimodal content (both dialects), and the
+  redundant OCR text of image attachments is dropped. Bytes are never persisted;
+  a non-vision model (or a reload/regenerate) falls back to folded OCR text.
+- An image upload no longer fails when OCR is unavailable (stored metadata-only).
+
+### 5.2 Search across chats — ✅ merged ([`docs/5-search-pin.md`](5-search-pin.md))
+- `GET /api/search?q=` matches title **or** message content, owner-scoped;
+  sidebar search box with a snippet results view.
+
+### 5.3 Conversation export + admin backup — ✅ merged ([`docs/5-export-edit.md`](5-export-edit.md))
+- `GET /api/conversations/{id}/export?format=md|json` (owner-scoped) and admin
+  `GET /api/admin/backup` (`VACUUM INTO` snapshot).
+
+### 5.4 Edit & resend a message — ✅ merged ([`docs/5-export-edit.md`](5-export-edit.md))
+- `POST /api/conversations/{id}/messages/{messageId}/edit` rewrites the user
+  message and truncates the tail; the SPA then regenerates.
+
+### 5.5 Pinned chats — ✅ merged ([`docs/5-search-pin.md`](5-search-pin.md))
+- `conversations.pinned` (additive); pinned sort first; sidebar pin toggle.
+
+### 5.6 Paste image into composer — ✅ merged ([`docs/5-vision.md`](5-vision.md))
+- Pasting a screenshot attaches it (shares 5.1's pipeline).
+
+### 5.7 Background / concurrent generation — planned ([`docs/5.7-background-generation.md`](5.7-background-generation.md))
+- Start a reply in chat A, switch to B, come back to A's finished reply. Phase 1
+  is client-side per-conversation streams; Phase 2 is server-detached jobs so it
+  survives reload/tab-close. Fixes the global `state.streaming` freeze.
+
+### 5.8 Sandbox file output — planned ([`docs/5.8-sandbox-artifacts.md`](5.8-sandbox-artifacts.md))
+- Give the agent a writable workspace and harvest produced files (PDF/CSV/XLSX/
+  DOCX/TXT/charts) into a downloadable `artifacts` table + chips on the assistant
+  message.
+
+### 5.9 Email digest tool + standard — planned ([`docs/5.9-email-digest.md`](5.9-email-digest.md))
+- `email_digest` resolves ranges (`today`, `unread`, …) server-side and returns a
+  token-capped, snipetted block; a fixed 4-section summarization standard is
+  injected so "get me today's updates" works. Read-only preserved.
+
+### 5.10 Reuse the empty "Untitled" draft — planned ([`docs/5.10-reuse-draft.md`](5.10-reuse-draft.md))
+- `POST /api/conversations` with `reuse_empty:true` returns an existing
+  zero-message untitled draft (same project) instead of creating duplicates.
+
+### 5.11 Multiple mailboxes per user — planned ([`docs/5.11-multi-mailbox.md`](5.11-multi-mailbox.md))
+- Today email is limited to one mailbox per user; move `mail_accounts` to
+  many-per-user (stable id, label, per-account enable/default), update the
+  endpoints/tools/settings UI, and let 5.9 pick an account.
+
+### 5.x Hardening — planned ([`docs/5-hardening.md`](5-hardening.md))
+- Audit fixes before shipping the new items: edit/truncate atomicity, backup temp
+  permissions, vision cap regressions (non-vision models, image-only sends),
+  markdown escaping, export-menu a11y, `downloadUrl` error handling, docs hygiene
+  (README/AGENTS/env), and UI-battery coverage for the new UI.

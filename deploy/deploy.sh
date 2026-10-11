@@ -4,7 +4,7 @@
 # Usage: deploy/deploy.sh [ssh-host]      (default: pi@raspberrypi.local)
 #
 # Requires the env file to already exist on the target at ~/.config/myogchat/env
-# (chmod 600) with OPENCODE_API_KEY and MYOGCHAT_AUTH_TOKEN. See env.example.
+# (chmod 600) with OPENCODE_API_KEY (and any optional keys). See env.example.
 #
 # After the first deploy, enable lingering once so the service survives logout
 # and reboot:

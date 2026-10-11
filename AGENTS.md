@@ -5,13 +5,24 @@ Personal ChatGPT-style PWA backed by an OpenCode Go subscription.
 **New here? Read `HANDOFF.md` first** (live state, status, testing, next steps).
 Then `DESIGN.md` and `API_CONTRACT.md` — the contract is the source of truth.
 
+## Principles
+
+**Simple, fast, snappy, minimal resource use** — this runs on a Raspberry Pi 4B.
+Prefer the smallest thing that works, but **do it the right way** — simple is not
+a licence to be hacky. Concretely: stdlib over dependencies, additive migrations,
+no background machinery, no new stored bytes unless a feature truly needs them,
+browser-local settings over server state, and one obvious code path. Correctness,
+security, and accessibility are non-negotiable. Best-in-class UI/UX on phone,
+iPad, and desktop. Don't invent new systems when a few lines in the existing
+pattern will do — and don't cut corners when the right fix is a few lines more.
+
 ## Layout
 
 - `main.go` — config, startup, retention janitor, graceful shutdown
 - `internal/models` — static model registry + cost calculation (tests here)
 - `internal/store` — SQLite persistence (modernc.org/sqlite, WAL)
 - `internal/upstream` — chat-completions + responses dialect adapters
-- `internal/auth` — shared-token cookie auth
+- `internal/auth` — multi-user session-cookie auth (PBKDF2, stdlib)
 - `internal/server` — HTTP routes, SSE streaming, embedded SPA
 - `static/` — vanilla-JS PWA (no build step), embedded via `//go:embed all:static`
 - `deploy/` — systemd user unit + deploy script
@@ -37,7 +48,7 @@ deploy/deploy.sh                   # cross-compile + install on the Pi
 Local run:
 
 ```sh
-OPENCODE_API_KEY=... MYOGCHAT_AUTH_TOKEN=... MYOGCHAT_PORT=8787 go run .
+OPENCODE_API_KEY=... MYOGCHAT_PORT=8787 go run .
 ```
 
 ## Deployment

@@ -22,25 +22,28 @@ Raspberry Pi 4B.
 - **Light / dark / system** themes and a categorized **settings page** (Account,
   Appearance, AI & access, Integrations, Tools, Voice, Usage, Users, About)
 - Installable **PWA** (mobile-first; add to home screen on Android/iOS)
-- Configurable retention (default 30 days, max 60) and shared-token login,
-  designed to sit behind a Cloudflare Tunnel
+- Configurable retention (default 30 days, max 60) and multi-user accounts
+  (username/password; first run creates the admin), designed to sit behind a
+  Cloudflare Tunnel
 
 ## Configuration
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OPENCODE_API_KEY` | — | **required**; your OpenCode Go key |
-| `MYOGCHAT_AUTH_TOKEN` | — | **required**; shared login token (`openssl rand -base64 24`) |
+| `OPENCODE_API_KEY` | — | optional; shared OpenCode Go key (users can also BYOK in Settings) |
 | `MYOGCHAT_PORT` | `8787` | listen port |
 | `MYOGCHAT_DB` | `~/.local/share/myogchat/chat.db` | SQLite path |
 | `MYOGCHAT_RETENTION_DAYS` | `30` | clamped to `[1, 60]` |
+
+Users sign in with a username/password; there is no shared token
+(`MYOGCHAT_AUTH_TOKEN` is obsolete).
 
 ## Build & run locally
 
 Requires Go 1.27+ (pinned in `.mise.toml`; `mise exec -- go …` works).
 
 ```sh
-OPENCODE_API_KEY=… MYOGCHAT_AUTH_TOKEN=$(openssl rand -base64 24) go run .
+OPENCODE_API_KEY=… go run .
 # http://localhost:8787
 ```
 

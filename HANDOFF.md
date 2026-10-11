@@ -13,8 +13,9 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 - **Live:** `https://chat.example.com` (also `http://raspberrypi.local:8787` on LAN)
 - **Repo:** `github.com/Myleshen/MyOGChat` — `main` is the source of truth
 - **Phase 1:** complete. **Phase 2:** complete (2.1–2.13). **Phase 3:** complete.
-  **Phase 4:** complete — 4.1/4.2/4.3a/4.3b/4.4/4.5a/4.5b shipped (see `docs/PHASE4.md`)
-  (see status below; plan of record `docs/PHASE4.md`).
+  **Phase 4:** complete — 4.1/4.2/4.3a/4.3b/4.4/4.5a/4.5b shipped (see `docs/PHASE4.md`).
+  **Phase 5:** in progress — 5.1–5.6 **merged to `main`** (deploy pending); 5.7–5.11
+  and the hardening list planned (`TODO.md` → Phase 5).
 
 ## Live deployment
 
@@ -27,7 +28,8 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 | Tunnel | Cloudflare Tunnel (docker container `cloudflaretunnel`, dashboard-managed) → `http://raspberrypi.local:8787`. Owner manages the CF dashboard. |
 | Repo on Pi | `~/softwares/MyOGChat` (checkout) + `~/softwares/MyOGChat.git` (bare relay — see "Deploy") |
 
-**Deployed commit:** `6a1352d` (Phase 2 batch: BYOK, groups, files/PDF, tools).
+**Deployed commit:** `f77d399` (Phase 4 cache-busting). `main` is ahead — the
+Phase 5 batch (5.1–5.6) is merged but **not yet deployed**.
 
 > The Pi has **no Go toolchain** and **no GitHub key**. Builds are cross-compiled
 > on the workstation and shipped. The Pi checkout pulls from the local bare relay
@@ -52,7 +54,7 @@ internal/
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
 deploy/       systemd unit + deploy.sh + sandbox-setup.sh + ocr-setup.sh + ocr/ (Dockerfile) + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.13-vision-ocr.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, research/phase4/
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.13-vision-ocr.md, 3.2-imap.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, 5-vision.md, 5-search-pin.md, 5-export-edit.md, 5.7-background-generation.md, 5.8-sandbox-artifacts.md, 5.9-email-digest.md, 5.10-reuse-draft.md, 5.11-multi-mailbox.md, 5-hardening.md, research/phase4/
 ```
 
 ## Docs index
@@ -64,9 +66,12 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2
 - `README.md` — user-facing overview
 - `docs/` — `2.2-groups.md`, `2.3-attachments.md`, `2.4-tools.md`,
   `2.4-search-providers.md`, `2.8-linkwarden.md`, `2.10-2.11-tool-activity-usage.md`,
-  `2.13-vision-ocr.md`, `3.4-maps.md`, `3.5-3.6-speech.md`
+  `2.13-vision-ocr.md`, `3.2-imap.md`, `3.4-maps.md`, `3.5-3.6-speech.md`
 - `docs/PHASE4.md` — Phase 4 plan of record; `docs/research/phase4/` — the 1..5
   research reports behind it
+- `docs/` Phase 5: `5-vision.md`, `5-search-pin.md`, `5-export-edit.md` (shipped),
+  `5.7-background-generation.md`, `5.8-sandbox-artifacts.md`, `5.9-email-digest.md`,
+  `5.10-reuse-draft.md`, `5.11-multi-mailbox.md`, `5-hardening.md` (planned)
 
 ## Conventions & hard constraints
 
@@ -132,7 +137,8 @@ scripts/ui-test.sh <BASE_URL> <TEST_USER> <TEST_PASS>
   login, no-overflow, keyboard (composer pinned, no page scroll), sidebar,
   projects, attachments, settings (key + groups), themes, send; as **admin** —
   badge, Users panel, Integrations. Prints PASS/FAIL + saves screenshots to
-  `/tmp/opencode/ui/`. Currently **28/28** locally, **22/22** on the tunnel (SKIP_ADMIN).
+  `/tmp/opencode/ui/`. Currently **45/45** locally (mobile); the tunnel run uses
+  `SKIP_ADMIN` (admin pass skipped).
 - The runner uses a **dedicated test DB** (`/tmp/opencode/myogchat-ui.db`) and
   seeds users directly into it — the real DB is never touched. It has a port guard.
 - On the Pi: add a temp account via the CLI, test against the tunnel, then remove it.
@@ -200,9 +206,12 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 - **Document extraction (4.5a)** now covers OOXML/ODF/EPUB/RTF entirely with the
   standard library; still **not** exercised against large/complex real-world
   files through the UI (unit-tested with fixtures).
-- **Media transcription (4.5b)** is **synchronous**, so a long audio/video clip
-  can exceed the Cloudflare Tunnel request timeout; async transcription is future
-  work. Requires the configured speech-to-text service (`docs/3.5-3.6-speech.md`).
+- **Media transcription (4.5b)** is **asynchronous**: the upload returns
+  `202 pending` and a bounded background worker (2 concurrent, 10 min cap) writes
+  the transcript, so a long clip never hits the Cloudflare Tunnel timeout; the SPA
+  polls `GET /api/attachments/{id}` until ready and a send on a non-ready
+  attachment returns `409`. Requires the configured speech-to-text service
+  (`docs/3.5-3.6-speech.md`).
 - **OCR (2.5)** is unit-tested (fake docker runner) and the extract path is
   covered; the live Docker smoke test was **not run** here (no Docker daemon /
   not in the `docker` group on the workstation). Build the image on the Pi with
