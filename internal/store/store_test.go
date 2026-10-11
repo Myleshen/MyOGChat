@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -910,5 +911,114 @@ func TestMailAccountRoundTrip(t *testing.T) {
 	}
 	if _, err := s.GetMailAccount(ctx, u.ID); err != ErrNotFound {
 		t.Fatalf("GetMailAccount after delete = %v, want ErrNotFound", err)
+	}
+}
+
+// TestEditUserMessageAndTruncate covers the edit/truncate store methods used by
+// the edit-and-resend flow (§18): only the owner's user messages can be edited,
+// and TruncateAfter drops everything that follows by (created_at, rowid).
+func TestEditUserMessageAndTruncate(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	owner := seedUser(t, s, "u1", "owner", false)
+	other := seedUser(t, s, "u2", "other", false)
+
+	if err := s.InsertConversation(ctx, &Conversation{
+		ID: "c1", UserID: &owner.ID, Title: "T", Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+	insert := func(id, role, content string, at int64) {
+		t.Helper()
+		if err := s.InsertMessage(ctx, &Message{
+			ID: id, ConversationID: "c1", Role: role, Content: content, CreatedAt: at,
+		}); err != nil {
+			t.Fatalf("InsertMessage(%s): %v", id, err)
+		}
+	}
+	insert("m1", "user", "hello", 1)
+	insert("a1", "assistant", "hi there", 2)
+	insert("m2", "user", "second question", 3)
+	insert("a2", "assistant", "second answer", 4)
+
+	if err := s.EditUserMessage(ctx, "c1", "m1", owner.ID, "hello edited"); err != nil {
+		t.Fatalf("EditUserMessage: %v", err)
+	}
+	// The edit must not disturb the other rows.
+	if msgs, _ := s.ListMessages(ctx, "c1"); len(msgs) != 4 || msgs[0].Content != "hello edited" {
+		t.Fatalf("after edit messages = %+v, want 4 with m1 edited", msgs)
+	}
+
+	// Editing an assistant message or another user's message is ErrNotFound.
+	if err := s.EditUserMessage(ctx, "c1", "a1", owner.ID, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("edit assistant = %v, want ErrNotFound", err)
+	}
+	if err := s.EditUserMessage(ctx, "c1", "m2", other.ID, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("edit cross-user = %v, want ErrNotFound", err)
+	}
+	if err := s.EditUserMessage(ctx, "c1", "missing", owner.ID, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("edit missing = %v, want ErrNotFound", err)
+	}
+
+	if err := s.TruncateAfter(ctx, "c1", "m1"); err != nil {
+		t.Fatalf("TruncateAfter: %v", err)
+	}
+	msgs, err := s.ListMessages(ctx, "c1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].ID != "m1" {
+		t.Fatalf("after truncate = %+v, want only m1", msgs)
+	}
+
+	// A missing anchor truncates nothing.
+	if err := s.TruncateAfter(ctx, "c1", "ghost"); err != nil {
+		t.Fatalf("TruncateAfter(ghost): %v", err)
+	}
+	if msgs, _ := s.ListMessages(ctx, "c1"); len(msgs) != 1 {
+		t.Errorf("truncate on missing anchor removed rows: %+v", msgs)
+	}
+}
+
+// TestBackupCreatesValidDatabase checks that Backup produces a readable SQLite
+// file with the same data (the admin backup download, §19).
+func TestBackupCreatesValidDatabase(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	u := seedUser(t, s, "u1", "owner", false)
+	if err := s.InsertConversation(ctx, &Conversation{
+		ID: "c1", UserID: &u.ID, Title: "Back me up", Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+	if err := s.InsertMessage(ctx, &Message{
+		ID: "m1", ConversationID: "c1", Role: "user", Content: "hello", CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "backup.db")
+	if err := s.Backup(ctx, dest); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dest+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM messages`).Scan(&n); err != nil {
+		t.Fatalf("query backup: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("backup messages = %d, want 1", n)
+	}
+	var title string
+	if err := db.QueryRow(`SELECT title FROM conversations WHERE id = 'c1'`).Scan(&title); err != nil {
+		t.Fatalf("query backup conversation: %v", err)
+	}
+	if title != "Back me up" {
+		t.Errorf("backup title = %q", title)
 	}
 }

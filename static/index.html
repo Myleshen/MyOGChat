@@ -172,6 +172,13 @@
           </select>
         </div>
         <span id="total-cost" class="total-cost" title="Total cost of this conversation" hidden></span>
+        <button id="export-btn" class="icon-btn export-btn" type="button"
+                aria-label="Export conversation" aria-haspopup="menu" aria-expanded="false"
+                title="Export conversation" hidden>
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/>
+          </svg>
+        </button>
         <button id="settings-btn" class="icon-btn settings-btn" type="button"
                 aria-label="Settings" title="Settings">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -760,6 +767,11 @@
         <p class="settings-about">
           A personal, self-hosted chat client backed by an OpenCode Go subscription.
         </p>
+        <!-- Server backup (admins only, feature 5). -->
+        <div id="backup-row" class="settings-field-row" hidden>
+          <button id="download-backup" class="btn btn-ghost" type="button">Download backup</button>
+          <p class="settings-subtitle-sm">Download a snapshot of the server's database.</p>
+        </div>
       </section>
     </div>
   </div>
