@@ -122,13 +122,16 @@ CREATE TABLE IF NOT EXISTS calendar_accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_calendar_accounts_user ON calendar_accounts(user_id);
 CREATE TABLE IF NOT EXISTS mail_accounts (
-  user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  label      TEXT NOT NULL DEFAULT '',
   provider   TEXT NOT NULL,
   email      TEXT NOT NULL,
   imap_host  TEXT NOT NULL,
   imap_port  INTEGER NOT NULL,
   imap_tls   TEXT NOT NULL DEFAULT 'implicit',
   enabled    INTEGER NOT NULL DEFAULT 1,
+  is_default INTEGER NOT NULL DEFAULT 0,
   secret_enc TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -286,17 +289,22 @@ type Attachment struct {
 // Chars reports the number of characters in the extracted text (rune count).
 func (a Attachment) Chars() int { return len([]rune(a.Text)) }
 
-// MailAccount mirrors a row of the mail_accounts table (feature 3.2). It stores
-// exactly one mailbox per user. SecretEnc is the AES-256-GCM encrypted JSON blob
-// holding the app-specific password; it is never returned to the SPA.
+// MailAccount mirrors a row of the mail_accounts table (feature 3.2, extended by
+// 5.11). A user may have several mailboxes; exactly one is the default
+// (is_default = 1, enforced by a partial unique index). SecretEnc is the
+// AES-256-GCM encrypted JSON blob holding the app-specific password; it is never
+// returned to the SPA.
 type MailAccount struct {
+	ID        string `json:"id"`
 	UserID    string `json:"-"`
+	Label     string `json:"label"`
 	Provider  string `json:"provider"`
 	Email     string `json:"email"`
 	Host      string `json:"imap_host"`
 	Port      int    `json:"imap_port"`
 	TLS       string `json:"imap_tls"`
 	Enabled   bool   `json:"enabled"`
+	IsDefault bool   `json:"is_default"`
 	SecretEnc string `json:"-"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
@@ -369,6 +377,9 @@ func Open(path string) (*Store, error) {
 
 // migrate adds columns introduced after earlier releases without dropping data.
 func (s *Store) migrate() error {
+	if err := s.migrateMailAccounts(); err != nil {
+		return err
+	}
 	steps := []struct {
 		table, column, ddl string
 	}{
@@ -418,12 +429,65 @@ func (s *Store) migrate() error {
 		// 2.11: range scans over assistant usage rows.
 		`CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_geo_cache_expires ON geo_cache(expires_at)`,
+		// 5.11: multi-mailbox lookups + at most one default per user.
+		`CREATE INDEX IF NOT EXISTS idx_mail_accounts_user ON mail_accounts(user_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_default ON mail_accounts(user_id) WHERE is_default = 1`,
 	} {
 		if _, err := s.db.Exec(idx); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// migrateMailAccounts rebuilds a pre-5.11 mail_accounts table (one mailbox per
+// user, user_id PRIMARY KEY) into the multi-mailbox shape. SQLite cannot alter a
+// PRIMARY KEY, so the table is rebuilt in one transaction: the existing row is
+// copied verbatim (ciphertext included) and marked is_default = 1 with its email
+// address as the label. It is guarded by "does id exist?": fresh installs already
+// have the new shape and skip the rebuild entirely.
+func (s *Store) migrateMailAccounts() error {
+	cols, err := s.columns("mail_accounts")
+	if err != nil {
+		return err
+	}
+	if cols["id"] {
+		return nil
+	}
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, stmt := range []string{
+		`ALTER TABLE mail_accounts RENAME TO mail_accounts_legacy`,
+		`CREATE TABLE mail_accounts (
+		   id         TEXT PRIMARY KEY,
+		   user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		   label      TEXT NOT NULL DEFAULT '',
+		   provider   TEXT NOT NULL,
+		   email      TEXT NOT NULL,
+		   imap_host  TEXT NOT NULL,
+		   imap_port  INTEGER NOT NULL,
+		   imap_tls   TEXT NOT NULL DEFAULT 'implicit',
+		   enabled    INTEGER NOT NULL DEFAULT 1,
+		   is_default INTEGER NOT NULL DEFAULT 0,
+		   secret_enc TEXT NOT NULL,
+		   created_at INTEGER NOT NULL,
+		   updated_at INTEGER NOT NULL
+		 )`,
+		`INSERT INTO mail_accounts
+		   (id, user_id, label, provider, email, imap_host, imap_port, imap_tls, enabled, is_default, secret_enc, created_at, updated_at)
+		 SELECT lower(hex(randomblob(16))), user_id, email, provider, email, imap_host, imap_port, imap_tls, enabled, 1, secret_enc, created_at, updated_at
+		   FROM mail_accounts_legacy`,
+		`DROP TABLE mail_accounts_legacy`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // columns returns the set of column names of a table.
@@ -1771,28 +1835,234 @@ func (s *Store) GetCalendarAccount(ctx context.Context, userID string) (Calendar
 	return a, err
 }
 
-// ---------- mail accounts (feature 3.2) ----------
+// ---------- mail accounts (feature 3.2, multi-mailbox 5.11) ----------
 
-const mailAccountCols = "user_id, provider, email, imap_host, imap_port, imap_tls, enabled, secret_enc, created_at, updated_at"
+const mailAccountCols = "id, user_id, label, provider, email, imap_host, imap_port, imap_tls, enabled, is_default, secret_enc, created_at, updated_at"
+
+// MaxMailAccounts caps how many mailboxes one user may connect (runaway guard).
+const MaxMailAccounts = 10
 
 func scanMailAccount(sc scanner) (MailAccount, error) {
 	var a MailAccount
-	var enabled int
-	if err := sc.Scan(&a.UserID, &a.Provider, &a.Email, &a.Host, &a.Port, &a.TLS, &enabled, &a.SecretEnc, &a.CreatedAt, &a.UpdatedAt); err != nil {
+	var enabled, isDefault int
+	if err := sc.Scan(&a.ID, &a.UserID, &a.Label, &a.Provider, &a.Email, &a.Host, &a.Port, &a.TLS, &enabled, &isDefault, &a.SecretEnc, &a.CreatedAt, &a.UpdatedAt); err != nil {
 		return MailAccount{}, err
 	}
 	a.Enabled = enabled != 0
+	a.IsDefault = isDefault != 0
 	return a, nil
 }
 
-// GetMailAccount loads a user's connected mailbox, else ErrNotFound.
+// ListMailAccounts returns the user's mailboxes, default first then oldest first.
+func (s *Store) ListMailAccounts(ctx context.Context, userID string) ([]MailAccount, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+mailAccountCols+` FROM mail_accounts WHERE user_id = ?
+		  ORDER BY is_default DESC, created_at ASC, id ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MailAccount
+	for rows.Next() {
+		a, err := scanMailAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// CountMailAccounts reports how many mailboxes the user has connected.
+func (s *Store) CountMailAccounts(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mail_accounts WHERE user_id = ?`, userID).Scan(&n)
+	return n, err
+}
+
+// GetMailAccount loads the user's default mailbox, else ErrNotFound. It is the
+// resolution behind the singular /api/me/mail aliases.
 func (s *Store) GetMailAccount(ctx context.Context, userID string) (MailAccount, error) {
 	a, err := scanMailAccount(s.db.QueryRowContext(ctx,
-		`SELECT `+mailAccountCols+` FROM mail_accounts WHERE user_id = ?`, userID))
+		`SELECT `+mailAccountCols+` FROM mail_accounts WHERE user_id = ? AND is_default = 1`, userID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return MailAccount{}, ErrNotFound
 	}
 	return a, err
+}
+
+// GetMailAccountByID loads one of the user's mailboxes by id, else ErrNotFound.
+func (s *Store) GetMailAccountByID(ctx context.Context, userID, id string) (MailAccount, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return MailAccount{}, ErrNotFound
+	}
+	a, err := scanMailAccount(s.db.QueryRowContext(ctx,
+		`SELECT `+mailAccountCols+` FROM mail_accounts WHERE user_id = ? AND id = ?`, userID, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return MailAccount{}, ErrNotFound
+	}
+	return a, err
+}
+
+// ResolveMailAccount resolves an account reference: an empty ref is the user's
+// default mailbox; otherwise the id (exact) or a case-insensitive label match.
+// It is owner-scoped; a cross-user or unknown ref is ErrNotFound.
+func (s *Store) ResolveMailAccount(ctx context.Context, userID, ref string) (MailAccount, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return s.GetMailAccount(ctx, userID)
+	}
+	if a, err := s.GetMailAccountByID(ctx, userID, ref); err == nil {
+		return a, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return MailAccount{}, err
+	}
+	a, err := scanMailAccount(s.db.QueryRowContext(ctx,
+		`SELECT `+mailAccountCols+`
+		   FROM mail_accounts
+		  WHERE user_id = ? AND label <> '' AND lower(label) = lower(?)
+		  ORDER BY is_default DESC, created_at ASC, id ASC
+		  LIMIT 1`, userID, ref))
+	if errors.Is(err, sql.ErrNoRows) {
+		return MailAccount{}, ErrNotFound
+	}
+	return a, err
+}
+
+// CreateMailAccount inserts a mailbox for a user. The first mailbox becomes the
+// default; an explicit IsDefault clears the previous default in the same
+// transaction (the partial unique index allows only one). The id is generated in
+// SQL; on return a.ID and a.IsDefault reflect the stored row.
+func (s *Store) CreateMailAccount(ctx context.Context, a *MailAccount) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mail_accounts WHERE user_id = ?`, a.UserID).Scan(&count); err != nil {
+		return err
+	}
+	isDefault := a.IsDefault || count == 0
+	if isDefault {
+		if _, err := tx.ExecContext(ctx, `UPDATE mail_accounts SET is_default = 0 WHERE user_id = ?`, a.UserID); err != nil {
+			return err
+		}
+	}
+	if a.ID == "" {
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO mail_accounts
+			   (id, user_id, label, provider, email, imap_host, imap_port, imap_tls, enabled, is_default, secret_enc, created_at, updated_at)
+			 VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 RETURNING id`,
+			a.UserID, a.Label, a.Provider, a.Email, a.Host, a.Port, a.TLS,
+			boolToInt(a.Enabled), boolToInt(isDefault), a.SecretEnc, a.CreatedAt, a.UpdatedAt).Scan(&a.ID); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO mail_accounts
+			   (id, user_id, label, provider, email, imap_host, imap_port, imap_tls, enabled, is_default, secret_enc, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			a.ID, a.UserID, a.Label, a.Provider, a.Email, a.Host, a.Port, a.TLS,
+			boolToInt(a.Enabled), boolToInt(isDefault), a.SecretEnc, a.CreatedAt, a.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	a.IsDefault = isDefault
+	return tx.Commit()
+}
+
+// UpdateMailAccount updates a mailbox by (id, user). A cross-user or unknown id
+// is ErrNotFound.
+func (s *Store) UpdateMailAccount(ctx context.Context, a *MailAccount) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE mail_accounts
+		    SET label = ?, provider = ?, email = ?, imap_host = ?, imap_port = ?, imap_tls = ?, enabled = ?, secret_enc = ?, updated_at = ?
+		  WHERE id = ? AND user_id = ?`,
+		a.Label, a.Provider, a.Email, a.Host, a.Port, a.TLS, boolToInt(a.Enabled), a.SecretEnc, a.UpdatedAt, a.ID, a.UserID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetMailAccountEnabled flips one mailbox's email-tools toggle.
+func (s *Store) SetMailAccountEnabled(ctx context.Context, userID, id string, enabled bool, now int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE mail_accounts SET enabled = ?, updated_at = ? WHERE user_id = ? AND id = ?`,
+		boolToInt(enabled), now, userID, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetDefaultMailAccount makes one mailbox the user's default in a transaction,
+// clearing the previous default first so the partial unique index is satisfied.
+func (s *Store) SetDefaultMailAccount(ctx context.Context, userID, id string, now int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE mail_accounts SET is_default = 0 WHERE user_id = ? AND is_default = 1 AND id <> ?`, userID, id); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE mail_accounts SET is_default = 1, updated_at = ? WHERE user_id = ? AND id = ?`, now, userID, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
+}
+
+// DeleteMailAccount disconnects (and deletes the credential of) one mailbox in a
+// transaction. When the deleted mailbox was the default, the oldest remaining
+// mailbox is promoted so a user with mailboxes always has a default.
+func (s *Store) DeleteMailAccount(ctx context.Context, userID, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var wasDefault int
+	err = tx.QueryRowContext(ctx,
+		`SELECT is_default FROM mail_accounts WHERE user_id = ? AND id = ?`, userID, id).Scan(&wasDefault)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mail_accounts WHERE user_id = ? AND id = ?`, userID, id); err != nil {
+		return err
+	}
+	if wasDefault != 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE mail_accounts SET is_default = 1
+			  WHERE id = (SELECT id FROM mail_accounts WHERE user_id = ? ORDER BY created_at ASC, id ASC LIMIT 1)`, userID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // UpsertCalendarAccount inserts or replaces the user's calendar account
@@ -1833,35 +2103,4 @@ func (s *Store) DeleteImagesOlderThan(ctx context.Context, cutoff int64) (int64,
 		return 0, err
 	}
 	return res.RowsAffected()
-}
-
-// SetMailAccount inserts or replaces a user's mailbox (one per user).
-func (s *Store) SetMailAccount(ctx context.Context, a *MailAccount) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO mail_accounts (`+mailAccountCols+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(user_id) DO UPDATE SET
-		   provider = excluded.provider,
-		   email = excluded.email,
-		   imap_host = excluded.imap_host,
-		   imap_port = excluded.imap_port,
-		   imap_tls = excluded.imap_tls,
-		   enabled = excluded.enabled,
-		   secret_enc = excluded.secret_enc,
-		   updated_at = excluded.updated_at`,
-		a.UserID, a.Provider, a.Email, a.Host, a.Port, a.TLS, boolToInt(a.Enabled), a.SecretEnc, a.CreatedAt, a.UpdatedAt)
-	return err
-}
-
-// SetMailAccountEnabled flips the per-user email-tools toggle.
-func (s *Store) SetMailAccountEnabled(ctx context.Context, userID string, enabled bool, now int64) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE mail_accounts SET enabled = ?, updated_at = ? WHERE user_id = ?`, boolToInt(enabled), now, userID)
-	return err
-}
-
-// DeleteMailAccount disconnects (and deletes the credential of) a user's mailbox.
-func (s *Store) DeleteMailAccount(ctx context.Context, userID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM mail_accounts WHERE user_id = ?`, userID)
-	return err
 }

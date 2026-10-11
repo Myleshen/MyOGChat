@@ -237,6 +237,17 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	}
 	instructions := s.projectInstructions(ctx, conv.ProjectID, u.ID)
 
+	// Build the per-request tool set before composing the instructions: a
+	// registered email_digest appends the fixed summarization standard (5.9) to
+	// the system prompt. The project prompt stays first, so it wins.
+	var generatedImages []store.GeneratedImage
+	reg := s.toolRegistryWithImage(ctx, u, func(img store.GeneratedImage) {
+		generatedImages = append(generatedImages, img)
+	})
+	if _, ok := reg.Get("email_digest"); ok {
+		instructions = joinSystem(instructions, emailDigestStandardWithDate(time.Now(), time.Local))
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
@@ -259,11 +270,8 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	// Build the per-request tool set (Phase 2.4). An empty registry disables
 	// tool calling but still runs the same agentic code path. Images generated
 	// by the generate_image tool (4.3b) are collected here and attached to the
-	// assistant message below.
-	var generatedImages []store.GeneratedImage
-	reg := s.toolRegistryWithImage(ctx, u, func(img store.GeneratedImage) {
-		generatedImages = append(generatedImages, img)
-	})
+	// assistant message below. (The registry was already built above, before the
+	// instructions, so the email_digest standard could be appended.)
 	events := s.up.StreamAgent(ctx, upstream.Params{
 		Dialect:      m.Dialect,
 		Model:        conv.Model,

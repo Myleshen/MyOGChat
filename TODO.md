@@ -418,19 +418,23 @@ merges sequentially and resolves the small additive conflicts in shared files
   DOCX/TXT/charts) into a downloadable `artifacts` table + chips on the assistant
   message.
 
-### 5.9 Email digest tool + standard — planned ([`docs/5.9-email-digest.md`](5.9-email-digest.md))
+### 5.9 Email digest tool + standard — done (branch `feat/p59-11-email`) ([`docs/5.9-email-digest.md`](5.9-email-digest.md))
 - `email_digest` resolves ranges (`today`, `unread`, …) server-side and returns a
   token-capped, snipetted block; a fixed 4-section summarization standard is
-  injected so "get me today's updates" works. Read-only preserved.
+  injected (tool description + a system fragment only when the tool is
+  registered) so "get me today's updates" works. Read-only preserved (partial
+  `BODY.PEEK[]` preview + a 20 s per-op connection deadline).
 
 ### 5.10 Reuse the empty "Untitled" draft — planned ([`docs/5.10-reuse-draft.md`](5.10-reuse-draft.md))
 - `POST /api/conversations` with `reuse_empty:true` returns an existing
   zero-message untitled draft (same project) instead of creating duplicates.
 
-### 5.11 Multiple mailboxes per user — planned ([`docs/5.11-multi-mailbox.md`](5.11-multi-mailbox.md))
-- Today email is limited to one mailbox per user; move `mail_accounts` to
-  many-per-user (stable id, label, per-account enable/default), update the
-  endpoints/tools/settings UI, and let 5.9 pick an account.
+### 5.11 Multiple mailboxes per user — done (branch `feat/p59-11-email`) ([`docs/5.11-multi-mailbox.md`](5.11-multi-mailbox.md))
+- `mail_accounts` moved to many-per-user (stable `id`, `label`, per-account
+  `enabled`, one `is_default` per user) via a lossless table rebuild; plural
+  `/api/me/mail/accounts` endpoints with the singular routes kept as default
+  aliases; `account` parameter on the email tools + an `email_accounts` listing
+  tool; SPA accounts list. 5.9 digests all enabled mailboxes by default.
 
 ### 5.x Hardening — planned ([`docs/5-hardening.md`](5-hardening.md))
 - Audit fixes before shipping the new items: edit/truncate atomicity, backup temp

@@ -216,7 +216,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/stt", s.handleSTT)
 	mux.HandleFunc("POST /api/tts", s.handleTTS)
 	mux.HandleFunc("GET /api/speech/status", s.handleSpeechStatus)
-	// Read-only email mailbox (per-user, feature 3.2).
+	// Read-only email mailbox (per-user, feature 3.2; multi-mailbox 5.11).
+	// Plural endpoints are canonical; the singular ones are thin aliases to the
+	// user's default mailbox.
+	mux.HandleFunc("GET /api/me/mail/accounts", s.handleListMyMailAccounts)
+	mux.HandleFunc("POST /api/me/mail/accounts", s.handleCreateMyMailAccount)
+	mux.HandleFunc("PATCH /api/me/mail/accounts/{id}", s.handlePatchMyMailAccount)
+	mux.HandleFunc("DELETE /api/me/mail/accounts/{id}", s.handleDeleteMyMailAccount)
+	mux.HandleFunc("POST /api/me/mail/accounts/{id}/test", s.handleTestMyMailAccountByID)
 	mux.HandleFunc("GET /api/me/mail", s.handleGetMyMail)
 	mux.HandleFunc("PUT /api/me/mail", s.handlePutMyMail)
 	mux.HandleFunc("PATCH /api/me/mail", s.handlePatchMyMail)

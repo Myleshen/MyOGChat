@@ -293,11 +293,17 @@ func (s *Server) toolRegistryWithImage(ctx context.Context, u store.User, onImag
 		reg.Add(tools.NewRunBashTool(s.sbx))
 		reg.Add(tools.NewRunPythonTool(s.sbx))
 	}
-	// Read-only email (feature 3.2): only when the user has an enabled mailbox.
+	// Read-only email (feature 3.2, multi-mailbox 5.11): registered only when the
+	// user has at least one enabled mailbox. The connector resolves an optional
+	// account reference per call; email_accounts lists the choices and
+	// email_digest (5.9) summarizes across all of them by default.
 	if connect, ok := s.mailConnector(ctx, u.ID); ok {
+		accounts, _ := s.mailToolAccounts(ctx, u.ID)
 		reg.Add(tools.NewEmailFoldersTool(connect))
 		reg.Add(tools.NewEmailSearchTool(connect))
 		reg.Add(tools.NewEmailReadTool(connect))
+		reg.Add(tools.NewEmailAccountsTool(accounts))
+		reg.Add(tools.NewEmailDigestTool(connect, accounts))
 	}
 	// Image generation (4.3b): the model-facing generate_image tool, registered
 	// only when a ComfyUI backend is configured and the caller supplied a

@@ -218,8 +218,11 @@ const voiceStatus = document.getElementById("voice-status");
 const voiceError = document.getElementById("voice-error");
 const voiceSave = document.getElementById("voice-save");
 
-/* ==== BEGIN email (read-only IMAP, feature 3.2) — self-contained, safe to relocate ==== */
+/* ==== BEGIN email (read-only IMAP, feature 3.2 / multi-mailbox 5.11) — self-contained, safe to relocate ==== */
 const emailForm = document.getElementById("email-form");
+const emailAccountsList = document.getElementById("email-accounts");
+const emailAccountId = document.getElementById("email-account-id");
+const emailLabel = document.getElementById("email-label");
 const emailProvider = document.getElementById("email-provider");
 const emailAddress = document.getElementById("email-address");
 const emailHostField = document.getElementById("email-host-field");
@@ -230,9 +233,8 @@ const emailPassword = document.getElementById("email-password");
 const emailStatus = document.getElementById("email-status");
 const emailError = document.getElementById("email-error");
 const emailTest = document.getElementById("email-test");
-const emailDisconnect = document.getElementById("email-disconnect");
-const emailEnabledRow = document.getElementById("email-enabled-row");
-const settingEmailEnabled = document.getElementById("setting-email-enabled");
+const emailSave = document.getElementById("email-save");
+const emailCancel = document.getElementById("email-cancel");
 /* ==== END email ==== */
 
 const projectModal = document.getElementById("project-modal");
@@ -268,7 +270,7 @@ const state = {
     tts_enabled: false,
     tts_voice: "",
   },
-  mail: { connected: false, enabled: false, presets: [] }, // GET /api/me/mail (feature 3.2)
+  mail: { accounts: [], presets: [], max_accounts: 10, connected: false }, // GET /api/me/mail/accounts (feature 3.2 / 5.11)
 };
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -1647,13 +1649,14 @@ async function saveVoiceSettings() {
 
 /* ===== end Voice / speech (3.5/3.6) ===== */
 
-/* ==== BEGIN email (read-only IMAP, feature 3.2) — self-contained, safe to relocate ==== */
-/* Load the caller's mailbox status (per-user, not admin-gated). */
+/* ==== BEGIN email (read-only IMAP, feature 3.2 / multi-mailbox 5.11) — self-contained, safe to relocate ==== */
+/* Load the caller's mailboxes (per-user, not admin-gated). */
 async function loadMail() {
   try {
-    const m = await api("/api/me/mail");
-    state.mail = m || { connected: false, enabled: false, presets: [] };
-    applyMailStatus();
+    const m = await api("/api/me/mail/accounts");
+    state.mail = m || { accounts: [], presets: [], max_accounts: 10 };
+    populateEmailProviders(state.mail.presets);
+    renderMailAccounts();
   } catch (err) {
     if (err instanceof AuthError) return;
     if (!isForbidden(err)) toast(err.message);
@@ -1691,32 +1694,87 @@ function updateEmailCustomFields() {
   if (emailPortField) emailPortField.hidden = !custom;
 }
 
-function applyMailStatus() {
-  const m = state.mail || {};
-  populateEmailProviders(m.presets);
-  if (m.connected) {
-    const label = providerLabel(m.provider);
-    emailStatus.textContent =
-      "Connected: " + (m.email || "") + (label ? " (" + label + ")" : "") +
-      " · " + (m.enabled ? "tools on" : "tools off") + ".";
-    emailAddress.value = m.email || "";
-    if (m.provider) emailProvider.value = m.provider;
-    if (emailHost) emailHost.value = m.imap_host || "";
-    if (emailPort) emailPort.value = m.imap_port ? String(m.imap_port) : "";
-    emailPassword.value = "";
-    emailDisconnect.hidden = false;
-    emailEnabledRow.hidden = false;
-    settingEmailEnabled.checked = m.enabled !== false;
-  } else {
-    emailStatus.textContent = "Not connected.";
-    emailDisconnect.hidden = true;
-    emailEnabledRow.hidden = true;
+/* Render the accounts list with per-account actions (5.11). */
+function renderMailAccounts() {
+  const accounts = (state.mail && state.mail.accounts) || [];
+  if (emailStatus) {
+    emailStatus.textContent = accounts.length
+      ? accounts.length + " mailbox(es) connected."
+      : "No mailboxes connected.";
   }
+  if (!emailAccountsList) return;
+  emailAccountsList.innerHTML = "";
+  accounts.forEach((a) => {
+    const row = el("div", "email-account");
+    const info = el("div", "email-account-info");
+    const title = el("div", "email-account-title");
+    title.textContent = (a.label || a.email || "Mailbox") + (a.is_default ? " · default" : "");
+    const meta = el("div", "email-account-meta");
+    const bits = [a.email || "", providerLabel(a.provider) || a.provider || ""];
+    if (!a.enabled) bits.push("tools off");
+    meta.textContent = bits.filter(Boolean).join(" · ");
+    info.append(title, meta);
+
+    const actions = el("div", "email-account-actions");
+    actions.append(
+      emailActionButton("Edit", () => editMailAccount(a.id)),
+      emailActionButton("Test", () => testMailAccount(a.id)),
+    );
+    if (!a.is_default) {
+      actions.append(emailActionButton("Make default", () => setMailDefault(a.id)));
+    }
+    actions.append(
+      emailActionButton(a.enabled ? "Disable" : "Enable", () => toggleMailAccount(a.id, !a.enabled)),
+      emailActionButton("Remove", () => removeMailAccount(a.id)),
+    );
+    row.append(info, actions);
+    emailAccountsList.appendChild(row);
+  });
+}
+
+function emailActionButton(text, onClick) {
+  const b = el("button", "btn btn-ghost email-account-btn");
+  b.type = "button";
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function findMailAccount(id) {
+  return ((state.mail && state.mail.accounts) || []).find((a) => a.id === id) || null;
+}
+
+/* Fill the form from the first account (convenience) or clear it. */
+function resetMailForm() {
+  if (!emailForm) return;
+  emailForm.reset();
+  if (emailAccountId) emailAccountId.value = "";
+  if (emailLabel) emailLabel.value = "";
+  if (emailSave) emailSave.textContent = "Add mailbox";
+  if (emailCancel) emailCancel.hidden = true;
   updateEmailCustomFields();
+}
+
+function editMailAccount(id) {
+  const a = findMailAccount(id);
+  if (!a || !emailForm) return;
+  if (emailAccountId) emailAccountId.value = a.id;
+  if (emailLabel) emailLabel.value = a.label || "";
+  emailAddress.value = a.email || "";
+  if (a.provider) emailProvider.value = a.provider;
+  if (emailHost) emailHost.value = a.imap_host || "";
+  if (emailPort) emailPort.value = a.imap_port ? String(a.imap_port) : "";
+  emailPassword.value = "";
+  if (emailSave) emailSave.textContent = "Save changes";
+  if (emailCancel) emailCancel.hidden = false;
+  updateEmailCustomFields();
+  setFormError(emailError, "");
+  emailForm.scrollIntoView({ block: "nearest" });
 }
 
 function emailPayload() {
   return {
+    label: emailLabel ? emailLabel.value.trim() : "",
     provider: emailProvider ? emailProvider.value : "custom",
     email: emailAddress ? emailAddress.value.trim() : "",
     password: emailPassword ? emailPassword.value : "",
@@ -1729,50 +1787,68 @@ async function saveMail(e) {
   if (e) e.preventDefault();
   setFormError(emailError, "");
   const payload = emailPayload();
+  const editingID = emailAccountId ? emailAccountId.value : "";
   if (!payload.email) {
     setFormError(emailError, "Enter the mailbox email address.");
     return;
   }
-  if (!payload.password) {
+  if (!editingID && !payload.password) {
     setFormError(emailError, "Enter the app-specific password.");
     return;
   }
-  const btn = emailForm.querySelector('button[type="submit"]');
+  const btn = emailSave || emailForm.querySelector('button[type="submit"]');
+  const original = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Testing…";
   try {
-    const m = await api("/api/me/mail", {
-      method: "PUT",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(payload),
-    });
-    state.mail = m;
-    applyMailStatus();
-    toast("Mailbox connected");
+    if (editingID) {
+      await api("/api/me/mail/accounts/" + encodeURIComponent(editingID), {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(payload),
+      });
+      toast("Mailbox updated");
+    } else {
+      await api("/api/me/mail/accounts", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(payload),
+      });
+      toast("Mailbox connected");
+    }
+    resetMailForm();
+    await loadMail();
   } catch (err) {
     if (err instanceof AuthError) return;
     setFormError(emailError, err.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = "Save";
+    btn.textContent = original;
   }
 }
 
 async function testMail() {
   setFormError(emailError, "");
-  const payload = emailPayload();
-  if (!payload.email || !payload.password) {
-    setFormError(emailError, "Enter the email address and app-specific password.");
-    return;
-  }
+  const editingID = emailAccountId ? emailAccountId.value : "";
   emailTest.disabled = true;
   emailTest.textContent = "Testing…";
   try {
-    await api("/api/me/mail/test", {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(payload),
-    });
+    if (editingID) {
+      await api("/api/me/mail/accounts/" + encodeURIComponent(editingID) + "/test", {
+        method: "POST",
+      });
+    } else {
+      const payload = emailPayload();
+      if (!payload.email || !payload.password) {
+        setFormError(emailError, "Enter the email address and app-specific password.");
+        return;
+      }
+      await api("/api/me/mail/test", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(payload),
+      });
+    }
     toast("Connection OK");
   } catch (err) {
     if (err instanceof AuthError) return;
@@ -1783,35 +1859,55 @@ async function testMail() {
   }
 }
 
-async function disconnectMail() {
-  if (!confirm("Disconnect this mailbox and delete its stored password?")) return;
-  setFormError(emailError, "");
+async function testMailAccount(id) {
   try {
-    await api("/api/me/mail", { method: "DELETE" });
-    state.mail = { connected: false, enabled: false, presets: state.mail.presets };
-    emailForm.reset();
-    applyMailStatus();
-    toast("Mailbox disconnected");
+    await api("/api/me/mail/accounts/" + encodeURIComponent(id) + "/test", { method: "POST" });
+    toast("Connection OK");
   } catch (err) {
     if (err instanceof AuthError) return;
     toast(isForbidden(err) ? "Not allowed" : err.message);
   }
 }
 
-async function toggleEmailEnabled() {
-  const value = settingEmailEnabled.checked;
+async function setMailDefault(id) {
   try {
-    const m = await api("/api/me/mail", {
+    await api("/api/me/mail/accounts/" + encodeURIComponent(id), {
       method: "PATCH",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ enabled: value }),
+      body: JSON.stringify({ is_default: true }),
     });
-    state.mail = m;
-    applyMailStatus();
-    toast(value ? "Email tools enabled" : "Email tools disabled");
+    toast("Default mailbox updated");
+    await loadMail();
   } catch (err) {
     if (err instanceof AuthError) return;
-    settingEmailEnabled.checked = !value;
+    toast(isForbidden(err) ? "Not allowed" : err.message);
+  }
+}
+
+async function toggleMailAccount(id, enabled) {
+  try {
+    await api("/api/me/mail/accounts/" + encodeURIComponent(id), {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ enabled: enabled }),
+    });
+    toast(enabled ? "Email tools enabled" : "Email tools disabled");
+    await loadMail();
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(isForbidden(err) ? "Not allowed" : err.message);
+  }
+}
+
+async function removeMailAccount(id) {
+  if (!confirm("Disconnect this mailbox and delete its stored password?")) return;
+  try {
+    await api("/api/me/mail/accounts/" + encodeURIComponent(id), { method: "DELETE" });
+    if (emailAccountId && emailAccountId.value === id) resetMailForm();
+    toast("Mailbox disconnected");
+    await loadMail();
+  } catch (err) {
+    if (err instanceof AuthError) return;
     toast(isForbidden(err) ? "Not allowed" : err.message);
   }
 }
@@ -5066,12 +5162,11 @@ function wireEvents() {
   /* Voice / speech (features 3.5 / 3.6). */
   if (voiceSave) voiceSave.addEventListener("click", saveVoiceSettings);
 
-  /* ==== BEGIN email (read-only IMAP, feature 3.2) — self-contained, safe to relocate ==== */
+  /* ==== BEGIN email (read-only IMAP, feature 3.2 / 5.11) — self-contained, safe to relocate ==== */
   if (emailProvider) emailProvider.addEventListener("change", updateEmailCustomFields);
   if (emailForm) emailForm.addEventListener("submit", saveMail);
   if (emailTest) emailTest.addEventListener("click", testMail);
-  if (emailDisconnect) emailDisconnect.addEventListener("click", disconnectMail);
-  if (settingEmailEnabled) settingEmailEnabled.addEventListener("change", toggleEmailEnabled);
+  if (emailCancel) emailCancel.addEventListener("click", resetMailForm);
   /* ==== END email ==== */
 
   prefersLight.addEventListener("change", () => {

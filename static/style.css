@@ -1317,6 +1317,36 @@ button { font: inherit; }
 .add-user-form { display: flex; flex-direction: column; gap: 12px; }
 .key-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* Email mailboxes list (feature 5.11). */
+.email-accounts { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.email-account {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+.email-account-info { min-width: 0; flex: 1 1 160px; }
+.email-account-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.email-account-meta {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.email-account-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.email-account-btn { min-height: 32px; padding: 4px 10px; font-size: 0.78rem; }
+
 /* ---------- Settings: Image OCR (feature 2.5) ---------- */
 
 .settings-ocr { display: flex; flex-direction: column; gap: 12px; }
