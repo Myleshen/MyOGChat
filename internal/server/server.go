@@ -326,9 +326,10 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req struct {
-		Model     string  `json:"model"`
-		Effort    string  `json:"effort"`
-		ProjectID *string `json:"project_id"`
+		Model      string  `json:"model"`
+		Effort     string  `json:"effort"`
+		ProjectID  *string `json:"project_id"`
+		ReuseEmpty bool    `json:"reuse_empty"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -370,6 +371,40 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 			return
 		}
 		effort = &req.Effort
+	}
+	// Feature 5.10: an empty untitled draft in the same project scope is reused
+	// instead of piling up "Untitled" rows. Normalise an empty project id to
+	// NULL so the draft lookup matches the insert path below.
+	if req.ReuseEmpty {
+		draftProject := req.ProjectID
+		if draftProject != nil && *draftProject == "" {
+			draftProject = nil
+		}
+		draft, err := s.st.FindReusableDraft(r.Context(), u.ID, draftProject)
+		switch {
+		case err == nil:
+			// When the caller explicitly picked a different model, align the
+			// draft (and its effort) to the request so the picker does not snap
+			// back to the draft's old model.
+			if req.Model != "" && req.Model != draft.Model {
+				draft.Model = m.ID
+				draft.Effort = effort
+				draft.UpdatedAt = time.Now().UnixMilli()
+				if err := s.st.UpdateConversation(r.Context(), &draft); err != nil {
+					s.log.Error("align reused draft", "error", err)
+					writeError(w, http.StatusInternalServerError, "failed to update conversation")
+					return
+				}
+			}
+			writeJSON(w, http.StatusOK, draft)
+			return
+		case errors.Is(err, store.ErrNotFound):
+			// No eligible draft: fall through to the normal create.
+		default:
+			s.log.Error("find reusable draft", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to create conversation")
+			return
+		}
 	}
 	now := time.Now().UnixMilli()
 	userID := u.ID

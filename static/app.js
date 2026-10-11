@@ -2980,6 +2980,9 @@ function buildNewChatBody() {
   }
   const effective = body.model || (project ? project.default_model : model);
   if (isResponsesModel(effective)) body.effort = effortSelect.value || "medium";
+  // Reuse an existing empty untitled draft in this project scope rather than
+  // creating yet another "Untitled" row (5.10).
+  body.reuse_empty = true;
   return body;
 }
 
@@ -2989,6 +2992,9 @@ async function createConversation() {
     headers: JSON_HEADERS,
     body: JSON.stringify(buildNewChatBody()),
   });
+  // A reused draft is already in the list, so drop any stale row for this id
+  // before prepending the fresh copy.
+  state.conversations = state.conversations.filter((c) => c.id !== conv.id);
   state.conversations.unshift(conv);
   if (conv.project_id) state.expandedProjects.add(conv.project_id);
   setCurrentConversation(Object.assign({ messages: [] }, conv));
