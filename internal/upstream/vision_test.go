@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -182,5 +183,134 @@ func TestParseResponsesVisionSkipsNonText(t *testing.T) {
 	}
 	if got != "keep" {
 		t.Errorf("text = %q, want keep", got)
+	}
+}
+
+// TestChatMessageObjRendersVisionParts verifies a message with inline images
+// becomes a multimodal content array (5.1), while a text-only message keeps a
+// plain string content.
+func TestChatMessageObjRendersVisionParts(t *testing.T) {
+	plain := chatMessageObj(Message{Role: "user", Content: "hi"})
+	if plain["content"] != "hi" {
+		t.Fatalf("plain content = %v, want the raw string", plain["content"])
+	}
+	withImg := chatMessageObj(Message{
+		Role: "user", Content: "what is this?",
+		Images: []string{"data:image/png;base64,AAAA"},
+	})
+	parts, ok := withImg["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("content parts = %v", withImg["content"])
+	}
+	if parts[0].(map[string]any)["type"] != "text" || parts[0].(map[string]any)["text"] != "what is this?" {
+		t.Errorf("text part = %v", parts[0])
+	}
+	img := parts[1].(map[string]any)
+	iu, _ := img["image_url"].(map[string]any)
+	if img["type"] != "image_url" || iu["url"] != "data:image/png;base64,AAAA" || iu["detail"] != visionDetail {
+		t.Errorf("image part = %v", img)
+	}
+}
+
+// TestResponsesInputObjRendersVisionParts is the responses-dialect counterpart.
+func TestResponsesInputObjRendersVisionParts(t *testing.T) {
+	plain := responsesInputObj(Message{Role: "user", Content: "hi"})
+	if plain["content"] != "hi" {
+		t.Fatalf("plain content = %v", plain["content"])
+	}
+	m := responsesInputObj(Message{
+		Role: "user", Content: "see this",
+		Images: []string{"data:image/jpeg;base64,BBBB"},
+	})
+	parts, ok := m["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("content parts = %v", m["content"])
+	}
+	if parts[0].(map[string]any)["type"] != "input_text" {
+		t.Errorf("text part = %v", parts[0])
+	}
+	img := parts[1].(map[string]any)
+	if img["type"] != "input_image" || img["image_url"] != "data:image/jpeg;base64,BBBB" || img["detail"] != visionDetail {
+		t.Errorf("image part = %v", img)
+	}
+}
+
+// TestStreamAgentChatSendsVisionParts drives the agentic chat loop (the path
+// the server uses) with an image-bearing user message and asserts the inline
+// image is sent as a content part.
+func TestStreamAgentChatSendsVisionParts(t *testing.T) {
+	var mu sync.Mutex
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+			"data: [DONE]\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	c := &Client{hc: srv.Client(), baseURL: srv.URL}
+	collectEvents(t, c.StreamAgent(context.Background(), Params{
+		Dialect:  "chat",
+		Model:    "test",
+		APIKey:   "k",
+		Context:  "ATTACHMENT-TEXT",
+		Messages: []Message{{Role: "user", Content: "what is this?", Images: []string{"data:image/png;base64,AAAA"}}},
+		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "x"}}},
+	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }))
+
+	mu.Lock()
+	got := string(body)
+	mu.Unlock()
+	if !strings.Contains(got, `"type":"image_url"`) ||
+		!strings.Contains(got, `"url":"data:image/png;base64,AAAA"`) {
+		t.Errorf("chat agent request missing image part: %s", got)
+	}
+	if !strings.Contains(got, `"detail":"high"`) {
+		t.Errorf("chat agent request missing detail: %s", got)
+	}
+	if !strings.Contains(got, "ATTACHMENT-TEXT") {
+		t.Errorf("chat agent request dropped the folded context: %s", got)
+	}
+}
+
+// TestStreamAgentResponsesSendsVisionParts is the responses-dialect counterpart.
+func TestStreamAgentResponsesSendsVisionParts(t *testing.T) {
+	var mu sync.Mutex
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w,
+			"event: response.output_text.delta\ndata: {\"delta\":\"ok\"}\n\n",
+			"event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"output\":[]}}\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	c := &Client{hc: srv.Client(), baseURL: srv.URL}
+	collectEvents(t, c.StreamAgent(context.Background(), Params{
+		Dialect:  "responses",
+		Model:    "test",
+		APIKey:   "k",
+		Messages: []Message{{Role: "user", Content: "see", Images: []string{"data:image/jpeg;base64,BBBB"}}},
+		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "x"}}},
+	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }))
+
+	mu.Lock()
+	got := string(body)
+	mu.Unlock()
+	if !strings.Contains(got, `"type":"input_image"`) ||
+		!strings.Contains(got, `"image_url":"data:image/jpeg;base64,BBBB"`) {
+		t.Errorf("responses agent request missing image part: %s", got)
 	}
 }

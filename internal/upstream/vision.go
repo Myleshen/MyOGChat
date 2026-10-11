@@ -43,7 +43,7 @@ func (c *Client) VisionOnce(ctx context.Context, req VisionRequest) (string, err
 	}
 	detail := req.Detail
 	if detail == "" {
-		detail = "high"
+		detail = visionDetail
 	}
 
 	var path string
