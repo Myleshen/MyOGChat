@@ -20,6 +20,9 @@ import (
 
 const (
 	dialTimeout = 15 * time.Second
+	// opTimeout bounds a single IMAP operation (list/search/fetch) so a hung
+	// server can never outlive the request or the Cloudflare tunnel (5.9).
+	opTimeout = 20 * time.Second
 
 	// DefaultSearchLimit is used when a search omits a limit.
 	DefaultSearchLimit = 20
@@ -152,6 +155,7 @@ func (c *Client) login() error {
 
 // Folders lists the mailboxes of the account.
 func (c *Client) Folders(ctx context.Context) ([]Folder, error) {
+	c.setDeadline(ctx)
 	cmd := c.c.List("", "*", nil)
 	mailboxes, err := cmd.Collect()
 	if err != nil {
@@ -167,6 +171,7 @@ func (c *Client) Folders(ctx context.Context) ([]Folder, error) {
 // Search returns message summaries for the query, newest first. The mailbox is
 // opened read-only (EXAMINE) and bodies are not fetched.
 func (c *Client) Search(ctx context.Context, q SearchQuery) ([]MessageSummary, error) {
+	c.setDeadline(ctx)
 	folder := normalizeFolder(q.Folder)
 	if err := c.openReadOnly(folder); err != nil {
 		return nil, err
@@ -187,12 +192,22 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) ([]MessageSummary, e
 	// Fetch in ascending order for predictable responses.
 	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
 
-	fetch := c.c.Fetch(imap.UIDSetNum(uids...), &imap.FetchOptions{
+	fetchOpts := &imap.FetchOptions{
 		UID:        true,
 		Envelope:   true,
 		Flags:      true,
 		RFC822Size: true,
-	})
+	}
+	// Opt-in body preview (5.9): a small partial BODY.PEEK[] fetch so summaries
+	// can carry a snippet without ever setting \Seen. email_search keeps its
+	// token profile by default (PreviewBytes == 0).
+	if q.PreviewBytes > 0 {
+		fetchOpts.BodySection = []*imap.FetchItemBodySection{{
+			Peek:    true,
+			Partial: &imap.SectionPartial{Offset: 0, Size: int64(q.PreviewBytes)},
+		}}
+	}
+	fetch := c.c.Fetch(imap.UIDSetNum(uids...), fetchOpts)
 	bufs, err := fetch.Collect()
 	if err != nil {
 		return nil, fmt.Errorf("fetch summaries: %w", err)
@@ -211,6 +226,13 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) ([]MessageSummary, e
 			s.From = addresses(b.Envelope.From)
 			s.To = addresses(b.Envelope.To)
 		}
+		if q.PreviewBytes > 0 {
+			if raw := firstBodySection(b); len(raw) > 0 {
+				if parsed, _ := parseMessage(raw, false); parsed != nil {
+					s.Snippet = snippet(parsed.BodyText)
+				}
+			}
+		}
 		out = append(out, s)
 	}
 	return out, nil
@@ -220,6 +242,7 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) ([]MessageSummary, e
 // truncated text body. Bodies are fetched with BODY.PEEK[] (never sets \Seen)
 // and capped at maxFetchBytes so a large attachment is never downloaded.
 func (c *Client) Read(ctx context.Context, uid uint32, folder string, includeHTML bool) (*Message, error) {
+	c.setDeadline(ctx)
 	folder = normalizeFolder(folder)
 	if uid == 0 {
 		return nil, errors.New("uid is required")
@@ -302,6 +325,21 @@ func (c *Client) Close() error {
 	_ = c.c.Logout().Wait()
 	_ = c.c.Close()
 	return nil
+}
+
+// setDeadline bounds one IMAP operation: the shorter of the 20 s per-op budget
+// and the caller's context deadline, applied to the underlying connection (the
+// command filter forwards SetDeadline). This closes the gap where a hung fetch
+// could outlive the request/tunnel because the ctx was previously unused.
+func (c *Client) setDeadline(ctx context.Context) {
+	if c == nil || c.conn == nil {
+		return
+	}
+	d := time.Now().Add(opTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(d) {
+		d = dl
+	}
+	_ = c.conn.SetDeadline(d)
 }
 
 // openReadOnly selects a mailbox with EXAMINE (read-only), never SELECT, so

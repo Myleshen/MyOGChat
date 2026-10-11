@@ -138,9 +138,25 @@ func (s *fakeIMAPServer) handle(conn net.Conn) {
 	}
 }
 
+// fakeEnvelope is the IMAP ENVELOPE the fake server returns for message 42.
+const fakeEnvelope = `("Mon, 02 Jan 2006 15:04:05 -0700" "Hello world" ` +
+	`(("Alice Example" NIL "alice" "example.com")) ` +
+	`(("Alice Example" NIL "alice" "example.com")) ` +
+	`(("Alice Example" NIL "alice" "example.com")) ` +
+	`(("Bob" NIL "bob" "example.com")) NIL NIL NIL "<abc123@example.com>")`
+
 func (s *fakeIMAPServer) respondFetch(w *bufio.Writer, line, tag string) {
 	up := strings.ToUpper(line)
 	if strings.Contains(up, "BODY") {
+		if strings.Contains(up, "BODY.PEEK[]<") {
+			// Partial preview fetch (search with PreviewBytes): envelope +
+			// a body slice, so the summary can carry a snippet.
+			fmt.Fprintf(w, "* 1 FETCH (UID 42 FLAGS (\\Seen) RFC822.SIZE %d ENVELOPE %s BODY[]<0> {%d}\r\n",
+				len(s.raw), fakeEnvelope, len(s.raw))
+			w.Write(s.raw)
+			fmt.Fprintf(w, ")\r\n%s OK\r\n", tag)
+			return
+		}
 		// Whole-message fetch: return the raw message as a literal.
 		fmt.Fprintf(w, "* 1 FETCH (UID 42 RFC822.SIZE %d BODY[] {%d}\r\n", len(s.raw), len(s.raw))
 		w.Write(s.raw)
@@ -148,13 +164,8 @@ func (s *fakeIMAPServer) respondFetch(w *bufio.Writer, line, tag string) {
 		return
 	}
 	// Metadata-only fetch (search summaries).
-	envelope := `("Mon, 02 Jan 2006 15:04:05 -0700" "Hello world" ` +
-		`(("Alice Example" NIL "alice" "example.com")) ` +
-		`(("Alice Example" NIL "alice" "example.com")) ` +
-		`(("Alice Example" NIL "alice" "example.com")) ` +
-		`(("Bob" NIL "bob" "example.com")) NIL NIL NIL "<abc123@example.com>")`
 	fmt.Fprintf(w, "* 1 FETCH (UID 42 FLAGS (\\Seen) RFC822.SIZE %d ENVELOPE %s)\r\n%s OK\r\n",
-		len(s.raw), envelope, tag)
+		len(s.raw), fakeEnvelope, tag)
 }
 
 func dialFake(t *testing.T, s *fakeIMAPServer) *Client {
@@ -227,6 +238,43 @@ func TestClientFoldersSearchRead(t *testing.T) {
 	// No mutation commands may ever appear.
 	for _, bad := range []string{"STORE", "COPY", "APPEND", "EXPUNGE", "MOVE"} {
 		if strings.Contains(upper, bad) {
+			t.Errorf("wire contains forbidden command %q:\n%s", bad, wire)
+		}
+	}
+}
+
+// TestClientSearchPreview checks the opt-in partial-body preview: search issues a
+// BODY.PEEK[] partial fetch and populates the snippet, without any write path.
+func TestClientSearchPreview(t *testing.T) {
+	srv := startFakeIMAP(t)
+	c := dialFake(t, srv)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.login(); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	summaries, err := c.Search(ctx, SearchQuery{Folder: "INBOX", Limit: 5, PreviewBytes: 4096})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %+v", summaries)
+	}
+	if summaries[0].Snippet == "" || !strings.Contains(summaries[0].Snippet, "Hello body text.") {
+		t.Fatalf("snippet = %q", summaries[0].Snippet)
+	}
+	if summaries[0].Subject != "Hello world" {
+		t.Errorf("subject = %q, want from the envelope", summaries[0].Subject)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	wire := strings.ToUpper(srv.recorded())
+	if !strings.Contains(wire, "BODY.PEEK[]<") {
+		t.Errorf("expected a partial BODY.PEEK[] fetch, got:\n%s", wire)
+	}
+	for _, bad := range []string{"STORE", "COPY", "APPEND", "EXPUNGE", "MOVE"} {
+		if strings.Contains(wire, bad) {
 			t.Errorf("wire contains forbidden command %q:\n%s", bad, wire)
 		}
 	}

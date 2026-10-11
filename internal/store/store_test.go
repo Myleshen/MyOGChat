@@ -933,55 +933,217 @@ func TestCalendarAccounts(t *testing.T) {
 	}
 }
 
-// TestMailAccountRoundTrip covers the per-user mailbox (feature 3.2): connect,
-// read back, toggle, disconnect, and the ErrNotFound path.
+// TestMailAccountRoundTrip covers the multi-mailbox store (5.11): create, list,
+// update, resolve by id/label, enable toggling, set-default, delete, and the
+// delete-promote behaviour.
 func TestMailAccountRoundTrip(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 	u := seedUser(t, s, "u-mail", "mailer", false)
+	other := seedUser(t, s, "u-other", "other", false)
 
 	if _, err := s.GetMailAccount(ctx, u.ID); err != ErrNotFound {
 		t.Fatalf("GetMailAccount before connect = %v, want ErrNotFound", err)
 	}
+	if n, err := s.CountMailAccounts(ctx, u.ID); err != nil || n != 0 {
+		t.Fatalf("CountMailAccounts = %d, %v", n, err)
+	}
 
-	acct := &MailAccount{
-		UserID: u.ID, Provider: "gmail", Email: "mailer@gmail.com",
+	// The first mailbox becomes the default automatically.
+	first := &MailAccount{
+		UserID: u.ID, Label: "work", Provider: "gmail", Email: "mailer@gmail.com",
 		Host: "imap.gmail.com", Port: 993, TLS: "implicit", Enabled: true,
-		SecretEnc: "ciphertext", CreatedAt: 10, UpdatedAt: 10,
+		SecretEnc: "ciphertext-1", CreatedAt: 10, UpdatedAt: 10,
 	}
-	if err := s.SetMailAccount(ctx, acct); err != nil {
-		t.Fatalf("SetMailAccount: %v", err)
+	if err := s.CreateMailAccount(ctx, first); err != nil {
+		t.Fatalf("CreateMailAccount: %v", err)
 	}
+	if first.ID == "" {
+		t.Fatal("CreateMailAccount did not set an id")
+	}
+	if !first.IsDefault {
+		t.Error("first mailbox should be the default")
+	}
+
 	got, err := s.GetMailAccount(ctx, u.ID)
 	if err != nil {
 		t.Fatalf("GetMailAccount: %v", err)
 	}
-	if got.Provider != "gmail" || got.Email != "mailer@gmail.com" || got.Host != "imap.gmail.com" || !got.Enabled || got.SecretEnc != "ciphertext" {
+	if got.ID != first.ID || got.Provider != "gmail" || got.Email != "mailer@gmail.com" || !got.Enabled || got.SecretEnc != "ciphertext-1" || got.Label != "work" {
 		t.Fatalf("mail account = %+v", got)
 	}
 
-	if err := s.SetMailAccountEnabled(ctx, u.ID, false, 20); err != nil {
+	// A second mailbox is not the default unless asked.
+	second := &MailAccount{
+		UserID: u.ID, Label: "personal", Provider: "icloud", Email: "me@icloud.com",
+		Host: "imap.mail.me.com", Port: 993, TLS: "implicit", Enabled: false,
+		SecretEnc: "ciphertext-2", CreatedAt: 20, UpdatedAt: 20,
+	}
+	if err := s.CreateMailAccount(ctx, second); err != nil {
+		t.Fatalf("CreateMailAccount(second): %v", err)
+	}
+	if second.IsDefault {
+		t.Error("second mailbox should not be the default")
+	}
+	list, err := s.ListMailAccounts(ctx, u.ID)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListMailAccounts = %d, %v", len(list), err)
+	}
+	if list[0].ID != first.ID {
+		t.Errorf("default should sort first, got %+v", list)
+	}
+
+	// Resolution: empty ref → default; id; case-insensitive label.
+	if a, err := s.ResolveMailAccount(ctx, u.ID, ""); err != nil || a.ID != first.ID {
+		t.Fatalf("Resolve default = %+v, %v", a, err)
+	}
+	if a, err := s.ResolveMailAccount(ctx, u.ID, second.ID); err != nil || a.ID != second.ID {
+		t.Fatalf("Resolve by id = %+v, %v", a, err)
+	}
+	if a, err := s.ResolveMailAccount(ctx, u.ID, "PERSONAL"); err != nil || a.ID != second.ID {
+		t.Fatalf("Resolve by label = %+v, %v", a, err)
+	}
+	// A cross-user ref is ErrNotFound.
+	if _, err := s.ResolveMailAccount(ctx, other.ID, second.ID); err != ErrNotFound {
+		t.Errorf("cross-user resolve = %v, want ErrNotFound", err)
+	}
+	if _, err := s.ResolveMailAccount(ctx, u.ID, "nope"); err != ErrNotFound {
+		t.Errorf("unknown resolve = %v, want ErrNotFound", err)
+	}
+
+	// Enable toggle is per account.
+	if err := s.SetMailAccountEnabled(ctx, u.ID, second.ID, true, 21); err != nil {
 		t.Fatalf("SetMailAccountEnabled: %v", err)
 	}
-	if got, _ := s.GetMailAccount(ctx, u.ID); got.Enabled {
-		t.Error("enabled = true after disabling")
+	if a, _ := s.GetMailAccountByID(ctx, u.ID, second.ID); !a.Enabled {
+		t.Error("second should be enabled after toggle")
+	}
+	// Cross-user toggle is ErrNotFound.
+	if err := s.SetMailAccountEnabled(ctx, other.ID, second.ID, true, 22); err != ErrNotFound {
+		t.Errorf("cross-user enable = %v, want ErrNotFound", err)
 	}
 
-	// Upsert replaces the credential.
-	acct.SecretEnc = "new-ciphertext"
-	acct.UpdatedAt = 30
-	if err := s.SetMailAccount(ctx, acct); err != nil {
-		t.Fatalf("SetMailAccount (upsert): %v", err)
+	// Update replaces fields for the owner only.
+	second.Email = "new@icloud.com"
+	second.SecretEnc = "ciphertext-2b"
+	second.UpdatedAt = 30
+	if err := s.UpdateMailAccount(ctx, second); err != nil {
+		t.Fatalf("UpdateMailAccount: %v", err)
 	}
-	if got, _ := s.GetMailAccount(ctx, u.ID); got.SecretEnc != "new-ciphertext" {
-		t.Errorf("SecretEnc = %q after upsert", got.SecretEnc)
+	if a, _ := s.GetMailAccountByID(ctx, u.ID, second.ID); a.SecretEnc != "ciphertext-2b" {
+		t.Errorf("SecretEnc = %q after update", a.SecretEnc)
+	}
+	otherUser := *second
+	otherUser.UserID = other.ID
+	if err := s.UpdateMailAccount(ctx, &otherUser); err != ErrNotFound {
+		t.Errorf("cross-user update = %v, want ErrNotFound", err)
 	}
 
-	if err := s.DeleteMailAccount(ctx, u.ID); err != nil {
+	// Set-default switches the flag transactionally.
+	if err := s.SetDefaultMailAccount(ctx, u.ID, second.ID, 40); err != nil {
+		t.Fatalf("SetDefaultMailAccount: %v", err)
+	}
+	if a, _ := s.GetMailAccount(ctx, u.ID); a.ID != second.ID {
+		t.Errorf("default = %q, want %q", a.ID, second.ID)
+	}
+	if a, _ := s.GetMailAccountByID(ctx, u.ID, first.ID); a.IsDefault {
+		t.Error("old default still flagged")
+	}
+
+	// Deleting the default promotes the oldest remaining mailbox.
+	if err := s.DeleteMailAccount(ctx, u.ID, second.ID); err != nil {
 		t.Fatalf("DeleteMailAccount: %v", err)
 	}
+	if a, _ := s.GetMailAccount(ctx, u.ID); a.ID != first.ID {
+		t.Errorf("after delete default = %q, want promoted %q", a.ID, first.ID)
+	}
+	// Deleting an unknown id is ErrNotFound.
+	if err := s.DeleteMailAccount(ctx, u.ID, "missing"); err != ErrNotFound {
+		t.Errorf("delete unknown = %v, want ErrNotFound", err)
+	}
+	// Delete the last one → no default.
+	if err := s.DeleteMailAccount(ctx, u.ID, first.ID); err != nil {
+		t.Fatalf("delete last: %v", err)
+	}
 	if _, err := s.GetMailAccount(ctx, u.ID); err != ErrNotFound {
-		t.Fatalf("GetMailAccount after delete = %v, want ErrNotFound", err)
+		t.Fatalf("default after deleting all = %v, want ErrNotFound", err)
+	}
+}
+
+// TestMailAccountMigrationFromLegacy builds a pre-5.11 database (one mailbox per
+// user, user_id PRIMARY KEY) and confirms Open rebuilds it losslessly: the row
+// is preserved verbatim, becomes the default, and gains the email as its label.
+func TestMailAccountMigrationFromLegacy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-mail.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(ON)")
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	const legacy = `
+CREATE TABLE users (
+  id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE mail_accounts (
+  user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  provider   TEXT NOT NULL,
+  email      TEXT NOT NULL,
+  imap_host  TEXT NOT NULL,
+  imap_port  INTEGER NOT NULL,
+  imap_tls   TEXT NOT NULL DEFAULT 'implicit',
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  secret_enc TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+INSERT INTO users (id, username, email, password_hash, is_admin, created_at, updated_at)
+  VALUES ('u1', 'legacy', 'legacy@example.com', 'x', 0, 1, 1);
+INSERT INTO mail_accounts (user_id, provider, email, imap_host, imap_port, imap_tls, enabled, secret_enc, created_at, updated_at)
+  VALUES ('u1', 'gmail', 'legacy@gmail.com', 'imap.gmail.com', 993, 'implicit', 0, 'OLD-CIPHERTEXT', 111, 222);
+`
+	if _, err := db.Exec(legacy); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(migrated): %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+
+	list, err := s.ListMailAccounts(ctx, "u1")
+	if err != nil {
+		t.Fatalf("ListMailAccounts: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("migrated rows = %d, want 1", len(list))
+	}
+	a := list[0]
+	if a.ID == "" {
+		t.Error("migrated row has no id")
+	}
+	if !a.IsDefault {
+		t.Error("migrated row should be the default")
+	}
+	if a.Label != "legacy@gmail.com" {
+		t.Errorf("label = %q, want the email", a.Label)
+	}
+	if a.Provider != "gmail" || a.Email != "legacy@gmail.com" || a.Host != "imap.gmail.com" || a.Enabled {
+		t.Errorf("migrated fields changed: %+v", a)
+	}
+	if a.SecretEnc != "OLD-CIPHERTEXT" {
+		t.Errorf("ciphertext not preserved: %q", a.SecretEnc)
+	}
+	if a.CreatedAt != 111 || a.UpdatedAt != 222 {
+		t.Errorf("timestamps changed: %d/%d", a.CreatedAt, a.UpdatedAt)
+	}
+	if _, err := s.GetMailAccount(ctx, "u1"); err != nil {
+		t.Errorf("default after migration: %v", err)
 	}
 }
 

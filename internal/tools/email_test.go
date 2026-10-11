@@ -21,6 +21,7 @@ type fakeEmailConn struct {
 	lastQuery mail.SearchQuery
 	lastUID   uint32
 	lastIncl  bool
+	lastAcct  string
 }
 
 func (f *fakeEmailConn) Folders(context.Context) ([]mail.Folder, error) {
@@ -52,8 +53,13 @@ func (f *fakeEmailConn) Close() error {
 	return nil
 }
 
+// fakeConnector returns a connector that always yields f and records the account
+// reference it was called with.
 func fakeConnector(f *fakeEmailConn) EmailConnector {
-	return func(context.Context) (EmailConn, error) { return f, nil }
+	return func(_ context.Context, account string) (EmailConn, error) {
+		f.lastAcct = account
+		return f, nil
+	}
 }
 
 func TestEmailFoldersTool(t *testing.T) {
@@ -89,7 +95,7 @@ func TestEmailSearchTool(t *testing.T) {
 		Flags:   []string{"\\Seen"},
 	}}}
 	tool := NewEmailSearchTool(fakeConnector(f))
-	args := json.RawMessage(`{"query":"invoice","unread_only":true,"limit":3,"folder":"Archive"}`)
+	args := json.RawMessage(`{"query":"invoice","unread_only":true,"limit":3,"folder":"Archive","account":"work","preview":true}`)
 	out, err := tool.Run(context.Background(), args)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -99,6 +105,12 @@ func TestEmailSearchTool(t *testing.T) {
 	}
 	if f.lastQuery.Query != "invoice" || !f.lastQuery.UnreadOnly || f.lastQuery.Limit != 3 || f.lastQuery.Folder != "Archive" {
 		t.Fatalf("query = %+v", f.lastQuery)
+	}
+	if f.lastAcct != "work" {
+		t.Errorf("account ref = %q, want work", f.lastAcct)
+	}
+	if f.lastQuery.PreviewBytes != 4096 {
+		t.Errorf("PreviewBytes = %d, want 4096", f.lastQuery.PreviewBytes)
 	}
 }
 
@@ -153,7 +165,7 @@ func TestEmailReadToolRequiresUID(t *testing.T) {
 }
 
 func TestEmailToolsPropagateConnectorError(t *testing.T) {
-	connect := func(context.Context) (EmailConn, error) {
+	connect := func(context.Context, string) (EmailConn, error) {
 		return nil, errors.New("no mailbox connected")
 	}
 	for _, tool := range []Tool{
@@ -172,15 +184,38 @@ func TestEmailToolsPropagateConnectorError(t *testing.T) {
 }
 
 func TestEmailToolsSchemasAreValidJSON(t *testing.T) {
-	tools := []Tool{
-		NewEmailFoldersTool(fakeConnector(&fakeEmailConn{})),
-		NewEmailSearchTool(fakeConnector(&fakeEmailConn{})),
-		NewEmailReadTool(fakeConnector(&fakeEmailConn{})),
+	conn := fakeConnector(&fakeEmailConn{})
+	list := []Tool{
+		NewEmailFoldersTool(conn),
+		NewEmailSearchTool(conn),
+		NewEmailReadTool(conn),
+		NewEmailAccountsTool(nil),
+		NewEmailDigestTool(conn, nil),
 	}
-	for _, tool := range tools {
+	for _, tool := range list {
 		var v any
 		if err := json.Unmarshal(tool.Parameters(), &v); err != nil {
 			t.Errorf("%s parameters are not valid JSON: %v", tool.Name(), err)
 		}
+	}
+}
+
+// TestEmailAccountsTool lists the caller's mailboxes so the model can pick one.
+func TestEmailAccountsTool(t *testing.T) {
+	tool := NewEmailAccountsTool([]EmailAccount{
+		{ID: "a1", Label: "work", Email: "me@work.com", Default: true},
+		{ID: "a2", Label: "personal", Email: "me@home.com"},
+	})
+	out, err := tool.Run(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, want := range []string{"work", "me@work.com", "id=a1", "[default]", "personal", "id=a2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "read-only") {
+		t.Errorf("output missing read-only note: %q", out)
 	}
 }

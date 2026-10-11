@@ -87,6 +87,10 @@ type SearchQuery struct {
 	UnreadOnly bool
 	Folder     string
 	Limit      int
+	// PreviewBytes, when > 0, adds a partial BODY.PEEK[] fetch capped at this
+	// many bytes and fills MessageSummary.Snippet (5.9). Zero keeps search
+	// metadata-only.
+	PreviewBytes int
 }
 
 // searchCriteria translates a SearchQuery into standard IMAP SEARCH keys.

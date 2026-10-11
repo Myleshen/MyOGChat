@@ -14,8 +14,9 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 - **Repo:** `github.com/Myleshen/MyOGChat` — `main` is the source of truth
 - **Phase 1:** complete. **Phase 2:** complete (2.1–2.13). **Phase 3:** complete.
   **Phase 4:** complete — 4.1/4.2/4.3a/4.3b/4.4/4.5a/4.5b shipped (see `docs/PHASE4.md`).
-  **Phase 5:** in progress — 5.1–5.6 **merged to `main`** (deploy pending); 5.7–5.11
-  and the hardening list planned (`TODO.md` → Phase 5).
+  **Phase 5:** in progress — 5.1–5.6 **merged to `main`** (deploy pending); 5.7,
+  5.8, 5.10 and the hardening list planned; **5.9 (email digest) + 5.11
+  (multi-mailbox)** implemented on branch `feat/p59-11-email` (not merged/deployed).
 
 ## Live deployment
 
