@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"myogchat/internal/extract"
 	"myogchat/internal/models"
 	"myogchat/internal/store"
 	"myogchat/internal/upstream"
@@ -21,6 +22,15 @@ const (
 	maxContentBytes = 100 * 1024
 	// titleModel is used for the one-shot auto-title call (contract §3).
 	titleModel = "longcat-2.5-preview-free"
+
+	// Vision image input (Phase 5.1): the SPA sends up to a few inline image
+	// data URIs with a message when the conversation's model can see images.
+	// The caps bound the request body and the upstream payload.
+	maxVisionImages        = 4
+	maxVisionImageURIBytes = 8 << 20  // one data URI, encoded string length
+	maxVisionTotalURIBytes = 16 << 20 // all data URIs in one message
+	// maxMessageBodyBytes caps the message POST body (content + inline images).
+	maxMessageBodyBytes = maxVisionTotalURIBytes + 2<<20
 )
 
 // SSE payload shapes (contract §3 wire format).
@@ -80,8 +90,9 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Content       string   `json:"content"`
 		AttachmentIDs []string `json:"attachment_ids"`
+		Images        []string `json:"images"`
 	}
-	if err := decodeJSON(w, r, &req, 1<<20); err != nil {
+	if err := decodeJSON(w, r, &req, maxMessageBodyBytes); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -91,6 +102,11 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Content) > maxContentBytes {
 		writeError(w, http.StatusBadRequest, "content exceeds 100 KB")
+		return
+	}
+	images, err := cleanVisionImages(req.Images)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	atts, err := s.loadAttachments(r.Context(), u.ID, req.AttachmentIDs)
@@ -132,7 +148,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save message")
 		return
 	}
-	s.streamReply(w, r, conv, u, apiKey, atts)
+	s.streamReply(w, r, conv, u, apiKey, atts, images)
 }
 
 // handleRegenerate replaces the trailing assistant reply (§8.5).
@@ -170,13 +186,16 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to prepare regenerate")
 		return
 	}
-	// Re-fold any attachments the last user message carried (2.3).
+	// Re-fold any attachments the last user message carried (2.3). Inline image
+	// bytes are gone after a reload, so regenerate falls back to folded text.
 	atts := s.attachmentsFromLastUser(r.Context(), u.ID, conv.ID)
-	s.streamReply(w, r, conv, u, apiKey, atts)
+	s.streamReply(w, r, conv, u, apiKey, atts, nil)
 }
 
 // streamReply streams one assistant reply for conv over SSE and persists it.
-func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, u store.User, apiKey string, atts []store.Attachment) {
+// images are inline image data URIs for the just-sent user message (Phase 5.1);
+// they are used only when the conversation's model can see images.
+func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.Conversation, u store.User, apiKey string, atts []store.Attachment, images []string) {
 	ctx := r.Context()
 	m, ok := models.ByID(conv.Model)
 	if !ok {
@@ -192,6 +211,15 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 	msgs := make([]upstream.Message, 0, len(history))
 	for _, hm := range history {
 		msgs = append(msgs, upstream.Message{Role: hm.Role, Content: hm.Content})
+	}
+	// Vision input (Phase 5.1): when the model can see images, attach the inline
+	// data URIs to the just-sent user message and drop the redundant OCR text of
+	// image attachments (the model reads them directly). Otherwise fall back to
+	// the folded OCR text exactly as before.
+	context := foldAttachments(atts)
+	if m.Vision && len(images) > 0 {
+		attachImagesToLastUser(msgs, images)
+		context = foldAttachments(nonImageAttachments(atts))
 	}
 	instructions := s.projectInstructions(ctx, conv.ProjectID, u.ID)
 
@@ -230,7 +258,7 @@ func (s *Server) streamReply(w http.ResponseWriter, r *http.Request, conv store.
 		APIKey:       apiKey,
 		Messages:     msgs,
 		Instructions: instructions,
-		Context:      foldAttachments(atts),
+		Context:      context,
 		Tools:        upstreamToolSpecs(reg.Specs()),
 	}, s.toolExecutor(reg))
 
@@ -411,6 +439,70 @@ func (s *Server) attachmentsFromLastUser(ctx context.Context, userID, convID str
 		atts = append(atts, a)
 	}
 	return atts
+}
+
+// cleanVisionImages validates the inline image data URIs sent with a message
+// (Phase 5.1). Each must be a base64 image data URI within the size budget, and
+// the set must fit maxVisionTotalURIBytes. Empty entries are skipped.
+func cleanVisionImages(images []string) ([]string, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(images))
+	total := 0
+	for _, raw := range images {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		if len(out) >= maxVisionImages {
+			return nil, fmt.Errorf("at most %d images per message", maxVisionImages)
+		}
+		if !isImageDataURI(s) {
+			return nil, errors.New("invalid image attachment")
+		}
+		if len(s) > maxVisionImageURIBytes {
+			return nil, errors.New("an image is too large")
+		}
+		total += len(s)
+		if total > maxVisionTotalURIBytes {
+			return nil, errors.New("attached images are too large in total")
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// isImageDataURI reports whether s is a base64-encoded image data URI, the only
+// shape both upstream dialects accept for image parts.
+func isImageDataURI(s string) bool {
+	return strings.HasPrefix(s, "data:image/") && strings.Contains(s, ";base64,")
+}
+
+// attachImagesToLastUser sets the inline images on the most recent user message
+// so the model receives them as multimodal content (Phase 5.1). The slice is
+// mutated in place; a conversation with no user message is left untouched.
+func attachImagesToLastUser(msgs []upstream.Message, images []string) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			msgs[i].Images = images
+			return
+		}
+	}
+}
+
+// nonImageAttachments drops image attachments before folding their text into
+// the request context: a vision-capable model sees the image itself, so the OCR
+// text would be redundant (Phase 5.1).
+func nonImageAttachments(atts []store.Attachment) []store.Attachment {
+	var out []store.Attachment
+	for _, a := range atts {
+		if extract.IsImage(a.Name, a.Mime) {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // projectInstructions returns the system prompt of a conversation's project, or

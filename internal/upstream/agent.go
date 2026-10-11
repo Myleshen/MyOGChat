@@ -54,7 +54,7 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, send
 		msgs = append(msgs, map[string]any{"role": "system", "content": p.Instructions})
 	}
 	for _, m := range p.Messages {
-		msgs = append(msgs, map[string]any{"role": m.Role, "content": m.Content})
+		msgs = append(msgs, chatMessageObj(m))
 	}
 
 	var total Usage
@@ -170,7 +170,7 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 		input = append(input, map[string]any{"role": "system", "content": p.Context})
 	}
 	for _, m := range p.Messages {
-		input = append(input, map[string]any{"role": m.Role, "content": m.Content})
+		input = append(input, responsesInputObj(m))
 	}
 
 	effort := p.Effort

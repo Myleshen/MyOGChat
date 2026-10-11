@@ -3739,6 +3739,11 @@ async function sendMessage(conv, text) {
 
   const body = { content: text };
   if (attachments.length > 0) body.attachment_ids = attachments.map((a) => a.id);
+  // Vision input (5.1): include the inline bytes of any image attachments so a
+  // vision-capable model can see them (the server ignores them for text models
+  // and folds the OCR text instead). The bytes are never persisted.
+  const images = attachments.filter((a) => a && a.dataUrl).map((a) => a.dataUrl);
+  if (images.length > 0) body.images = images;
 
   await streamAssistant({
     path: "/api/conversations/" + enc(conv.id) + "/messages",
@@ -3803,9 +3808,9 @@ function updateAttachBtn() {
 }
 
 /* POST multipart/form-data to /api/attachments; returns the stored metadata. */
-async function uploadAttachment(file) {
+async function uploadAttachment(file, filename) {
   const fd = new FormData();
-  fd.append("file", file, file.name);
+  fd.append("file", file, filename || file.name || "image");
   const res = await fetch("/api/attachments", { method: "POST", body: fd });
   if (res.status === 401) {
     handleUnauthorized();
@@ -3855,6 +3860,13 @@ function renderAttachments() {
       "span",
       "attachment-chip" + (a.uploading ? " uploading" : "") + (failed ? " error" : "")
     );
+    if (a.isImage && a.dataUrl) {
+      chip.classList.add("attachment-chip-image");
+      const thumb = el("img", "attachment-thumb");
+      thumb.src = a.dataUrl;
+      thumb.alt = "";
+      chip.appendChild(thumb);
+    }
     const name = el("span", "attachment-chip-name");
     name.textContent = a.name;
     name.title = failed && a.error ? a.name + " — " + a.error : a.name;
@@ -3898,7 +3910,58 @@ function clearPendingAttachments() {
 async function onFilesSelected() {
   const files = Array.from(fileInput.files || []);
   fileInput.value = "";
-  if (files.length === 0 || state.streaming) return;
+  await addFiles(files);
+}
+
+/* ===== Vision input helpers (5.1): browser-side image downscale + data URI ===== */
+
+// Largest edge kept before sending an image inline; long edge beyond this adds
+// cost without helping the model much. Mirrors the OCR downscale convention.
+const MAX_IMAGE_DIM = 1568;
+
+/* Read a Blob as a base64 data URI (the wire shape both dialects accept). */
+function blobToDataURL(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(fr.error || new Error("could not read the image"));
+    fr.readAsDataURL(blob);
+  });
+}
+
+/* Downscale an image so the upload and the inline vision payload stay small.
+   Returns a Blob; a non-image, a small enough image, or any failure returns the
+   original file. Animated GIFs and SVGs are left untouched. */
+async function downscaleImage(file) {
+  const type = file.type || "";
+  if (!type.startsWith("image/") || type === "image/gif" || type === "image/svg+xml") {
+    return file;
+  }
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_IMAGE_DIM / Math.max(bitmap.width, bitmap.height));
+    if (scale >= 1 && file.size <= 1.5 * 1024 * 1024) {
+      if (bitmap.close) bitmap.close();
+      return file;
+    }
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+    if (bitmap.close) bitmap.close();
+    const outType = type === "image/png" ? "image/png" : "image/jpeg";
+    const blob = await new Promise((res) => canvas.toBlob(res, outType, 0.9));
+    return blob && blob.size < file.size ? blob : file;
+  } catch (_) {
+    return file; // fall back to the original bytes
+  }
+}
+
+/* Upload a batch of files (picker, paste, or drop), adding a chip per file. */
+async function addFiles(files) {
+  if (!files || files.length === 0 || state.streaming) return;
 
   const room = MAX_ATTACHMENTS - state.pendingAttachments.length;
   if (room <= 0) {
@@ -3910,16 +3973,30 @@ async function onFilesSelected() {
     toast("Only the first " + MAX_ATTACHMENTS + " files were added");
   }
 
-  for (const file of chosen) {
-    if (file.size > MAX_ATTACHMENT_BYTES) {
-      toast(file.name + " is larger than 10 MB");
+  for (const original of chosen) {
+    if (original.size > MAX_ATTACHMENT_BYTES) {
+      toast(original.name + " is larger than 10 MB");
       continue;
     }
-    const placeholder = { id: null, name: file.name, size: file.size, uploading: true };
+    const isImage = (original.type || "").startsWith("image/");
+    let file = original;
+    if (isImage) {
+      file = await downscaleImage(original);
+    }
+    const name = original.name || (isImage ? "image.png" : "file");
+    const placeholder = {
+      id: null, name, size: file.size, mime: file.type || original.type,
+      uploading: true, isImage,
+    };
     state.pendingAttachments.push(placeholder);
     renderAttachments();
     try {
-      const meta = await uploadAttachment(file);
+      // Capture the (downscaled) bytes for inline vision use before uploading;
+      // the server keeps only metadata, so these bytes live only in this tab.
+      const dataUrl = isImage ? await blobToDataURL(file) : null;
+      const meta = await uploadAttachment(file, name);
+      meta.dataUrl = dataUrl;
+      meta.isImage = isImage;
       const i = state.pendingAttachments.indexOf(placeholder);
       if (i !== -1) {
         state.pendingAttachments[i] = meta;
@@ -3931,6 +4008,22 @@ async function onFilesSelected() {
       if (!(err instanceof AuthError)) toast(err.message);
     }
     renderAttachments();
+  }
+}
+
+/* Paste an image (e.g. a screenshot) straight into the composer (5.1/5.6). */
+function onComposerPaste(e) {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  const files = [];
+  for (const it of items) {
+    if (it.kind === "file" && (it.type || "").startsWith("image/")) {
+      const f = it.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  if (files.length > 0) {
+    e.preventDefault();
+    addFiles(files);
   }
 }
 
@@ -4804,6 +4897,8 @@ function wireEvents() {
     if (!attachBtn.disabled) fileInput.click();
   });
   fileInput.addEventListener("change", onFilesSelected);
+  /* Paste a screenshot straight into the composer as an attachment (5.6). */
+  input.addEventListener("paste", onComposerPaste);
 
   /* Voice: mic toggles MediaRecorder; the hidden input is the no-MediaRecorder
      fallback (and accepts an uploaded audio file). */

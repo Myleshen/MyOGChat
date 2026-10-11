@@ -295,6 +295,9 @@ empty:
   `error` message). A send (`POST /api/conversations/{id}/messages`) that
   references a still-`pending` or `error` attachment returns `409`. Documents and
   images are extracted synchronously and are always `"ready"` on return.
+  Since Phase 5.1 an image whose OCR is unavailable or fails is still stored
+  (`"ready"`, empty text) rather than rejected, because a vision-capable model
+  can read it directly (§8.12); see §8.10 for the OCR behavior.
 - `tools` — assistant messages: `[{name,status,summary,args,output,error,duration_ms,truncated}]`
   tool activity (`status` ∈ `running` | `done` | `error`), so the inline tool block
   survives a reload. The server collects `event: tool` frames during a reply and
@@ -423,9 +426,10 @@ request/response shapes are unchanged. Text/code and PDF behavior is unchanged.
 - Detection: MIME `image/*` or a known image extension (`.png .jpg .jpeg .gif
   .bmp .tif .tiff .webp .pbm .pgm .ppm .pnm`).
 - With OCR enabled, an image returns recognized text (trimmed, capped at
-  `extract.MaxTextChars`). With OCR disabled/unavailable the upload is rejected
-  with the existing `400` "unsupported file type" message; a failed OCR run
-  returns `400 "could not read text from the image: …"`.
+  `extract.MaxTextChars`). **Since Phase 5.1** an image whose OCR is disabled or
+  fails is stored metadata-only (`"ready"`, empty text) instead of returning
+  `400`, because a vision-capable model can read the image directly (§8.12); a
+  `400` is still returned for non-image files that fail extraction.
 - Config: `MYOGCHAT_OCR` (default on), `MYOGCHAT_OCR_IMAGE`,
   `MYOGCHAT_OCR_LANGS` (default `eng`), `MYOGCHAT_DOCKER`, `MYOGCHAT_OCR_TIMEOUT`
   (default 30s).
@@ -467,6 +471,31 @@ unchanged.
   against it.
 - `GET /api/settings` (§9.4) additionally exposes read-only `ocr_engine`
   (`tesseract`|`vision`|`auto`|`none`) and `ocr_vision_available`.
+
+### 8.12 Vision image input (5.1)
+
+Besides OCR-to-text, an attached image can be sent straight to a
+**vision-capable** model so the model sees the image itself.
+
+- `POST /api/conversations/{id}/messages` accepts an optional `images` array of
+  base64 data URIs (`"data:image/png;base64,…"`). This is in addition to
+  `attachment_ids`; the SPA includes the bytes of any image attachment.
+- When the conversation's model has `vision: true` and `images` is non-empty, the
+  server attaches the images to the just-sent user message as multimodal content
+  parts (chat: `{type:"image_url", image_url:{url, detail:"high"}}`; responses:
+  `{type:"input_image", image_url, detail:"high"}`) and **omits the redundant OCR
+  text** of image attachments from the folded context (`Context`). Non-image
+  attachments are folded as usual.
+- When the model is not vision-capable (or no `images` were sent), the request
+  is unchanged: the image's OCR text is folded like any other attachment.
+- The bytes are **never persisted**: a reload/regenerate has no inline images and
+  falls back to the folded OCR text.
+- Caps: at most 4 images per message, each data URI ≤ 8 MB and ≤ 16 MB in total;
+  the message body cap is 18 MB. The SPA downscales images (long edge 1568 px)
+  in the browser before both upload and send. Invalid/oversized `images` → `400`.
+- Because an image is useful without OCR text, an image upload **no longer fails**
+  when OCR is unavailable: it is stored metadata-only (`status:"ready"`, no text).
+  See §8.10.
 
 ## 9. Users & authentication (replaces §1)
 

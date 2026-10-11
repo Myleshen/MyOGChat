@@ -107,8 +107,17 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// through here and is reported as unsupported.
 	text, err := extract.ExtractOpts(name, mimeType, data, extract.Options{OCR: s.ocrFunc(r.Context(), u)})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, extractMessage(err))
-		return
+		// An image is still useful without OCR text: a vision-capable model can
+		// read it directly (Phase 5.1), so a missing or failed OCR must not
+		// reject the upload. Store it metadata-only instead; other failures are
+		// reported as before.
+		if extract.IsImage(name, mimeType) {
+			s.log.Info("image attachment stored without OCR text", "name", name, "error", err)
+			text = ""
+		} else {
+			writeError(w, http.StatusBadRequest, extractMessage(err))
+			return
+		}
 	}
 
 	att := store.Attachment{

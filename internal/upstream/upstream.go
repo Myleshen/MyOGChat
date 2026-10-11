@@ -90,9 +90,71 @@ type ToolCall struct {
 type ExecuteTool func(ctx context.Context, call ToolCall) (result, summary string, err error)
 
 // Message is a single history entry sent upstream (role + content only).
+//
+// Images carries optional inline image data URIs ("data:image/png;base64,…")
+// attached to this message (vision input, Phase 5.1). A message with images is
+// rendered dialect-specifically into multimodal content parts when a request
+// payload is built (see chatMessageObj / responsesInputObj); the struct's own
+// JSON tags are not used for it.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string   `json:"role"`
+	Content string   `json:"content"`
+	Images  []string `json:"-"`
+}
+
+// visionDetail is the image-resolution hint sent with vision parts (Phase 5.1),
+// matching VisionOnce's default.
+const visionDetail = "high"
+
+// chatMessageObj renders one history Message as the chat-completions wire
+// object. A message carrying Images becomes a multimodal content array
+// ({type:"text"} + {type:"image_url"}), the same shape VisionOnce uses.
+func chatMessageObj(m Message) map[string]any {
+	if len(m.Images) == 0 {
+		return map[string]any{"role": m.Role, "content": m.Content}
+	}
+	parts := make([]any, 0, len(m.Images)+1)
+	if strings.TrimSpace(m.Content) != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+	}
+	for _, url := range m.Images {
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": url, "detail": visionDetail},
+		})
+	}
+	return map[string]any{"role": m.Role, "content": parts}
+}
+
+// responsesInputObj is the responses-dialect counterpart: a message with Images
+// becomes [{type:"input_text"}…, {type:"input_image", image_url, detail}].
+func responsesInputObj(m Message) map[string]any {
+	if len(m.Images) == 0 {
+		return map[string]any{"role": m.Role, "content": m.Content}
+	}
+	parts := make([]any, 0, len(m.Images)+1)
+	if strings.TrimSpace(m.Content) != "" {
+		parts = append(parts, map[string]any{"type": "input_text", "text": m.Content})
+	}
+	for _, url := range m.Images {
+		parts = append(parts, map[string]any{
+			"type": "input_image", "image_url": url, "detail": visionDetail,
+		})
+	}
+	return map[string]any{"role": m.Role, "content": parts}
+}
+
+// responsesInput builds the responses-dialect "input" array: the leading
+// attachment context (2.3) as a system item, then each history message.
+func responsesInput(p Params) []any {
+	input := make([]any, 0, len(p.Messages)+1)
+	if p.Context != "" {
+		input = append(input, map[string]any{"role": "system", "content": p.Context})
+	}
+	for _, m := range p.Messages {
+		input = append(input, responsesInputObj(m))
+	}
+	return input
 }
 
 // Usage carries token counts from the final upstream event.
@@ -312,14 +374,17 @@ type chatChunk struct {
 
 // streamChat implements the chat-completions dialect.
 func (c *Client) streamChat(ctx context.Context, p Params, send func(Event) bool) error {
-	// A project's instructions are prepended as a system message (§8.6).
-	msgs := p.Messages
-	if p.Instructions != "" {
-		msgs = append([]Message{{Role: "system", Content: p.Instructions}}, msgs...)
-	}
-	// Attachment text leads the request as its own system message (2.3).
+	// A project's instructions and the attachment context lead the request as
+	// system messages (§8.6 / 2.3).
+	var msgs []any
 	if p.Context != "" {
-		msgs = append([]Message{{Role: "system", Content: p.Context}}, msgs...)
+		msgs = append(msgs, map[string]any{"role": "system", "content": p.Context})
+	}
+	if p.Instructions != "" {
+		msgs = append(msgs, map[string]any{"role": "system", "content": p.Instructions})
+	}
+	for _, m := range p.Messages {
+		msgs = append(msgs, chatMessageObj(m))
 	}
 	payload := map[string]any{
 		"model":          p.Model,
@@ -381,15 +446,11 @@ func (c *Client) streamResponses(ctx context.Context, p Params, send func(Event)
 	}
 	payload := map[string]any{
 		"model":             p.Model,
-		"input":             p.Messages,
+		"input":             responsesInput(p),
 		"store":             false,
 		"stream":            true,
 		"max_output_tokens": 4096,
 		"reasoning":         map[string]any{"effort": effort, "summary": "auto"},
-	}
-	// Attachment text leads the input as a system item (2.3).
-	if p.Context != "" {
-		payload["input"] = append([]Message{{Role: "system", Content: p.Context}}, p.Messages...)
 	}
 	// Project instructions go in the responses API's dedicated field (§8.6).
 	if p.Instructions != "" {

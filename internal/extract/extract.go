@@ -144,6 +144,13 @@ func IsMedia(name, mimeType string) bool {
 	return isMedia(baseMime(mimeType), strings.ToLower(filepath.Ext(name)))
 }
 
+// IsImage reports whether a name/MIME pair is an image. The server uses this to
+// treat image uploads specially (Phase 5.1): an image may be sent straight to a
+// vision-capable model, so a missing OCR engine must not reject the upload.
+func IsImage(name, mimeType string) bool {
+	return isImage(baseMime(mimeType), strings.ToLower(filepath.Ext(name)))
+}
+
 // extractMedia transcribes audio/video via speech-to-text. A nil Transcribe
 // yields ErrUnsupported; an engine failure yields ErrTranscribe; no speech
 // yields ErrEmpty.
