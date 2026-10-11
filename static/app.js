@@ -50,6 +50,7 @@ const modelSelect = document.getElementById("model-select");
 const modelThinkingBadge = document.getElementById("model-thinking-badge");
 const effortSelect = document.getElementById("effort-select");
 const totalCostEl = document.getElementById("total-cost");
+const exportBtn = document.getElementById("export-btn");
 const settingsBtn = document.getElementById("settings-btn");
 const settingsPendingBadge = document.getElementById("settings-pending-badge");
 
@@ -96,6 +97,8 @@ const accountUsername = document.getElementById("account-username");
 const accountEmail = document.getElementById("account-email");
 const accountLogout = document.getElementById("account-logout");
 const appVersionEl = document.getElementById("app-version");
+const backupRow = document.getElementById("backup-row");
+const downloadBackup = document.getElementById("download-backup");
 
 const usersSection = document.getElementById("users-section");
 const usersTitle = document.getElementById("users-title");
@@ -933,6 +936,7 @@ function showSettingsPage() {
   ocrSection.hidden = !isAdmin;
   usageAdmin.hidden = !isAdmin; /* usage & quotas (2.11) */
   voiceSection.hidden = !isAdmin; /* voice / speech (3.5/3.6) */
+  backupRow.hidden = !isAdmin; /* server backup (feature 5) */
   settingsPage.hidden = false;
   buildSettingsNav();
   refreshSettingsNav();
@@ -988,6 +992,7 @@ function renderUser() {
   ocrSection.hidden = !isAdmin;
   usageAdmin.hidden = !isAdmin;
   voiceSection.hidden = !isAdmin; /* voice / speech (3.5/3.6) */
+  backupRow.hidden = !isAdmin; /* server backup (feature 5) */
 }
 
 /* ============================== Admin: users panel ============================== */
@@ -1172,6 +1177,7 @@ async function loadSettingsInfo(silent) {
       ocrSection.hidden = true;
       usageAdmin.hidden = true; /* usage & quotas (2.11) */
       voiceSection.hidden = true; /* voice / speech (3.5/3.6) */
+      backupRow.hidden = true; /* server backup (feature 5) */
       return;
     }
     if (!silent) toast(err.message);
@@ -2863,6 +2869,7 @@ function showWelcome() {
   clearMessages();
   welcomeEl.hidden = false;
   totalCostEl.hidden = true;
+  exportBtn.hidden = true;
   const prefs = loadPrefs();
   if (prefs.model && modelById(prefs.model)) modelSelect.value = prefs.model;
   effortSelect.value = prefs.effort || "medium";
@@ -2977,6 +2984,7 @@ function clearMessages() {
 function renderMessages() {
   clearMessages();
   welcomeEl.hidden = true;
+  exportBtn.hidden = !state.current;
   let lastAssistant = -1;
   state.currentMessages.forEach((m, i) => {
     if (m.role === "assistant") lastAssistant = i;
@@ -2988,11 +2996,8 @@ function renderMessages() {
       // A conversation that ends on a user message (e.g. a restart interrupted
       // the reply) gets a Retry affordance so the turn is recoverable.
       if (i === last && lastAssistant < i) {
-        const footer = el("div", "msg-footer");
-        const actions = el("span", "msg-actions");
-        actions.appendChild(actionButton("Retry", () => regenerate()));
-        footer.appendChild(actions);
-        node.querySelector(".msg-bubble").appendChild(footer);
+        const actions = node.querySelector(".msg-actions");
+        if (actions) actions.appendChild(actionButton("Retry", () => regenerate()));
       }
       messagesEl.appendChild(node);
     } else {
@@ -3000,6 +3005,34 @@ function renderMessages() {
     }
   });
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+/* ============================== Export ============================== */
+
+/* Download a URL as a file (the server sets Content-Disposition/filename). */
+function downloadUrl(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noopener";
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/* Conversation export menu (feature 5): Markdown transcript or raw JSON. */
+function openExportMenu() {
+  if (!state.current) return;
+  showMenu(exportBtn, [
+    {
+      label: "Export Markdown",
+      onClick: () => downloadUrl("/api/conversations/" + enc(state.current.id) + "/export?format=md"),
+    },
+    {
+      label: "Export JSON",
+      onClick: () => downloadUrl("/api/conversations/" + enc(state.current.id) + "/export?format=json"),
+    },
+  ]);
 }
 
 /* File-type glyph for an attachment chip, from MIME then extension. */
@@ -3050,15 +3083,88 @@ function attachmentChip(a) {
 function buildUserMessage(m) {
   const wrap = el("div", "msg msg-user");
   const bubble = el("div", "msg-bubble");
-  bubble.textContent = m.content;
+  const text = el("div", "msg-text");
+  text.textContent = m.content;
+  bubble.appendChild(text);
   const atts = Array.isArray(m.attachments) ? m.attachments : [];
   if (atts.length > 0) {
     const row = el("div", "msg-attachments");
     for (const a of atts) row.appendChild(attachmentChip(a));
     bubble.appendChild(row);
   }
+  const footer = el("div", "msg-footer");
+  const actions = el("span", "msg-actions");
+  actions.appendChild(actionButton("Edit", () => startEditUserMessage(m, text, bubble, footer)));
+  footer.appendChild(actions);
+  bubble.appendChild(footer);
   wrap.appendChild(bubble);
   return wrap;
+}
+
+/* Inline edit of a user message (feature 5). On Save: POST the edit, drop the
+   trailing messages, then reuse regenerate() to stream a fresh reply. */
+function startEditUserMessage(m, textEl, bubble, footer) {
+  if (state.streaming) {
+    toast("Wait for the current reply to finish");
+    return;
+  }
+  const ta = el("textarea", "msg-edit-input");
+  ta.value = m.content;
+  ta.rows = Math.min(10, Math.max(2, (m.content.match(/\n/g) || []).length + 1));
+  const editActions = el("div", "msg-edit-actions");
+  const save = el("button", "btn btn-primary msg-edit-save");
+  save.type = "button";
+  save.textContent = "Save";
+  const cancel = el("button", "btn btn-ghost msg-edit-cancel");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  editActions.append(save, cancel);
+
+  textEl.hidden = true;
+  footer.hidden = true;
+  bubble.insertBefore(ta, textEl.nextSibling);
+  bubble.appendChild(editActions);
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+
+  function restore() {
+    ta.remove();
+    editActions.remove();
+    textEl.hidden = false;
+    footer.hidden = false;
+  }
+
+  cancel.addEventListener("click", restore);
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      restore();
+    }
+  });
+  save.addEventListener("click", async () => {
+    const content = ta.value.trim();
+    if (!content) {
+      toast("Message cannot be empty");
+      return;
+    }
+    save.disabled = true;
+    cancel.disabled = true;
+    try {
+      await api(
+        "/api/conversations/" + enc(state.current.id) + "/messages/" + enc(m.id) + "/edit",
+        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ content }) }
+      );
+      m.content = content;
+      const idx = state.currentMessages.indexOf(m);
+      if (idx >= 0) state.currentMessages = state.currentMessages.slice(0, idx + 1);
+      renderMessages();
+      await regenerate();
+    } catch (err) {
+      save.disabled = false;
+      cancel.disabled = false;
+      if (!(err instanceof AuthError)) toast(err.message || "Failed to edit message");
+    }
+  });
 }
 
 function thinkingSummary(opts) {
@@ -4595,6 +4701,8 @@ function wireEvents() {
 
   /* Settings page (route #/settings). */
   settingsBtn.addEventListener("click", navigateToSettings);
+  exportBtn.addEventListener("click", openExportMenu);
+  if (downloadBackup) downloadBackup.addEventListener("click", () => downloadUrl("/api/admin/backup"));
   settingsBack.addEventListener("click", leaveSettings);
   settingsPage.querySelectorAll('input[name="theme"]').forEach((r) => {
     r.addEventListener("change", () => {

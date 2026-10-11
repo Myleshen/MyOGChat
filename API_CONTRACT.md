@@ -1061,3 +1061,47 @@ is used only when the caller has not stored their own instance.
 directly in the DB (no login), encrypting with `internal/secret` (key = the DB
 `encryption_key` setting). An empty value clears that field; omitted fields are
 untouched. Output is redacted (never the secret).
+
+## 18. Message edit & resend
+
+Rewrites a user message in place and drops everything after it, so the client
+can stream a replacement reply with the existing regenerate endpoint (§8.5).
+No schema change.
+
+- `POST /api/conversations/{id}/messages/{messageId}/edit` body
+  `{"content": string}` (non-empty, ≤ 100 KB) → `200 {"ok":true}`.
+  Owner-scoped: the message must be in the caller's conversation **and** have
+  `role = 'user'`; otherwise `404` (a non-user or cross-user target is
+  indistinguishable from a missing row). `400` on empty/oversized content.
+  On success the store updates `messages.content` and deletes every later
+  message ordered by `(created_at, rowid)`; `updated_at` is bumped.
+- Store methods (contract §2): `EditUserMessage(ctx, convID, msgID, userID,
+  content)` (returns `ErrNotFound` on a non-owner / non-user / wrong-conversation
+  match) and `TruncateAfter(ctx, convID, msgID)` (no-op on a missing anchor).
+- **Frontend**: each user bubble gets an **Edit** action that opens an inline
+  prefilled textarea with Save / Cancel (Esc cancels). Save POSTs the edit, drops
+  the local trailing messages, then calls `regenerate()`.
+
+## 19. Conversation export & admin backup
+
+Read-only downloads; no schema change.
+
+- `GET /api/conversations/{id}/export?format=md|json` (session, owner-scoped;
+  non-owner → `404`). `format` defaults to `md`; anything else is `400`.
+  - **md** → a Markdown transcript: `# <title>` (or "Untitled conversation"), a
+    metadata block (model / created / updated / message count), then each
+    message as `## You` or `## Assistant` with its content and a footer line
+    `_<model> · <UTC time> · <cost>_` (fields only where present; zero cost →
+    `Free`). Content is capped at 100 KB per message (UTF-8-safe, `… [truncated]`).
+  - **json** → the same shape as `GET /api/conversations/{id}`
+    (`{…conversation…, messages:[…]}`).
+  - Both set `Content-Disposition: attachment; filename="<slug>-<id>.<ext>"`
+    (slug from the title: lowercase `a-z0-9`, dashes, ≤60 chars, `chat` fallback).
+- `GET /api/admin/backup` (admin only; non-admin → `403`) → a consistent SQLite
+  snapshot streamed as `application/octet-stream` with
+  `Content-Disposition: attachment; filename="myogchat-backup-<date>.db"`. Built
+  with the new store method `Backup(ctx, destPath)` (`VACUUM INTO '<tempfile>'`);
+  the temp file is removed after the response.
+- **Frontend**: a conversation-header overflow ("…") menu with **Export
+  Markdown** / **Export JSON**; an admin **Download backup** button in
+  Settings → About.

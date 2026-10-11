@@ -199,7 +199,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/conversations/{id}", s.handlePatchConversation)
 	mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
 	mux.HandleFunc("POST /api/conversations/{id}/messages", s.handlePostMessage)
+	mux.HandleFunc("POST /api/conversations/{id}/messages/{messageId}/edit", s.handleEditMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/regenerate", s.handleRegenerate)
+	// Export & backup (§19).
+	mux.HandleFunc("GET /api/conversations/{id}/export", s.handleExportConversation)
+	mux.HandleFunc("GET /api/admin/backup", s.handleAdminBackup)
 
 	// Attachments (per-user, 2.3).
 	mux.HandleFunc("POST /api/attachments", s.handleUploadAttachment)

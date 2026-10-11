@@ -532,6 +532,33 @@ button { font: inherit; }
 }
 .msg-action:hover { color: var(--text); border-color: var(--text-dim); }
 
+/* Inline user-message edit (feature 5). */
+.msg-text { white-space: pre-wrap; }
+.msg-edit-input {
+  display: block;
+  width: 100%;
+  min-width: 220px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  resize: vertical;
+}
+.msg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.msg-edit-actions .btn {
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: 0.85rem;
+}
+
 .msg-error {
   margin-top: 8px;
   color: var(--red);
@@ -1184,6 +1211,13 @@ button { font: inherit; }
 .account-logout { align-self: flex-start; }
 
 .settings-about { margin: 0; color: var(--text-dim); font-size: 0.9rem; line-height: 1.6; }
+.settings-field-row {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
 .settings-version { color: var(--text); }
 
 /* ---------- Settings: admin Users panel ---------- */

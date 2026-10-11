@@ -906,6 +906,51 @@ func (s *Store) HasUserMessage(ctx context.Context, conversationID string) (bool
 	return n > 0, err
 }
 
+// EditUserMessage updates the content of one user message. It only matches a
+// row that is in conversationID, is owned by userID, and has role 'user';
+// anything else returns ErrNotFound (so a cross-user or non-user target is
+// indistinguishable from a missing row).
+func (s *Store) EditUserMessage(ctx context.Context, conversationID, messageID, userID, content string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE messages SET content = ?
+		  WHERE id = ? AND conversation_id = ? AND role = 'user'
+		    AND conversation_id IN (SELECT id FROM conversations WHERE id = ? AND user_id = ?)`,
+		content, messageID, conversationID, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// TruncateAfter deletes every message that follows messageID in the
+// conversation, using the same (created_at, rowid) ordering as ListMessages. A
+// missing messageID matches nothing, so it is a no-op.
+func (s *Store) TruncateAfter(ctx context.Context, conversationID, messageID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM messages
+		  WHERE conversation_id = ?
+		    AND (created_at, rowid) > (
+		      SELECT created_at, rowid FROM messages WHERE id = ? AND conversation_id = ?)`,
+		conversationID, messageID, conversationID)
+	return err
+}
+
+// Backup writes a consistent snapshot of the live database to destPath using
+// SQLite's VACUUM INTO (which fails if destPath exists). It is used by the
+// admin backup endpoint (§19) to hand an operator a point-in-time copy of the
+// DB, including any WAL content.
+func (s *Store) Backup(ctx context.Context, destPath string) error {
+	_, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, destPath)
+	return err
+}
+
 // ---------- projects ----------
 
 const projectCols = "id, name, instructions, default_model, sort_order, created_at, updated_at"
