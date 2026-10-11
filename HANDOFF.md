@@ -14,9 +14,11 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 - **Repo:** `github.com/Myleshen/MyOGChat` — `main` is the source of truth
 - **Phase 1:** complete. **Phase 2:** complete (2.1–2.13). **Phase 3:** complete.
   **Phase 4:** complete — 4.1/4.2/4.3a/4.3b/4.4/4.5a/4.5b shipped (see `docs/PHASE4.md`).
-  **Phase 5:** in progress — 5.1–5.6 **merged to `main`** (deploy pending); 5.7,
-  5.8, 5.10 and the hardening list planned; **5.9 (email digest) + 5.11
-  (multi-mailbox)** implemented on branch `feat/p59-11-email` (not merged/deployed).
+  **Phase 5:** complete and deployed — 5.1 vision input, 5.2 chat search, 5.3
+  export + admin backup, 5.4 edit & resend, 5.5 pinned chats, 5.6 paste image,
+  5.7 background/concurrent generation, 5.8 sandbox file artifacts, 5.9 email
+  digest, 5.10 reuse empty draft, 5.11 multiple mailboxes — plus the hardening
+  pass (see `TODO.md` → Phase 5).
 
 ## Live deployment
 
@@ -29,8 +31,9 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 | Tunnel | Cloudflare Tunnel (docker container `cloudflaretunnel`, dashboard-managed) → `http://raspberrypi.local:8787`. Owner manages the CF dashboard. |
 | Repo on Pi | `~/softwares/MyOGChat` (checkout) + `~/softwares/MyOGChat.git` (bare relay — see "Deploy") |
 
-**Deployed commit:** `f77d399` (Phase 4 cache-busting). `main` is ahead — the
-Phase 5 batch (5.1–5.6) is merged but **not yet deployed**.
+**Deployed commit:** `5e0a379` (Phase 5 complete). The sandbox Python image
+(`myogchat-sandbox-python`, for 5.8 file output) is built on the Pi via
+`deploy/sandbox-setup.sh`.
 
 > The Pi has **no Go toolchain** and **no GitHub key**. Builds are cross-compiled
 > on the workstation and shipped. The Pi checkout pulls from the local bare relay
