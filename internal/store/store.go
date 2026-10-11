@@ -765,6 +765,25 @@ func (s *Store) ListConversations(ctx context.Context, userID string) ([]Convers
 	return convs, rows.Err()
 }
 
+// FindReusableDraft returns the caller's most recently updated reusable draft
+// (feature 5.10), else ErrNotFound. A reusable draft is owned by userID, has an
+// empty title, is unpinned, lives in the given project scope (NULL-safe: a nil
+// projectID matches unfiled chats only), and has zero rows in messages — of any
+// role, since a failed send can leave a user row behind. Scoping by owner means
+// one user can never be handed another's draft.
+func (s *Store) FindReusableDraft(ctx context.Context, userID string, projectID *string) (Conversation, error) {
+	c, err := scanConversation(s.db.QueryRowContext(ctx,
+		`SELECT `+conversationCols+` FROM conversations c
+		  WHERE c.user_id = ? AND c.title = '' AND c.pinned = 0 AND c.project_id IS ?
+		    AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
+		  ORDER BY c.updated_at DESC LIMIT 1`,
+		userID, nullString(projectID)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Conversation{}, ErrNotFound
+	}
+	return c, err
+}
+
 // SetConversationPinned pins or unpins one of the user's conversations. It
 // returns ErrNotFound when the row is missing or not owned by userID.
 func (s *Store) SetConversationPinned(ctx context.Context, id, userID string, pinned bool) error {

@@ -66,9 +66,15 @@ Returns the **static registry** (§5) as JSON array, sorted by `output_per_m` as
 `[{"id","title","model","effort","created_at","updated_at"}]`, `updated_at` DESC.
 
 ### `POST /api/conversations`
-Body `{"model":"kimi-k2.7-code","effort":"medium"}`. `effort` only allowed for
-responses-dialect models; reject otherwise with `400`. Generates UUIDv4 id.
-Returns the created conversation object. `201`.
+Body `{"model":"kimi-k2.7-code","effort":"medium","reuse_empty":true}`.
+`effort` only allowed for responses-dialect models; reject otherwise with `400`.
+Generates UUIDv4 id. Returns the created conversation object. `201`.
+
+With `"reuse_empty": true` (5.10) the server first looks for a reusable draft
+(the caller's empty, untitled, unpinned conversation with no messages in the
+same project scope) and returns it with **`200`** instead of creating a row
+(see §8.3). Without the flag, or when no draft exists, the `201` create is
+unchanged.
 
 ### `GET /api/conversations/{id}`
 `{"id","title","model","effort","created_at","updated_at","messages":[...]}`
@@ -269,6 +275,14 @@ projects, and `ALTER TABLE … ADD COLUMN` for `conversations.project_id`,
 - `POST /api/conversations` `{"model"?, "effort"?, "project_id"?}`: if
   `project_id` is present it must exist; if `model` is omitted the project's
   `default_model` is used (error if neither). `effort` rules unchanged.
+- `POST /api/conversations` also accepts `"reuse_empty": true` (5.10). A
+  **reusable draft** — owned by the caller, `title == ""`, `pinned == 0`,
+  `project_id` matching the request scope NULL-safely (a nil/`""` scope matches
+  unfiled chats only), and **zero** message rows of any role — is returned with
+  `200` (most recently updated first) instead of creating a new row. When the
+  caller explicitly supplies a different `model`, the draft's `model`/`effort`
+  are aligned to the request. Without the flag, or with no eligible draft, the
+  `201` create is unchanged.
 - `PATCH /api/conversations/{id}` also accepts `project_id` (string to move,
   `""`/`null` to unfile).
 - `GET /api/conversations` accepts optional `?project_id=<id|none>` filter;

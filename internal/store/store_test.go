@@ -1220,3 +1220,97 @@ func TestUpdateConversationPersists(t *testing.T) {
 		t.Errorf("update did not persist: %+v", got)
 	}
 }
+
+// TestFindReusableDraft (5.10) covers eligibility (titled / any-message /
+// pinned excluded), NULL-vs-project scoping, most-recent-wins ordering, the
+// ErrNotFound case, and owner isolation.
+func TestFindReusableDraft(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-alice", "alice", false)
+	bob := seedUser(t, s, "u-bob", "bob", false)
+
+	projA, projB := "p-a", "p-b"
+	for _, id := range []string{projA, projB} {
+		p := id
+		if err := s.InsertProject(ctx, &Project{
+			ID: p, UserID: &alice.ID, Name: p, CreatedAt: 1, UpdatedAt: 1,
+		}); err != nil {
+			t.Fatalf("InsertProject(%s): %v", p, err)
+		}
+	}
+	insert := func(id, userID, title string, projectID *string, pinned bool, updatedAt int64) {
+		t.Helper()
+		uid := userID
+		if err := s.InsertConversation(ctx, &Conversation{
+			ID: id, UserID: &uid, Title: title, Model: "glm-5.3-flash",
+			ProjectID: projectID, Pinned: pinned, CreatedAt: updatedAt, UpdatedAt: updatedAt,
+		}); err != nil {
+			t.Fatalf("InsertConversation(%s): %v", id, err)
+		}
+	}
+	addMessage := func(id, convID, role string) {
+		t.Helper()
+		if err := s.InsertMessage(ctx, &Message{
+			ID: id, ConversationID: convID, Role: role, Content: "x", CreatedAt: 1,
+		}); err != nil {
+			t.Fatalf("InsertMessage(%s): %v", id, err)
+		}
+	}
+
+	// Alice, unfiled: two eligible drafts (newer wins) plus every excluded kind.
+	insert("a-draft-old", alice.ID, "", nil, false, 100)
+	insert("a-draft-new", alice.ID, "", nil, false, 300)
+	insert("a-titled", alice.ID, "Hello", nil, false, 400)
+	insert("a-user-msg", alice.ID, "", nil, false, 500)
+	addMessage("a-user-msg-m", "a-user-msg", "user")
+	insert("a-asst-msg", alice.ID, "", nil, false, 550)
+	addMessage("a-asst-msg-m", "a-asst-msg", "assistant")
+	insert("a-pinned", alice.ID, "", nil, true, 600)
+
+	// Alice, filed: one draft per project.
+	insert("a-proj-draft", alice.ID, "", &projA, false, 200)
+	insert("a-proj-other", alice.ID, "", &projB, false, 700)
+
+	// Bob's eligible draft must never be handed to Alice.
+	insert("b-draft", bob.ID, "", nil, false, 900)
+
+	cases := []struct {
+		name    string
+		userID  string
+		project *string
+		wantID  string
+	}{
+		{"unfiled most-recent wins", alice.ID, nil, "a-draft-new"},
+		{"project A scoped", alice.ID, &projA, "a-proj-draft"},
+		{"project B scoped", alice.ID, &projB, "a-proj-other"},
+		{"owner isolation", bob.ID, nil, "b-draft"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.FindReusableDraft(ctx, tc.userID, tc.project)
+			if err != nil {
+				t.Fatalf("FindReusableDraft: %v", err)
+			}
+			if got.ID != tc.wantID {
+				t.Errorf("draft = %q, want %q", got.ID, tc.wantID)
+			}
+			if got.Title != "" || got.Pinned {
+				t.Errorf("draft = %+v, want empty and unpinned", got)
+			}
+		})
+	}
+
+	// No eligible draft in a scope that only holds elsewhere → ErrNotFound.
+	if _, err := s.FindReusableDraft(ctx, bob.ID, &projA); err != ErrNotFound {
+		t.Errorf("empty scope err = %v, want ErrNotFound", err)
+	}
+	// Alice in project B must not see the unfiled draft (NULL-vs-project).
+	if got, err := s.FindReusableDraft(ctx, alice.ID, &projB); err != nil || got.ID != "a-proj-other" {
+		t.Errorf("project B draft = %+v, %v; want a-proj-other", got, err)
+	}
+	// Alice unfiled must not see project drafts.
+	if got, err := s.FindReusableDraft(ctx, alice.ID, nil); err != nil || got.ID != "a-draft-new" {
+		t.Errorf("unfiled draft = %+v, %v; want a-draft-new", got, err)
+	}
+}
