@@ -49,6 +49,36 @@ var artifactMimeByExt = map[string]string{
 	".js":   "text/javascript",
 }
 
+// skipArtifactDirs are directory names never descended into during a harvest:
+// Python bytecode caches, installed package trees and dependency dirs. Files in
+// these are build/tooling byproducts, not things the user asked the agent to
+// create (the sandbox sets HOME=/work, so pip/Python write caches there).
+var skipArtifactDirs = map[string]bool{
+	"__pycache__":   true,
+	"site-packages": true,
+	"dist-packages": true,
+	"node_modules":  true,
+}
+
+// skipArtifactDir reports whether a directory should be pruned (cache/bytecode
+// trees and any dot-directory such as .cache, .local or .git).
+func skipArtifactDir(name string) bool {
+	return skipArtifactDirs[name] || strings.HasPrefix(name, ".")
+}
+
+// skipArtifactFile reports whether a regular file is a tooling byproduct (Python
+// bytecode, or a dotfile such as a lock/temp file).
+func skipArtifactFile(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".pyc", ".pyo", ".pyd":
+		return true
+	}
+	return false
+}
+
 // harvest collects the regular files written under dir into artifacts. It is
 // deliberately paranoid (5.8):
 //
@@ -56,6 +86,9 @@ var artifactMimeByExt = map[string]string{
 //     cannot link /work/out to a host file and exfiltrate it.
 //   - Each file is opened with O_NOFOLLOW to close the Lstat/Open TOCTOU window,
 //     and re-checked to be a regular file after opening.
+//   - Tool caches and bytecode are pruned (see skipArtifactDir/File), so an
+//     agent that pip-installs or imports a module does not flood the message
+//     with hundreds of .pyc/cache blobs.
 //   - Names are reduced to a sanitized base name (no directory components).
 //   - Per-file, count and total caps bound what is stored.
 //
@@ -72,9 +105,18 @@ func harvest(dir string, cfg Config) []Artifact {
 			if err != nil || path == dir {
 				return nil // skip an unreadable entry, never abort the harvest
 			}
+			if d.IsDir() {
+				if skipArtifactDir(d.Name()) {
+					return fs.SkipDir
+				}
+				return nil
+			}
 			if !d.Type().IsRegular() {
-				// Skip symlinks, directories, devices and FIFOs. WalkDir does
-				// not descend into symlinked directories.
+				// Skip symlinks, devices and FIFOs. WalkDir does not descend
+				// into symlinked directories.
+				return nil
+			}
+			if skipArtifactFile(d.Name()) {
 				return nil
 			}
 			if len(out) >= cfg.MaxFiles {

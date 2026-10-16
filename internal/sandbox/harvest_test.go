@@ -46,6 +46,45 @@ func TestHarvestSkipsSymlinks(t *testing.T) {
 	}
 }
 
+// TestHarvestSkipsToolCaches checks that Python bytecode and pip/Python caches
+// written into the workspace (the sandbox sets HOME=/work) are not harvested as
+// user-facing artifacts, which previously flooded messages with .pyc/cache blobs.
+func TestHarvestSkipsToolCaches(t *testing.T) {
+	dir := t.TempDir()
+	mkdir := func(p string) {
+		t.Helper()
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", p, err)
+		}
+	}
+	writeFile(t, filepath.Join(dir, "report.csv"), []byte("a,b\n1,2\n"), 0o644)
+	writeFile(t, filepath.Join(dir, "script.py"), []byte("print(1)\n"), 0o644)
+	mkdir(filepath.Join(dir, "__pycache__"))
+	writeFile(t, filepath.Join(dir, "__pycache__", "script.cpython-314.pyc"), []byte("junk"), 0o644)
+	mkdir(filepath.Join(dir, ".cache", "pip", "http"))
+	writeFile(t, filepath.Join(dir, ".cache", "pip", "http", "abc123.body"), []byte("zip blob"), 0o644)
+	mkdir(filepath.Join(dir, "lib", "site-packages", "pkg"))
+	writeFile(t, filepath.Join(dir, "lib", "site-packages", "pkg", "__init__.py"), []byte(""), 0o644)
+	writeFile(t, filepath.Join(dir, ".lock"), []byte("x"), 0o644)
+
+	got := harvest(dir, DefaultConfig())
+	names := map[string]bool{}
+	for _, a := range got {
+		names[a.Name] = true
+	}
+	if !names["report.csv"] || !names["script.py"] {
+		t.Fatalf("harvest = %v, want report.csv and script.py", names)
+	}
+	for _, junk := range []string{"script.cpython-314.pyc", "abc123.body", "__init__.py", ".lock"} {
+		if names[junk] {
+			t.Errorf("harvested tooling byproduct %q", junk)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("harvest count = %d, want 2 (%v)", len(got), names)
+	}
+}
+
 // TestHarvestSanitizesTraversal checks names are reduced to a safe base name.
 func TestHarvestSanitizesTraversal(t *testing.T) {
 	cases := map[string]string{

@@ -3841,8 +3841,19 @@ function renderStreamThinking(ui) {
 
 /* Rebuild the live bubble from accumulated buffers. Used when returning to a
    conversation that is still generating, or after a reattach poll. */
-function renderStream(ui) {
+function renderStream(ui, keepScroll) {
   if (!ensureStreamBubble(ui)) return;
+  // Follow the bottom only when the user has not scrolled away. A background job
+  // is polled ~1s; forcing the bottom would fight the user's scroll (5.x fix).
+  const stick = keepScroll ? isNearBottom() : true;
+  // Preserve what the user expanded across the rebuild.
+  const prevTools = ui.bubble.querySelector(".msg-tools");
+  const toolState = prevTools
+    ? {
+        outerOpen: prevTools.open,
+        openIdx: [...prevTools.querySelectorAll(".msg-tool")].flatMap((d, i) => (d.open ? [i] : [])),
+      }
+    : null;
   ui.bubble.innerHTML = "";
   ui.thinkingEl = null;
   ui.thinkingBody = null;
@@ -3851,7 +3862,7 @@ function renderStream(ui) {
   ui.footerEl = null;
   ui.footerMeta = null;
   if (ui.reasoningBuf) renderStreamThinking(ui);
-  if (ui.tools && ui.tools.length) renderStreamTools(ui);
+  if (ui.tools && ui.tools.length) renderStreamTools(ui, toolState);
   if (ui.textBuf) {
     ui.contentEl = el("div", "msg-content markdown");
     ui.contentEl.innerHTML = renderMarkdown(ui.textBuf);
@@ -3859,7 +3870,19 @@ function renderStream(ui) {
     ui.bubble.appendChild(ui.contentEl);
   }
   renderStreamFooter(ui);
-  scrollToBottom();
+  if (stick) scrollToBottom();
+}
+
+/* Cheap signature of the live buffers, so the poll only re-renders (and only
+   follows the bottom) when something actually changed. */
+function genSignature(ui) {
+  return (
+    (ui.textBuf || "").length +
+    "|" +
+    (ui.reasoningBuf || "").length +
+    "|" +
+    (ui.tools || []).map((t) => t.name + ":" + t.status + ":" + (t.output || "").length).join(",")
+  );
 }
 
 /* ============================== Tool activity (Phase 2.4, collapsible 4.1) ============================== */
@@ -3982,7 +4005,7 @@ function updateToolActivity(ui, payload) {
   renderStreamTools(ui);
 }
 
-function renderStreamTools(ui) {
+function renderStreamTools(ui, state) {
   if (!ui.tools || ui.tools.length === 0) return;
   if (!ensureStreamBubble(ui)) return;
   if (!ui.toolsEl) {
@@ -3995,17 +4018,18 @@ function renderStreamTools(ui) {
   // Preserve what the user expanded across the live rebuild, so a tool they
   // opened does not snap shut on the next tool event.
   const prev = ui.toolsEl.querySelector(".msg-tools");
-  const outerOpen = prev ? prev.open : false;
-  const openIdx = prev
-    ? [...prev.querySelectorAll(".msg-tool")].flatMap((d, i) => (d.open ? [i] : []))
-    : [];
+  const outerOpen = state ? state.outerOpen : prev ? prev.open : false;
+  const openIdx = state
+    ? state.openIdx
+    : prev
+      ? [...prev.querySelectorAll(".msg-tool")].flatMap((d, i) => (d.open ? [i] : []))
+      : [];
   ui.toolsEl.innerHTML = "";
   const block = buildToolsBlock(ui.tools);
   block.open = outerOpen;
   const items = block.querySelectorAll(".msg-tool");
   for (const i of openIdx) if (items[i]) items[i].open = true;
   ui.toolsEl.appendChild(block);
-  scrollToBottom();
 }
 
 /* chars/4 tokens over elapsed seconds — approximate, marked with "~". */
@@ -4037,7 +4061,7 @@ function showStreamError(ui, message) {
   const err = el("div", "msg-error");
   err.textContent = "⚠ " + message;
   ui.bubble.appendChild(err);
-  scrollToBottom();
+  if (isNearBottom()) scrollToBottom();
 }
 
 function markStopped(ui) {
@@ -4093,9 +4117,12 @@ function handleStreamEvent(type, data, ui) {
       ui.usage = payload;
       if (visible) renderStreamFooter(ui);
       break;
-    case "tool":
+    case "tool": {
+      const stick = visible && isNearBottom();
       updateToolActivity(ui, payload);
+      if (stick) scrollToBottom();
       break;
+    }
     case "done":
       ui.done = true;
       ui.durationMs = ui.firstTokenAt ? Math.round(performance.now() - ui.firstTokenAt) : null;
@@ -4327,7 +4354,13 @@ async function pollGeneration(convId) {
     return;
   }
   applySnapshot(gen.ui, snap);
-  if (isVisibleConv(convId)) renderStream(gen.ui);
+  // Only re-render (and only follow the bottom) when something actually changed,
+  // so a ~1s poll never fights the user's scroll.
+  const sig = genSignature(gen.ui);
+  if (isVisibleConv(convId) && sig !== gen.ui.lastSig) {
+    gen.ui.lastSig = sig;
+    renderStream(gen.ui, true);
+  }
   schedulePoll(convId);
 }
 
