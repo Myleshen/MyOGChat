@@ -702,15 +702,16 @@ func firstNBytes(s string, n int) string {
 
 // mergeToolEvent folds one upstream tool activity into the persisted list,
 // mirroring the SPA's updateToolActivity (2.10/4.1): a "running" event starts an
-// entry; a terminal event closes the most recent matching running entry, else
-// appends. Tools run sequentially (agent.go), so there is never true
-// concurrency to reconcile.
+// entry; a terminal event closes the first matching running entry, else appends.
+// Tools run sequentially in call order (agent.go), so the first running entry
+// with a matching name is the one this terminal event belongs to; matching the
+// last would mis-assign the result when the same tool is called twice in a row.
 func mergeToolEvent(list []store.ToolActivity, t *upstream.ToolActivity) []store.ToolActivity {
 	entry := cappedTool(t)
 	if entry.Status == upstream.ToolRunning {
 		return append(list, entry)
 	}
-	for i := len(list) - 1; i >= 0; i-- {
+	for i := 0; i < len(list); i++ {
 		if list[i].Name == entry.Name && list[i].Status == upstream.ToolRunning {
 			// Keep the args captured when the call started if the terminal
 			// event omits them, and carry the truncation flag forward.

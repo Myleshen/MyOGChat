@@ -456,6 +456,16 @@ button { font: inherit; }
   white-space: nowrap;
 }
 
+/* Phones: the header holds a lot (menu, model, effort, cost, export, settings).
+   Drop the running total + thinking badge and tighten the gaps so nothing
+   overlaps; per-message cost is still shown in each message footer. */
+@media (max-width: 640px) {
+  .chat-header { gap: 6px; padding: 8px; }
+  #total-cost,
+  #model-thinking-badge { display: none; }
+  #model-select { max-width: none; }
+}
+
 /* ---------- Messages ---------- */
 
 .messages {
@@ -611,6 +621,16 @@ button { font: inherit; }
   min-height: 36px;
   padding: 0 8px;
 }
+/* The inner tool rows are collapsible too; give them a chevron like the outer
+   block so the affordance is obvious (5.x fix). */
+.msg-tool-summary::after {
+  content: "▸";
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+.msg-tool[open] > .msg-tool-summary::after { transform: rotate(90deg); }
+.msg-tools-error > .msg-tools-summary,
+.msg-tool-error > .msg-tool-summary { color: var(--danger, #e5534b); }
 .msg-tool-body {
   display: flex;
   flex-direction: column;
@@ -900,7 +920,7 @@ button { font: inherit; }
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 4px 0;
+  margin: 8px 0 0;
 }
 a.attachment-chip {
   text-decoration: none;

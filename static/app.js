@@ -3503,10 +3503,8 @@ function buildAssistantMessage(m, isLast) {
   if (Array.isArray(m.tools) && m.tools.length > 0) {
     bubble.appendChild(buildToolsBlock(m.tools));
   }
-  const hasImages = Array.isArray(m.images) && m.images.length > 0;
-  if (hasImages) bubble.appendChild(buildImagesBlock(m.images));
-  const hasArtifacts = Array.isArray(m.artifacts) && m.artifacts.length > 0;
-  if (hasArtifacts) bubble.appendChild(buildArtifactsBlock(m.artifacts));
+  // The reply text comes first; produced media/files follow it, at the bottom of
+  // the message where the user actually looks for them (5.x fix).
   const hasText = typeof m.content === "string" && m.content.trim() !== "";
   if (hasText) {
     const content = el("div", "msg-content markdown");
@@ -3514,6 +3512,10 @@ function buildAssistantMessage(m, isLast) {
     enhanceMarkdown(content);
     bubble.appendChild(content);
   }
+  const hasImages = Array.isArray(m.images) && m.images.length > 0;
+  if (hasImages) bubble.appendChild(buildImagesBlock(m.images));
+  const hasArtifacts = Array.isArray(m.artifacts) && m.artifacts.length > 0;
+  if (hasArtifacts) bubble.appendChild(buildArtifactsBlock(m.artifacts));
   // A media-only message (image/artifact, no text) has no cost/model footer
   // (and no Retry, which would replace it with a text reply).
   if (hasText || !(hasImages || hasArtifacts)) bubble.appendChild(buildAssistantFooter(m, isLast));
@@ -3894,7 +3896,7 @@ function toolSection(label, text, isError) {
    auto-expand so a failure is visible without a tap. */
 function buildToolItem(t) {
   const item = el("details", "msg-tool");
-  if (t.status === "error") item.open = true;
+  if (t.status === "error") item.classList.add("msg-tool-error");
   const summary = document.createElement("summary");
   summary.className = "msg-tool-summary";
   const dur = t.duration_ms ? " · " + fmtDuration(t.duration_ms) : "";
@@ -3943,7 +3945,7 @@ function buildToolsBlock(tools) {
   const body = el("div", "msg-tools-body");
   for (const t of tools) body.appendChild(buildToolItem(t));
   wrap.appendChild(body);
-  if (errs > 0) wrap.open = true;
+  if (errs > 0) wrap.classList.add("msg-tools-error");
   return wrap;
 }
 
@@ -3966,7 +3968,9 @@ function updateToolActivity(ui, payload) {
     ui.tools.push(entry);
   } else {
     let updated = false;
-    for (let i = ui.tools.length - 1; i >= 0; i--) {
+    // Close the FIRST matching running entry (tools run in call order), so two
+    // calls to the same tool in one turn keep their own args/output.
+    for (let i = 0; i < ui.tools.length; i++) {
       if (ui.tools[i].name === name && ui.tools[i].status === "running") {
         ui.tools[i] = entry;
         updated = true;
@@ -3983,10 +3987,24 @@ function renderStreamTools(ui) {
   if (!ensureStreamBubble(ui)) return;
   if (!ui.toolsEl) {
     ui.toolsEl = el("div", "msg-tools-slot");
-    ui.bubble.insertBefore(ui.toolsEl, ui.bubble.firstChild);
+    // Keep the live tool block after the thinking block and before the reply
+    // text, matching the final render order.
+    const anchor = ui.contentEl || (ui.thinkingEl ? ui.thinkingEl.nextSibling : ui.bubble.firstChild);
+    ui.bubble.insertBefore(ui.toolsEl, anchor);
   }
+  // Preserve what the user expanded across the live rebuild, so a tool they
+  // opened does not snap shut on the next tool event.
+  const prev = ui.toolsEl.querySelector(".msg-tools");
+  const outerOpen = prev ? prev.open : false;
+  const openIdx = prev
+    ? [...prev.querySelectorAll(".msg-tool")].flatMap((d, i) => (d.open ? [i] : []))
+    : [];
   ui.toolsEl.innerHTML = "";
-  ui.toolsEl.appendChild(buildToolsBlock(ui.tools));
+  const block = buildToolsBlock(ui.tools);
+  block.open = outerOpen;
+  const items = block.querySelectorAll(".msg-tool");
+  for (const i of openIdx) if (items[i]) items[i].open = true;
+  ui.toolsEl.appendChild(block);
   scrollToBottom();
 }
 
