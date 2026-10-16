@@ -174,6 +174,10 @@ ab press Escape >/dev/null 2>&1; sleep 1
 assert "export menu closes on Esc" "!document.querySelector('.menu') && document.getElementById('export-btn').getAttribute('aria-expanded')==='false'"
 
 echo "-- phase 5: edit & resend --"
+# Editing is refused while a reply is generating (5.7); wait for the previous
+# send to settle so this section is not racy.
+wait_for "document.getElementById('stop-btn').hidden" 120 || true
+sleep 1
 ab eval "(function(){var b=null;document.querySelectorAll('.msg-actions .msg-action').forEach(function(x){if(x.textContent.trim()==='Edit')b=x;});if(b){b.click();return 'ok';}return 'none';})()" >/dev/null 2>&1
 sleep 1
 assert "inline editor opens" "!!document.querySelector('.msg-edit-input')"
