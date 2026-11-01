@@ -6,8 +6,8 @@ func TestVisionFlag(t *testing.T) {
 	// The recommended OCR vision models must be flagged so main.go can validate
 	// MYOGCHAT_OCR_VISION_MODEL.
 	for _, id := range []string{
-		"deepseek-v4-flash-vision-exp",
 		"deepseek-v4.1-flash",
+		"glm-5.3-flash",
 		"gpt-6-luna",
 		"gpt-5.6-luna",
 	} {
@@ -21,7 +21,7 @@ func TestVisionFlag(t *testing.T) {
 		}
 	}
 	// A text-only model must not be flagged.
-	if m, ok := ByID("deepseek-v4-flash"); !ok || m.Vision {
-		t.Errorf("deepseek-v4-flash Vision = %v, want false", m.Vision)
+	if m, ok := ByID("deepseek-v4-pro"); !ok || m.Vision {
+		t.Errorf("deepseek-v4-pro Vision = %v, want false", m.Vision)
 	}
 }

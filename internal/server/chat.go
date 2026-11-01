@@ -19,8 +19,9 @@ import (
 const (
 	// maxContentBytes caps a single user message at 100 KB (contract §3).
 	maxContentBytes = 100 * 1024
-	// titleModel is used for the one-shot auto-title call (contract §3).
-	titleModel = "longcat-2.5-preview-free"
+	// titleModel is used for the one-shot auto-title call (contract §3). It is a
+	// free Zen model, so titles never spend Go quota (separate allowance).
+	titleModel = "mimo-v2.6-flash-free"
 
 	// Vision image input (Phase 5.1): the SPA sends up to a few inline image
 	// data URIs with a message when the conversation's model can see images.
@@ -616,9 +617,9 @@ func (s *Server) autoTitle(ctx context.Context, convID, apiKey, firstUser, first
 	prompt := "Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\n" +
 		"User: " + truncateRunes(firstUser, 500) + "\n" +
 		"Assistant: " + truncateRunes(firstAssistant, 500)
-	// The free title model is a reasoning model, so the cap must leave room
-	// for reasoning tokens plus the actual title after them.
-	t, err := s.up.ChatOnce(ctx, apiKey, convID, titleModel,
+	// 200 tokens is ample for a short title; the prompt keeps the model from
+	// spending the budget on preamble. Zen free models bill a separate quota.
+	t, err := s.up.ZenChatOnce(ctx, apiKey, convID, titleModel,
 		[]upstream.Message{{Role: "user", Content: prompt}}, 200)
 	if err != nil {
 		s.log.Warn("auto-title call failed, using fallback", "error", err)

@@ -59,7 +59,7 @@ func TestCostMicros(t *testing.T) {
 		at         time.Time
 		want       int64
 	}{
-		{"free model is always zero", mustModel("longcat-2.5-preview-free"), 100000, 50000, 0, offPeak, 0},
+		{"free model is always zero", mustModel("beam-free"), 100000, 50000, 0, offPeak, 0},
 		// 1000·0.95 + 1000·4.00 = 950 + 4000
 		{"simple input+output", mustModel("kimi-k2.7-code"), 1000, 1000, 0, offPeak, 4950},
 		// 600·0.95 + 400·0.19 + 100·4.00 = 570 + 76 + 400
@@ -69,9 +69,9 @@ func TestCostMicros(t *testing.T) {
 		// 272001·0.20 + 100·0.75 = 54400.2 + 75 = 54475.2 → 54475
 		{"tier rates apply above threshold", mustModel("gpt-6-luna"), 272001, 100, 0, offPeak, 54475},
 		// 10000·0.15 + 1000·0.60 = 1500 + 600
-		{"deepseek off-peak base rates", mustModel("deepseek-v4-flash"), 10000, 1000, 0, offPeak, 2100},
+		{"deepseek off-peak base rates", mustModel("deepseek-v4.1-flash"), 10000, 1000, 0, offPeak, 2100},
 		// 10000·0.30 + 1000·1.20 = 3000 + 1200
-		{"deepseek peak rates", mustModel("deepseek-v4-flash"), 10000, 1000, 0, peak, 4200},
+		{"deepseek peak rates", mustModel("deepseek-v4.1-flash"), 10000, 1000, 0, peak, 4200},
 		// 4000·1.32 + 1000·0.044 + 500·3.96 = 5280 + 44 + 1980
 		{"deepseek pro peak with cache", mustModel("deepseek-v4-pro"), 5000, 500, 1000, peak, 7304},
 		// 1·2.501 = 2.501 → 3
@@ -90,8 +90,8 @@ func TestCostMicros(t *testing.T) {
 }
 
 func TestRegistryShape(t *testing.T) {
-	if len(Registry) != 23 {
-		t.Errorf("registry has %d models, want 23", len(Registry))
+	if len(Registry) != 19 {
+		t.Errorf("registry has %d models, want 19", len(Registry))
 	}
 	seen := make(map[string]bool, len(Registry))
 	for _, m := range Registry {
@@ -112,6 +112,23 @@ func TestRegistryShape(t *testing.T) {
 		if s[i-1].OutputPerM > s[i].OutputPerM {
 			t.Errorf("Sorted() not ascending at %q (%v) > %q (%v)",
 				s[i-1].ID, s[i-1].OutputPerM, s[i].ID, s[i].OutputPerM)
+		}
+	}
+}
+
+// Retired IDs must stay resolvable (existing conversations reference them) but
+// must never be offered for new chats.
+func TestLegacyModels(t *testing.T) {
+	offered := make(map[string]bool, len(Sorted()))
+	for _, m := range Sorted() {
+		offered[m.ID] = true
+	}
+	for _, id := range []string{"longcat-2.5-preview-free", "deepseek-v4-flash", "grok-4.6"} {
+		if _, ok := ByID(id); !ok {
+			t.Errorf("legacy model %q should still resolve", id)
+		}
+		if offered[id] {
+			t.Errorf("legacy model %q must not appear in Sorted()", id)
 		}
 	}
 }

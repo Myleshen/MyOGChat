@@ -16,8 +16,18 @@ import (
 	"time"
 )
 
-// BaseURL is the OpenCode Go API base (contract §4).
-const BaseURL = "https://opencode.ai/zen/go/v1"
+// BaseURL is the OpenCode Go inference base for the OpenAI-style protocols
+// (chat completions and responses). The legacy /zen/go/v1 path still routes to
+// the same backend but the protocol-scoped base is canonical (contract §4).
+const BaseURL = "https://opencode.ai/inference/go/openai/v1"
+
+// ModelsURL lists the model catalog and doubles as the credential check:
+// without a key it is public, with an unknown key it answers 401.
+const ModelsURL = "https://opencode.ai/inference/go/v1/models"
+
+// ZenBaseURL serves the free model catalog, which draws on a quota separate
+// from Go. Used for cheap helper calls such as auto-titles.
+const ZenBaseURL = "https://opencode.ai/zen/v1"
 
 // userAgent is required by the upstream ToS on every request.
 const userAgent = "myogchat/1.0"
@@ -196,37 +206,35 @@ type Params struct {
 // Client calls the OpenCode Go API. The bearer key is supplied per request
 // (per-user keys, §2.1), so a single Client serves every user.
 type Client struct {
-	hc      *http.Client
-	baseURL string // defaults to BaseURL; overridable in tests
+	hc        *http.Client
+	baseURL   string // defaults to BaseURL; overridable in tests
+	modelsURL string // defaults to ModelsURL; overridable in tests
+	zenURL    string // defaults to ZenBaseURL; overridable in tests
 }
 
 // NewClient returns a Client. The HTTP client has no overall timeout; every
 // call is bounded by its context.
 func NewClient() *Client {
-	return &Client{hc: &http.Client{}, baseURL: BaseURL}
+	return &Client{hc: &http.Client{}, baseURL: BaseURL, modelsURL: ModelsURL, zenURL: ZenBaseURL}
 }
 
-// ValidateKey checks an API key with a minimal (free-model) completion. The
-// public /models endpoint does not authenticate, but completions do.
+// ValidateKey checks an API key against the model catalog, which answers 401
+// for a credential the gateway does not recognise. It is a catalog read, not a
+// completion: it costs no usage and does not depend on any model staying in the
+// catalog (the previous free-model probe broke when that model was retired).
 func (c *Client) ValidateKey(ctx context.Context, apiKey string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	payload := map[string]any{
-		"model":      "longcat-2.5-preview-free",
-		"max_tokens": 1,
-		"stream":     false,
-		"messages":   []Message{{Role: "user", Content: "hi"}},
+	url := c.modelsURL
+	if url == "" {
+		url = ModelsURL
 	}
-	body, err := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("x-opencode-session", "key-check")
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := c.hc.Do(req)
@@ -239,10 +247,10 @@ func (c *Client) ValidateKey(ctx context.Context, apiKey string) error {
 		return errors.New("invalid API key")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("upstream HTTP %d", resp.StatusCode)
+		return fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 	// Guard against gateways that return 200 with an error body.
-	if bytes.Contains(snippet, []byte("\"error\"")) && !bytes.Contains(snippet, []byte("\"choices\"")) {
+	if bytes.Contains(snippet, []byte("\"error\"")) && !bytes.Contains(snippet, []byte("\"data\"")) {
 		return errors.New("invalid API key")
 	}
 	return nil
@@ -278,9 +286,24 @@ func (c *Client) Stream(ctx context.Context, p Params) <-chan Event {
 	return out
 }
 
-// ChatOnce performs one non-streaming chat-completions call and returns the
-// assistant message content. Used by the auto-title feature (contract §3).
+// ChatOnce performs one non-streaming chat-completions call on the Go endpoint
+// and returns the assistant message content (used for image-prompt enhancement).
 func (c *Client) ChatOnce(ctx context.Context, apiKey, sessionID, model string, msgs []Message, maxTokens int) (string, error) {
+	return c.chatOnceAt(ctx, c.baseURL, apiKey, sessionID, model, msgs, maxTokens)
+}
+
+// ZenChatOnce is ChatOnce against the free Zen catalog. Free models bill a
+// separate quota from Go, so short helper calls (auto-titles) cost nothing.
+func (c *Client) ZenChatOnce(ctx context.Context, apiKey, sessionID, model string, msgs []Message, maxTokens int) (string, error) {
+	base := c.zenURL
+	if base == "" {
+		base = ZenBaseURL
+	}
+	return c.chatOnceAt(ctx, base, apiKey, sessionID, model, msgs, maxTokens)
+}
+
+// chatOnceAt performs one non-streaming chat-completions call against base.
+func (c *Client) chatOnceAt(ctx context.Context, base, apiKey, sessionID, model string, msgs []Message, maxTokens int) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	payload := map[string]any{
@@ -289,7 +312,7 @@ func (c *Client) ChatOnce(ctx context.Context, apiKey, sessionID, model string, 
 		"max_tokens": maxTokens,
 		"stream":     false,
 	}
-	resp, err := c.do(ctx, "/chat/completions", sessionID, apiKey, payload)
+	resp, err := c.doAt(ctx, base, "/chat/completions", sessionID, apiKey, payload)
 	if err != nil {
 		return "", err
 	}
@@ -314,14 +337,20 @@ func (c *Client) ChatOnce(ctx context.Context, apiKey, sessionID, model string, 
 	return out.Choices[0].Message.Content, nil
 }
 
-// do issues one POST with the required headers and returns the response if
-// its status is 2xx. Non-2xx yields an error with status + body snippet.
+// do issues one POST against the Go base with the required headers and returns
+// the response if its status is 2xx. Non-2xx yields an error with status +
+// body snippet.
 func (c *Client) do(ctx context.Context, path, sessionID, apiKey string, payload any) (*http.Response, error) {
+	return c.doAt(ctx, c.baseURL, path, sessionID, apiKey, payload)
+}
+
+// doAt is do against an explicit base URL (the free Zen catalog differs).
+func (c *Client) doAt(ctx context.Context, base, path, sessionID, apiKey string, payload any) (*http.Response, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

@@ -20,7 +20,7 @@ import (
 const (
 	// DefaultVisionModel is the recommended chat-dialect vision model: cheap,
 	// already registered, and OCR-grade.
-	DefaultVisionModel = "deepseek-v4-flash-vision-exp"
+	DefaultVisionModel = "deepseek-v4.1-flash"
 	// DefaultVisionPrompt asks for a verbatim transcription and nothing else.
 	DefaultVisionPrompt = "You are a precise OCR engine. Transcribe ALL text visible in this image exactly as written. " +
 		"Preserve the original language(s); never translate. Preserve line breaks and reading order; approximate tables " +
