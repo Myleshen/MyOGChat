@@ -31,13 +31,40 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 | Tunnel | Cloudflare Tunnel (docker container `cloudflaretunnel`, dashboard-managed) → `http://raspberrypi.local:8787`. Owner manages the CF dashboard. |
 | Repo on Pi | `~/softwares/MyOGChat` (checkout) + `~/softwares/MyOGChat.git` (bare relay — see "Deploy") |
 
-**Deployed commit:** `5e0a379` (Phase 5 complete). The sandbox Python image
+**Deployed commit:** `929a877` (OpenCode Go endpoint/key/catalog migration — see
+"Upstream migration (2026-11-01)"). The sandbox Python image
 (`myogchat-sandbox-python`, for 5.8 file output) is built on the Pi via
 `deploy/sandbox-setup.sh`.
 
 > The Pi has **no Go toolchain** and **no GitHub key**. Builds are cross-compiled
 > on the workstation and shipped. The Pi checkout pulls from the local bare relay
 > (`git pull local main`), not GitHub.
+
+## Upstream migration (2026-11-01)
+
+OpenCode reworked the Go surface; the app was following the old shape and broke
+in two independent ways.
+
+1. **Canonical base moved** to `https://opencode.ai/inference/go/openai/v1`
+   (chat + responses). `https://opencode.ai/zen/go/v1` still routes but is
+   legacy. Catalog: `GET .../inference/go/v1/models`; usage:
+   `GET .../inference/go/v1/usage`.
+2. **Keys were regenerated in the new console.** Old `oc_sk_…` keys now fail
+   every Go *and* Zen endpoint with `401 Invalid credential`. This is a
+   credential problem, not a code bug: create a fresh personal key.
+3. **The key check no longer uses a model.** It was a completion on
+   `longcat-2.5-preview-free`; when that model was retired every `PUT
+   /api/me/key` returned `400 key check failed`. Now it is
+   `GET /inference/go/v1/models` (401/403 → `invalid API key`).
+4. **Catalog churn.** Registry refreshed to the 19 current chat/responses
+   models; 8 retired IDs stay resolvable (`models.legacy`) so old conversations
+   still load. Vision default is now `deepseek-v4.1-flash` (the old
+   `deepseek-v4-flash-vision-exp` was retired).
+5. **Auto-titles stay free** on the separate Zen quota with
+   `mimo-v2.6-flash-free` (`ZenChatOnce`), never spending Go usage.
+
+A key is needed in **Settings → API key** (per-user, overrides the env key); the
+env `OPENCODE_API_KEY` remains the shared server key fallback.
 
 ## Repo map
 
@@ -238,8 +265,13 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
   cache-busting) it self-heals when the edge cache for `/sw.js` expires.
 - **`pkill -f <pattern>`** can match your own shell command and kill it — use
   `pkill -x <name>` or a pattern that won't match the command line.
-- **`/zen/go/v1/models` is public** (200 with no auth); only completions
-  authenticate. Key validation uses a minimal free-model completion.
+- **`/inference/go/v1/models` is public** (200 with no auth); with an unknown or
+  revoked key it returns `401 Invalid credential`. Key validation is exactly
+  `GET` that URL with the caller's key — deliberately never a completion, so a
+  retired model cannot break key saving (the old check used
+  `longcat-2.5-preview-free`, which was retired, making every save return 400).
+- **Free models are on Zen** (`https://opencode.ai/zen/v1`), a quota separate
+  from Go. Auto-titles use `mimo-v2.6-flash-free` there via `ZenChatOnce`.
 - **Split-horizon DNS**: on the owner's LAN, `chat.example.com` resolves to
   `raspberrypi.local` (the Pi), not Cloudflare. Off-LAN it goes through the tunnel.
 - The **`rpi`** shell alias (`ssh pi@raspberrypi.local`) exists on the owner's

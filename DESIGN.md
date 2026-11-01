@@ -21,11 +21,15 @@ and Cloudflare Tunnel.
 ## Architecture
 
 ```
-browser (PWA) ──▶ Go binary :8787 ──▶ https://opencode.ai/zen/go/v1
+browser (PWA) ──▶ Go binary :8787 ──▶ https://opencode.ai/inference/go/openai/v1
                    │  embedded SPA      ├─ /chat/completions  (chat dialect)
                    │  SQLite (WAL)      └─ /responses         (responses dialect)
                    └─ hourly retention janitor
 ```
+
+Title generation is the exception: it calls the **free Zen catalog**
+(`https://opencode.ai/zen/v1`) on a quota separate from Go, so titles cost
+nothing.
 
 - **Backend**: Go, stdlib `net/http` only. SQLite via `modernc.org/sqlite`
   (pure Go, no cgo → trivial `GOARCH=arm64` cross-compile). Frontend embedded
@@ -76,9 +80,15 @@ points to `http://raspberrypi.local:8787`.
 - **Settings** (browser-local): theme (system/light/dark), thinking display,
   token-speed display, Enter-to-send, sidebar collapse.
 
-## Verified upstream behavior (probed 2026-10-08)
+## Verified upstream behavior (probed 2026-11-01)
 
-- `GET /zen/go/v1/models` — works with Bearer key, lists all models.
+- **Base URL**: canonical Go API is `https://opencode.ai/inference/go/openai/v1`
+  (chat + responses). The legacy `https://opencode.ai/zen/go/v1` still routes to
+  the same backend but is deprecated in favor of `/inference/go/...`.
+- `GET /inference/go/v1/models` — public (200 with no auth); with an unknown or
+  revoked key it answers `401 Invalid credential`. This is the key check: no
+  completion (and therefore no model retirement) can break it.
+- `GET /inference/go/v1/usage` — usage/quota, Bearer key required.
 - `POST /chat/completions` — streams `chat.completion.chunk` SSE;
   `reasoning_content` delta present on reasoning models (Kimi, DeepSeek);
   `stream_options:{include_usage:true}` yields final usage chunk.
@@ -89,3 +99,12 @@ points to `http://raspberrypi.local:8787`.
   (never visible). Streams standard OpenAI Responses SSE:
   `response.output_text.delta` events, `response.completed` carries `usage`
   (`input_tokens`, `output_tokens`, `input_tokens_details.cached_tokens`).
+- **Free models live on Zen** (`https://opencode.ai/zen/v1`), a quota separate
+  from Go; anonymous use is limited (`429 FreeUsageLimitError`), a valid key is
+  required. Current free IDs include `mimo-v2.6-flash-free`,
+  `deepseek-v4.1-flash-free`, `glm-5.3-flash-free`, `beam-free`. Auto-titles use
+  `mimo-v2.6-flash-free`.
+- **Keys are per console generation.** Keys issued by the old console were
+  invalidated in the migration; an affected key fails every Go and Zen endpoint
+  with `401 Invalid credential`. The fix is a new personal key, not a code
+  change.

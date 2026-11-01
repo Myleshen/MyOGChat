@@ -106,7 +106,9 @@ Server flow:
 5. On completion: insert assistant message (content, reasoning, usage, cost_micros),
    bump conversation `updated_at`.
 6. **Auto-title**: if conversation `title` is still empty after the first assistant
-   reply, make ONE non-streaming chat-dialect call to `longcat-2.5-preview-free`:
+   reply, make ONE non-streaming chat-dialect call to `mimo-v2.6-flash-free` on
+   the **free Zen catalog** (`POST https://opencode.ai/zen/v1/chat/completions`,
+   a quota separate from Go, so titles never spend the subscription):
    messages = `[{"role":"user","content":"Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\nUser: <first user msg, truncated to 500 chars>\nAssistant: <first assistant reply, truncated to 500 chars>"}]`,
    `max_tokens: 20`. Sanitize to one line ≤80 chars. On any failure use the first
    40 chars of the first user message. Persist title and include it in `done`.
@@ -167,14 +169,14 @@ type Event struct {
 }
 ```
 
-**chat dialect** → `POST https://opencode.ai/zen/go/v1/chat/completions`:
+**chat dialect** → `POST https://opencode.ai/inference/go/openai/v1/chat/completions`:
 `{"model":…, "messages":[{"role","content"}…], "stream":true,
 "stream_options":{"include_usage":true}}`. Parse `chat.completion.chunk` lines:
 `choices[0].delta.reasoning_content` → reasoning; `choices[0].delta.content` →
 text; final chunk with empty `choices` carries `usage` (`prompt_tokens`,
 `completion_tokens`, `prompt_tokens_details.cached_tokens`).
 
-**responses dialect** → `POST https://opencode.ai/zen/go/v1/responses`:
+**responses dialect** → `POST https://opencode.ai/inference/go/openai/v1/responses`:
 `{"model":…, "input":[{"role","content"}…], "store":false, "stream":true,
 "max_output_tokens":4096, "reasoning":{"effort":<effort or "medium">,
 "summary":"auto"}}`. Parse SSE events: `response.output_text.delta` (`delta`
@@ -185,46 +187,65 @@ fire); `response.completed` → `response.usage` mapped as
 
 Both: 5-minute overall timeout, non-2xx → `error` event with status + body snippet.
 
+Endpoints and credentials (checked live 2026-11-01):
+
+- **Canonical base**: `https://opencode.ai/inference/go/openai/v1` for both
+  dialects. The legacy `https://opencode.ai/zen/go/v1` still routes to the same
+  backend but is no longer used.
+- **Key check** (§9.7): `GET https://opencode.ai/inference/go/v1/models` with the
+  key as `Bearer`. Public without auth; `401 Invalid credential` for an unknown
+  key. Deliberately not a completion — model retirements must not break key
+  saving.
+- **Free helper calls**: `https://opencode.ai/zen/v1` is the free model catalog
+  on a quota separate from Go. `ZenChatOnce` targets it; auto-titles use
+  `mimo-v2.6-flash-free` there so they cost nothing and never touch Go usage.
+
 ## 5. Model registry (`internal/models`) — static, exactly these
 
 `dialect` is `chat` unless noted. Prices = USD per 1M tokens
 (input / output / cache-read). `tier_threshold`: when `prompt_tokens` exceed it,
 use tier prices (tier_input/tier_output/tier_cache).
 
-| id | name | in | out | cache | tier_threshold | tier in/out/cache |
-|---|---|---|---|---|---|---|
-| longcat-2.5-preview-free | LongCat 2.5 Free | 0 | 0 | 0 | — | — |
-| mimo-v2.6-flash | MiMo V2.6 Flash | 0.14 | 0.28 | 0.0028 | — | — |
-| mimo-v2.5 | MiMo V2.5 | 0.14 | 0.28 | 0.0028 | — | — |
-| hy3 | Hy3 | 0.14 | 0.58 | 0.035 | — | — |
-| glm-5.3-flash | GLM-5.3 Flash | 0.15 | 0.50 | 0.03 | — | — |
-| space-bunny | Space Bunny | 0.15 | 0.60 | 0.03 | — | — |
-| longcat-2.0 | LongCat 2.0 | 0.30 | 1.20 | 0.006 | — | — |
-| mimo-v2.6-pro | MiMo V2.6 Pro | 0.435 | 0.87 | 0.003625 | — | — |
-| mimo-v2.5-pro | MiMo V2.5 Pro | 0.435 | 0.87 | 0.003625 | — | — |
-| deepseek-v4-pro | DeepSeek V4 Pro | 0.66 | 1.98 | 0.022 | peak: 1.32/3.96/0.044 | |
-| deepseek-v4.1-flash | DeepSeek V4.1 Flash | 0.15 | 0.60 | 0.003 | peak: 0.30/1.20/0.006 | |
-| deepseek-v4-flash | DeepSeek V4 Flash | 0.15 | 0.60 | 0.003 | peak: 0.30/1.20/0.006 | |
-| deepseek-v4-flash-vision-exp | DeepSeek V4 Flash Vision | 0.15 | 0.60 | 0.003 | peak: 0.30/1.20/0.006 | |
-| hy4-preview | Hy4 Preview | 0.834 | 2.501 | 0.042 | — | — |
-| kimi-k2.7-code | Kimi K2.7 Code | 0.95 | 4.00 | 0.19 | — | — |
-| kimi-k2.6 | Kimi K2.6 | 0.95 | 4.00 | 0.16 | — | — |
-| glm-5.2 | GLM-5.2 | 1.40 | 4.40 | 0.26 | — | — |
-| glm-5.3 | GLM-5.3 | 1.40 | 4.40 | 0.26 | — | — |
-| kimi-k3 | Kimi K3 | 3.00 | 15.00 | 0.30 | — | — |
-| **gpt-6-luna** | GPT 6 Luna | 0.10 | 0.50 | 0.01 | 272000 → 0.20/0.75/0.02 | responses, effort |
-| **gpt-5.6-luna** | GPT 5.6 Luna | 0.20 | 1.20 | 0.02 | 272000 → 0.40/1.80/0.04 | responses, effort |
-| **grok-4.7** | Grok 4.7 | 2.00 | 6.00 | 0.50 | 200000 → 4.00/12.00/1.00 | responses, effort |
-| **grok-4.6** | Grok 4.6 | 2.00 | 6.00 | 0.50 | 200000 → 4.00/12.00/1.00 | responses, effort |
+| id | name | in | out | cache | tier_threshold | tier in/out/cache | notes |
+|---|---|---|---|---|---|---|---|
+| beam-free | Beam Free | 0 | 0 | 0 | — | — | |
+| mimo-v2.6-flash | MiMo V2.6 Flash | 0.14 | 0.28 | 0.0028 | — | — | vision |
+| glm-5.3-flash | GLM-5.3 Flash | 0.15 | 0.50 | 0.03 | — | — | thinking, vision |
+| **gpt-6-luna** | GPT 6 Luna | 0.10 | 0.50 | 0.01 | 272000 → 0.20/0.75/0.02 | | responses, effort, vision |
+| hy3 | Hy3 | 0.14 | 0.58 | 0.035 | — | — | |
+| minimax-m3.1-flash | MiniMax M3.1 Flash | 0.15 | 0.60 | 0.015 | — | — | vision |
+| deepseek-v4.1-flash | DeepSeek V4.1 Flash | 0.15 | 0.60 | 0.003 | peak: 0.30/1.20/0.006 | | thinking, vision |
+| mimo-v2.6-pro | MiMo V2.6 Pro | 0.435 | 0.87 | 0.003625 | — | — | vision |
+| longcat-2.0 | LongCat 2.0 | 0.30 | 1.20 | 0.006 | — | — | thinking |
+| **gpt-5.6-luna** | GPT 5.6 Luna | 0.20 | 1.20 | 0.02 | 272000 → 0.40/1.80/0.04 | | responses, effort, vision |
+| deepseek-v4-pro | DeepSeek V4 Pro | 0.66 | 1.98 | 0.022 | peak: 1.32/3.96/0.044 | | thinking |
+| hy4-preview | Hy4 Preview | 0.834 | 2.501 | 0.042 | — | — | |
+| step-5-preview | Step 5 Preview | 1.00 | 2.70 | 0.10 | — | — | vision |
+| kimi-k2.7-code | Kimi K2.7 Code | 0.95 | 4.00 | 0.19 | — | — | thinking, vision |
+| glm-5.2 | GLM-5.2 | 1.40 | 4.40 | 0.26 | — | — | thinking |
+| glm-5.3 | GLM-5.3 | 1.40 | 4.40 | 0.26 | — | — | thinking |
+| **grok-4.7** | Grok 4.7 | 2.00 | 6.00 | 0.50 | 200000 → 4.00/12.00/1.00 | | responses, effort, vision |
+| kimi-k3.1-pro | Kimi K3.1 Pro | 2.00 | 10.00 | 0.20 | — | — | vision |
+| kimi-k3 | Kimi K3 | 3.00 | 15.00 | 0.30 | — | — | vision |
 
 DeepSeek peak hours: 01:00–04:00 and 06:00–10:00 UTC, **Mon–Fri**; all other
 times use base prices.
 
+**Retired IDs** are kept resolvable (`models.ByID`) so existing conversations
+still load and can be switched to a current model, but they never appear in
+`models.Sorted()` or `GET /api/models`: `longcat-2.5-preview-free`,
+`space-bunny`, `mimo-v2.5`, `mimo-v2.5-pro`, `deepseek-v4-flash`,
+`deepseek-v4-flash-vision-exp`, `kimi-k2.6`, `grok-4.6`.
+
+The free Zen catalog (`https://opencode.ai/zen/v1`) is a separate quota and is
+**not** part of this registry; the app only uses `mimo-v2.6-flash-free` there
+for auto-titles.
+
 `Model` also carries `vision bool` (exposed in `/api/models`), true for the
-models that accept image input (feature 2.13): `deepseek-v4-flash-vision-exp`,
-`deepseek-v4.1-flash`, `gpt-6-luna`, `gpt-5.6-luna`, `grok-4.7`, `grok-4.6`,
-`glm-5.3-flash`, `mimo-v2.6-flash`, `mimo-v2.5`, `kimi-k3`, `kimi-k2.7-code`,
-`kimi-k2.6`, `space-bunny`, `longcat-2.5-preview-free`.
+models that accept image input (feature 2.13): `deepseek-v4.1-flash`,
+`gpt-6-luna`, `gpt-5.6-luna`, `grok-4.7`, `glm-5.3-flash`, `mimo-v2.6-flash`,
+`minimax-m3.1-flash`, `mimo-v2.6-pro`, `step-5-preview`, `kimi-k3`,
+`kimi-k3.1-pro`, `kimi-k2.7-code`.
 
 **Cost formula** (integer micros, `math.Round`):
 `cost_micros = (prompt−cached)·in_rate + cached·cache_rate + completion·out_rate`
@@ -509,7 +530,7 @@ unchanged.
   are downscaled before sending.
 - Config: `MYOGCHAT_OCR_ENGINE` (`tesseract`|`vision`|`auto`, default
   `tesseract`), `MYOGCHAT_OCR_VISION_MODEL` (default
-  `deepseek-v4-flash-vision-exp`), `MYOGCHAT_OCR_VISION_DETAIL` (default `high`),
+  `deepseek-v4.1-flash`), `MYOGCHAT_OCR_VISION_DETAIL` (default `high`),
   `MYOGCHAT_OCR_VISION_MAX_TOKENS` (default 2048),
   `MYOGCHAT_OCR_VISION_TIMEOUT` (default 90s), `MYOGCHAT_OCR_MAX_IMAGE_DIM`
   (default 2048). `auto` is decided once at startup by a Docker preflight
@@ -704,6 +725,24 @@ Admins do **not** see other users' chats (only user administration).
   registrations"** toggle (`GET`/`PATCH /api/settings`).
 - Any `/api` `401` returns to the login screen; `403` on admin panels shows a
   toast and is hidden for non-admins.
+
+### 9.7 Per-user OpenCode key (BYOK)
+
+- `GET /api/me/key` → `200 {"has_key","key_hint","server_key_present",
+  "shared_key_available","using_shared_key","group_key_available",
+  "using_group_key","group_name"}`. `key_hint` is the last 4 characters of the
+  caller's key (`""` when shorter or absent).
+- `PUT /api/me/key` `{"api_key": string}` → `200 {"has_key":true,"key_hint":"…"}`.
+  `""` clears the caller's key → `200 {"has_key":false}`. A non-empty key is
+  validated **before** storage with `upstream.Client.ValidateKey`:
+  `GET https://opencode.ai/inference/go/v1/models` with the key as `Bearer`.
+  `401`/`403` → `400 {"error":"key check failed: invalid API key"}`; any other
+  non-2xx → `400 {"error":"key check failed: upstream HTTP <code>: <snippet>"}`.
+  No chat model is involved, so catalog churn cannot break key saving. The key
+  is encrypted with `internal/secret` before it is stored and never returned.
+- Resolution order for every upstream call (§2.1/§2.2): the user's own key → a
+  shared group key → the shared server key (when `share_server_key` is on) →
+  `errNoKey` (`no OpenCode Go API key configured — add one in Settings`).
 
 ## 10. Code sandbox (2.6 Python / 2.7 Bash)
 

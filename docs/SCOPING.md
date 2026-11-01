@@ -101,8 +101,8 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
 - **Finding:** the Go gateway's `/models` exposes no modality metadata; the real
   source is models.dev + the docs. Image-input models include `gpt-6-luna` /
   `gpt-5.6-luna` (responses; text/image/pdf), `grok-4.7/4.6` (responses),
-  `deepseek-v4.1-flash` and `deepseek-v4-flash-vision-exp` (chat). Note the Lunas
-  **400 on `/chat/completions`** (responses-only).
+  `deepseek-v4.1-flash`, `glm-5.3-flash`, `mimo-v2.6-flash` (chat). Note the
+  Lunas **400 on `/chat/completions`** (responses-only).
 - **Request shapes (confirmed):**
   - chat → `content[]` with `{"type":"image_url","image_url":{"url":"data:image/png;base64,…","detail":"high"}}`
   - responses → `input[]` with `{"type":"input_image","image_url":"data:…","detail":"high"}`
@@ -113,7 +113,7 @@ CalDAV (3.3) before Google REST; OSM default before Google (3.4).
   key from `resolveKey` (BYOK → group → shared). Config
   `MYOGCHAT_OCR_ENGINE=tesseract|vision|auto` — default **`tesseract`**, vision
   opt-in, `auto` decided at startup via a Docker preflight. Recommended model:
-  `deepseek-v4-flash-vision-exp` (chat); `gpt-6-luna` as the cheap-input alt.
+  `deepseek-v4.1-flash` (chat, default); `gpt-6-luna` as the cheap-input alt.
 - **Tests/pitfalls:** httptest both shapes; `FallbackEngine` on `ErrUnavailable`;
   base64 size, JPEG/PNG/GIF/WebP only, short timeouts, single-shot enforcement,
   `extract.ErrOCR` mapping.
