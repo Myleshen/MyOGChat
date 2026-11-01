@@ -83,3 +83,7 @@ Logs: `journalctl --user -u myogchat -f`.
 - Auto-titles run on the free Zen catalog (`mimo-v2.6-flash-free`), a quota
   separate from Go, so they cost nothing.
 - Muse Spark models are intentionally excluded (they train on your prompts).
+
+## License
+
+[MIT](LICENSE) © 2026 Myleshen Praburam.
