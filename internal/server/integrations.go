@@ -287,6 +287,8 @@ func (s *Server) toolRegistryWith(ctx context.Context, u store.User, onImage fun
 	// (or the optional env fallback).
 	if c, ok := s.linkwardenClientFor(ctx, u); ok {
 		reg.Add(tools.NewLinkwardenSearchTool(c))
+		reg.Add(tools.NewLinkwardenTagsTool(c))
+		reg.Add(tools.NewLinkwardenCollectionsTool(c))
 		reg.Add(tools.NewLinkwardenSaveTool(c))
 	}
 	if b, ok := s.calendarBackend(ctx, u.ID); ok {

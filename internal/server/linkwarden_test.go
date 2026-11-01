@@ -84,12 +84,12 @@ func TestLinkwardenConfigForResolution(t *testing.T) {
 		t.Fatalf("own config = %q, %q, %v; want the user's instance", url, tok, ok)
 	}
 
-	// A client is built and both tools are registered from the caller's config.
+	// A client is built and all tools are registered from the caller's config.
 	if _, ok := srv.linkwardenClientFor(ctx, stored); !ok {
 		t.Fatal("expected a Linkwarden client for a configured user")
 	}
 	reg := srv.toolRegistry(ctx, stored)
-	for _, name := range []string{"linkwarden_search", "linkwarden_save"} {
+	for _, name := range []string{"linkwarden_search", "linkwarden_tags", "linkwarden_collections", "linkwarden_save"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s not registered for a configured user", name)
 		}

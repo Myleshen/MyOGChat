@@ -3,9 +3,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -160,5 +162,173 @@ func TestLinkwardenToolsFormat(t *testing.T) {
 	}
 	if _, err := save.Run(context.Background(), json.RawMessage(`{"url":"notaurl"}`)); err == nil {
 		t.Fatal("save should reject a relative url")
+	}
+}
+
+func TestLinkwardenSearchOptions(t *testing.T) {
+	var got url.Values
+	c, _ := newTestLinkwarden(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		got = r.URL.Query()
+		links := make([]string, 0, 6)
+		for i := 1; i <= 6; i++ {
+			links = append(links, fmt.Sprintf(`{"id":%d,"name":"L%d","url":"https://e%d.example","tags":[{"id":7,"name":"dev"}],"collection":{"id":9,"name":"Read"}}`, i, i, i))
+		}
+		io.WriteString(w, `{"data":{"links":[`+strings.Join(links, ",")+`],"nextCursor":null}}`)
+	})
+	links, err := c.SearchOptions(context.Background(), LinkwardenListOptions{
+		Query:        "go",
+		Sort:         "name_desc",
+		Limit:        5,
+		TagID:        7,
+		CollectionID: 9,
+		PinnedOnly:   true,
+	})
+	if err != nil {
+		t.Fatalf("SearchOptions: %v", err)
+	}
+	if len(links) != 5 {
+		t.Fatalf("len(links) = %d, want 5", len(links))
+	}
+	for key, want := range map[string]string{
+		"sort": "3", "searchQueryString": "go", "tagId": "7",
+		"collectionId": "9", "pinnedOnly": "true",
+	} {
+		if v := got.Get(key); v != want {
+			t.Errorf("%s = %q, want %q", key, v, want)
+		}
+	}
+}
+
+func TestLinkwardenTags(t *testing.T) {
+	var got url.Values
+	c, _ := newTestLinkwarden(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/tags" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		got = r.URL.Query()
+		io.WriteString(w, `{"data":{"tags":[
+			{"id":1,"name":"dev","_count":{"links":12}},
+			{"id":2,"name":"go"}
+		]}}`)
+	})
+	tags, err := c.Tags(context.Background(), LinkwardenTagOptions{Search: "de", Sort: "count_desc", Limit: 10})
+	if err != nil {
+		t.Fatalf("Tags: %v", err)
+	}
+	if len(tags) != 2 || tags[0].Name != "dev" || tags[0].Links != 12 {
+		t.Fatalf("tags = %+v", tags)
+	}
+	if got.Get("search") != "de" || got.Get("sort") != "4" {
+		t.Errorf("query = %v", got)
+	}
+	out, err := NewLinkwardenTagsTool(c).Run(context.Background(), json.RawMessage(`{"sort":"count_desc"}`))
+	if err != nil || !strings.Contains(out, "dev (12 links)") || !strings.Contains(out, "- go") {
+		t.Fatalf("tags out = %q, err = %v", out, err)
+	}
+}
+
+func TestLinkwardenCollections(t *testing.T) {
+	c, _ := newTestLinkwarden(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/collections" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		io.WriteString(w, `{"response":[
+			{"id":2,"name":"Projects","parentId":1,"_count":{"links":4}},
+			{"id":3,"name":"Archive","isPublic":true},
+			{"id":1,"name":"Work"}
+		]}`)
+	})
+	cols, err := c.Collections(context.Background(), LinkwardenCollectionOptions{})
+	if err != nil {
+		t.Fatalf("Collections: %v", err)
+	}
+	if len(cols) != 3 || cols[0].Name != "Archive" || cols[1].Name != "Projects" || cols[1].Links != 4 {
+		t.Fatalf("collections = %+v", cols)
+	}
+	out, err := NewLinkwardenCollectionsTool(c).Run(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("collections tool: %v", err)
+	}
+	if !strings.Contains(out, "- Work / Projects (4 links)") || !strings.Contains(out, "- Archive (public)") {
+		t.Fatalf("collections out = %q", out)
+	}
+}
+
+func TestLinkwardenSearchResolvesFiltersAndFormats(t *testing.T) {
+	var searchQuery url.Values
+	c, _ := newTestLinkwarden(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/tags":
+			io.WriteString(w, `{"data":{"tags":[{"id":5,"name":"golang","_count":{"links":2}}]}}`)
+		case "/api/v1/collections":
+			io.WriteString(w, `{"response":[{"id":8,"name":"Reading"}]}`)
+		case "/api/v1/search":
+			searchQuery = r.URL.Query()
+			io.WriteString(w, `{"data":{"links":[{
+				"id":1,"name":"Go","url":"https://go.dev","description":"the language",
+				"createdAt":"2026-10-31T22:38:11Z","pinnedBy":[1],
+				"tags":[{"id":5,"name":"golang"}],
+				"collection":{"id":8,"name":"Reading"}
+			}]}}`)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	})
+	out, err := NewLinkwardenSearchTool(c).Run(context.Background(),
+		json.RawMessage(`{"query":"go","tag":"golang","collection":"Reading","sort":"newest","limit":5}`))
+	if err != nil {
+		t.Fatalf("search tool: %v", err)
+	}
+	if searchQuery.Get("tagId") != "5" || searchQuery.Get("collectionId") != "8" || searchQuery.Get("sort") != "0" {
+		t.Errorf("search query = %v", searchQuery)
+	}
+	for _, want := range []string{"folder: Reading", "tags: golang", "saved: 2026-10-31", "pinned", "the language"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestLinkwardenTagFilterPaginates(t *testing.T) {
+	var cursors []string
+	c, _ := newTestLinkwarden(t, func(w http.ResponseWriter, r *http.Request) {
+		cursor := r.URL.Query().Get("cursor")
+		cursors = append(cursors, cursor)
+		if cursor == "" {
+			io.WriteString(w, `{"data":{"links":[
+				{"id":3,"name":"Untagged"},
+				{"id":2,"name":"Tagged","tags":[{"id":5,"name":"dev"}]},
+				{"id":1,"name":"Untagged too"}
+			],"nextCursor":100}}`)
+			return
+		}
+		io.WriteString(w, `{"data":{"links":[
+			{"id":9,"name":"Older tagged","tags":[{"id":5,"name":"dev"}]}
+		],"nextCursor":null}}`)
+	})
+	links, err := c.SearchOptions(context.Background(), LinkwardenListOptions{TagID: 5, Limit: 2})
+	if err != nil {
+		t.Fatalf("SearchOptions: %v", err)
+	}
+	if len(links) != 2 || links[0].ID != 2 || links[1].ID != 9 {
+		t.Fatalf("links = %+v", links)
+	}
+	if len(cursors) != 2 || cursors[0] != "" || cursors[1] != "100" {
+		t.Fatalf("cursors = %v", cursors)
+	}
+}
+
+func TestLinkwardenUnknownSort(t *testing.T) {
+	c, _ := newTestLinkwarden(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("unexpected upstream request")
+	})
+	if _, err := c.SearchOptions(context.Background(), LinkwardenListOptions{Sort: "sideways"}); err == nil {
+		t.Fatal("SearchOptions should reject an unknown sort")
+	}
+	if _, err := c.Tags(context.Background(), LinkwardenTagOptions{Sort: "sideways"}); err == nil {
+		t.Fatal("Tags should reject an unknown sort")
 	}
 }

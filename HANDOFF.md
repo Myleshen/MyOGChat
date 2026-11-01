@@ -188,7 +188,7 @@ fix, deploy.
 | 2.2 | Groups & shared keys | ✅ shipped |
 | 2.3 | Files & PDF attachments | ✅ shipped |
 | 2.4 | Tools + web search | ✅ shipped (**web_search** is provider-agnostic: Tavily → Brave → Serper → DuckDuckGo fallback; DuckDuckGo needs no key. Serper + Brave `llm/context` added in 2.12) |
-| 2.8 | URL summarization + Linkwarden | ✅ shipped (**Linkwarden is per-user** — each user sets their own instance URL + token in Settings; optional `LINKWARDEN_URL`/`LINKWARDEN_TOKEN` env fallback) |
+| 2.8 | URL summarization + Linkwarden | ✅ shipped (**Linkwarden is per-user** — each user sets their own instance URL + token in Settings; optional `LINKWARDEN_URL`/`LINKWARDEN_TOKEN` env fallback; tools search/browse links with sorting, limits and tag/collection filters, plus tag and folder listings) |
 | 2.5 | OCR for images | ✅ shipped (`DockerTesseract`; needs `deploy/ocr-setup.sh` on the host) |
 | 2.6 | **Python sandbox** | ✅ shipped (`run_python`, hardened Docker sandbox; needs `deploy/sandbox-setup.sh` on the host) |
 | 2.7 | **Bash sandbox** | ✅ shipped (`run_bash`, same engine) |

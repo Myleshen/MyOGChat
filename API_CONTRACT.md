@@ -1195,11 +1195,17 @@ composer UI.
 ## 17. Linkwarden (per-user, 2.8)
 
 Each user connects **their own** Linkwarden instance (URL + API token); the
-`linkwarden_search` / `linkwarden_save` tools are registered per request from the
-**caller's** config (like the email/calendar tools). The old admin-global
-`linkwarden_url` / `linkwarden_token` settings are **removed**; the optional
-server-wide env fallback `LINKWARDEN_URL` + `LINKWARDEN_TOKEN` (both must be set)
-is used only when the caller has not stored their own instance.
+`linkwarden_search` / `linkwarden_tags` / `linkwarden_collections` /
+`linkwarden_save` tools are registered per request from the **caller's** config
+(like the email/calendar tools). `linkwarden_search` can search or list links
+(no query = list), with `sort` = `newest|oldest|name_asc|name_desc`, a `limit`
+(default 10, max 50), and optional `tag` / `collection` (name) and `pinned`
+filters. Tags and collections are browsable through `linkwarden_tags` (link
+counts, sortable) and `linkwarden_collections` (folders, nested paths, link
+counts). The old admin-global `linkwarden_url` / `linkwarden_token` settings are
+**removed**; the optional server-wide env fallback `LINKWARDEN_URL` +
+`LINKWARDEN_TOKEN` (both must be set) is used only when the caller has not stored
+their own instance.
 
 ### 17.1 Schema (additive)
 

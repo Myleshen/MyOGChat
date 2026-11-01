@@ -1,7 +1,7 @@
 // Package tools implements the agentic tool framework for MyOGChat (Phase
 // 2.4): a normalized Tool interface, an ordered per-request registry, and the
 // built-in tools — web_search (Tavily), fetch_url (readable-text extraction,
-// Phase 2.8) and the Linkwarden search/save pair.
+// Phase 2.8) and the Linkwarden search/browse/save tools.
 //
 // The package is deliberately free of upstream/server types so it can be unit
 // tested in isolation. The server bridges registry Specs to the upstream
