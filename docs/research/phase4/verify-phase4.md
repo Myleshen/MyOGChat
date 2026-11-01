@@ -243,7 +243,7 @@ orphan conversations:[(0,)]
 orphan messages:     [(0,)]
 ```
 
-`~/softwares/MyOGChat/myogchat user list` now shows only `Myleshen`. Attachment,
+`~/softwares/MyOGChat/myogchat user list` now shows only the admin. Attachment,
 conversation, and message rows owned by the temp user were cascade-deleted
 (`ON DELETE CASCADE`), leaving no orphans.
 
@@ -280,4 +280,4 @@ conversation, and message rows owned by the temp user were cascade-deleted
 - No secrets were printed or transmitted; all responses above are app-generated content
   intended for the requesting user (owner-scoped).
 - The temp user `p4verify` and all its rows were removed; the Pi is back to a single
-  user (`Myleshen`).
+  user (the admin).

@@ -107,7 +107,7 @@ func FetchReadable(ctx context.Context, hc *http.Client, rawURL string) (title, 
 	if err != nil {
 		return "", "", err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; MyOGChat/1.0; +https://chat.example.com)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; MyOGChat/1.0; +https://github.com/Myleshen/MyOGChat)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5")
 
 	resp, err := hc.Do(req)

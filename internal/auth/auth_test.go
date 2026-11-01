@@ -38,11 +38,11 @@ func TestValidateCredentials(t *testing.T) {
 	}{
 		{"valid", "alice", "alice@example.com", "supersecret", true},
 		{"username too short", "ab", "a@b.co", "supersecret", false},
-		{"username bad char", "my leshen", "a@b.co", "supersecret", false},
+		{"username bad char", "al ice", "a@b.co", "supersecret", false},
 		{"email missing @", "alice", "not-an-email", "supersecret", false},
 		{"email missing dot", "alice", "a@b", "supersecret", false},
 		{"password too short", "alice", "a@b.co", "short", false},
-		{"valid dots and dashes", "my-leshen.99", "x@y.z", "longenough", true},
+		{"valid dots and dashes", "alice-99.2", "x@y.z", "longenough", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

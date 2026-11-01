@@ -43,11 +43,11 @@ const attributionLine = "Source: " + OSMAttribution + " (ODbL)"
 
 // osmUserAgent identifies the app to the OSM stack. Nominatim's usage policy
 // requires a valid, app-identifying User-Agent (stock library UAs are rejected).
-const osmUserAgent = "myogchat/1.0 (+https://chat.example.com)"
+const osmUserAgent = "myogchat/1.0 (+https://github.com/Myleshen/MyOGChat)"
 
 // osmReferer is sent alongside the User-Agent (Nominatim accepts either; sending
 // both is safest).
-const osmReferer = "https://chat.example.com"
+const osmReferer = "https://github.com/Myleshen/MyOGChat"
 
 // geoTimeout bounds one provider request.
 const geoTimeout = 20 * time.Second

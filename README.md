@@ -55,7 +55,7 @@ workstation and installed as a systemd *user* service.
 ```sh
 cp deploy/env.example ~/.config/myogchat/env   # on the target; then fill it in
 chmod 600 ~/.config/myogchat/env
-deploy/deploy.sh pi@raspberrypi.local        # cross-compile arm64 + install
+deploy/deploy.sh pi@raspberrypi.local   # cross-compile arm64 + install
 ```
 
 Enable lingering once (needs sudo **on the target**) so the service starts at
