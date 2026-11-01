@@ -6,7 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Secrets live here (chmod 600): OPENCODE_API_KEY, MYOGCHAT_AUTH_TOKEN, ...
+# Secrets live here (chmod 600): OPENCODE_API_KEY and the optional
+# search/speech/imagegen keys, plus optional Linkwarden fallback credentials.
 EnvironmentFile=%h/.config/myogchat/env
 ExecStart=%h/.local/bin/myogchat
 Restart=always

@@ -403,13 +403,13 @@ func resolveZipPath(baseDir, href string) string {
 // --- HTML stripping ---
 
 var (
-	reScript      = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script\s*>`)
-	reStyle       = regexp.MustCompile(`(?is)<style\b[^>]*>.*?</style\s*>`)
-	reBreakTags   = regexp.MustCompile(`(?i)</(p|div|br|h[1-6]|li|tr|section|article|blockquote|pre)\s*>|<br\s*/?>`)
-	reAnyTag      = regexp.MustCompile(`(?s)<[^>]*>`)
-	reWhitespace  = regexp.MustCompile(`[ \t\f\v]+`)
-	reBlankLines  = regexp.MustCompile(`\n\s*\n\s*(\n\s*)+`)
-	htmlEntities  = map[string]string{
+	reScript     = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script\s*>`)
+	reStyle      = regexp.MustCompile(`(?is)<style\b[^>]*>.*?</style\s*>`)
+	reBreakTags  = regexp.MustCompile(`(?i)</(p|div|br|h[1-6]|li|tr|section|article|blockquote|pre)\s*>|<br\s*/?>`)
+	reAnyTag     = regexp.MustCompile(`(?s)<[^>]*>`)
+	reWhitespace = regexp.MustCompile(`[ \t\f\v]+`)
+	reBlankLines = regexp.MustCompile(`\n\s*\n\s*(\n\s*)+`)
+	htmlEntities = map[string]string{
 		"&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": `"`,
 		"&#39;": "'", "&apos;": "'", "&nbsp;": " ", "&mdash;": "—",
 		"&ndash;": "–", "&hellip;": "…", "&rsquo;": "’", "&lsquo;": "‘",

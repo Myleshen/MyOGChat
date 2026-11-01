@@ -57,7 +57,7 @@ func TestExtractDOCX(t *testing.T) {
 
 func TestExtractXLSX(t *testing.T) {
 	data := zipBytes(t, map[string]string{
-		"xl/workbook.xml": `<workbook/>`,
+		"xl/workbook.xml":      `<workbook/>`,
 		"xl/sharedStrings.xml": `<sst><si><t>Name</t></si><si><t>Alice</t></si></sst>`,
 		"xl/worksheets/sheet1.xml": `<worksheet><sheetData><row>
 <c t="s"><v>0</v></c><c t="s"><v>1</v></c></row></sheetData></worksheet>`,
@@ -107,7 +107,7 @@ func TestExtractODT(t *testing.T) {
 
 func TestExtractEPUB(t *testing.T) {
 	data := zipBytes(t, map[string]string{
-		"mimetype": "application/epub+zip",
+		"mimetype":               "application/epub+zip",
 		"META-INF/container.xml": `<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>`,
 		"OEBPS/content.opf": `<package><manifest>
 <item id="c1" href="chap1.xhtml" media-type="application/xhtml+xml"/></manifest>
