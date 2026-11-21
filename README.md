@@ -19,9 +19,11 @@ docs under [`docs/`](docs/).
 - **Agent mode** — opt-in per conversation for long jobs: a persistent 5 GiB
   sandbox workspace, a 60-minute / 60-step budget and a per-user queue
   ([`docs/5.12-agent-mode.md`](docs/5.12-agent-mode.md))
-- **Two upstream dialects** — OpenAI-compatible `/chat/completions` (Kimi, GLM,
-  DeepSeek, MiMo, …) and the Responses API `/responses` (GPT 6 Luna, Grok), with
-  a reasoning-effort selector
+- **Two upstream dialects** — OpenAI-compatible `/chat/completions` (Hy, LongCat,
+  Kimi, GLM, DeepSeek, MiMo, MiniMax, Step, …) and the Responses API `/responses`
+  (GPT 6/5.6 Luna, Grok), with a reasoning-effort selector. The
+  Anthropic (`/messages`) and Google (`generateContent`) models in the live
+  catalog are not offered — those dialects are not implemented.
 - Collapsible **thinking** blocks (duration + reasoning-token count) and a
   thinking badge on models that surface reasoning
 - Per-message **cost** and **tokens/sec**, plus a conversation running total
@@ -128,7 +130,8 @@ Logs: `journalctl --user -u myogchat -f`.
 - Auto-titles use a cheap Go model (`mimo-v2.6-flash`) on your own key — a
   fraction of a cent per chat, and they fall back to the prompt text if the
   call fails.
-- Muse Spark models are intentionally excluded (they train on your prompts).
+- Prompt-training models are intentionally excluded (`muse-spark-1.2-contributor`,
+  `muse-spark-1.3-contributor`, `iceman-contributor-free` — `go.training: true`).
 
 ## License
 

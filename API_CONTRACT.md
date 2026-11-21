@@ -308,45 +308,66 @@ Endpoints and credentials (checked live 2026-11-01):
 (input / output / cache-read). `tier_threshold`: when `prompt_tokens` exceed it,
 use tier prices (tier_input/tier_output/tier_cache).
 
+Synced to `GET https://opencode.ai/inference/go/v1/models` on 2026-11-21
+(31 models live); the trimmed snapshot lives in
+`internal/models/testdata/catalog.json` and `TestRegistryMatchesCatalog` fails on
+any price, tier, peak, vision, thinking or dialect drift.
+
 | id | name | in | out | cache | tier_threshold | tier in/out/cache | notes |
 |---|---|---|---|---|---|---|---|
-| beam-free | Beam Free | 0 | 0 | 0 | — | — | |
-| mimo-v2.6-flash | MiMo V2.6 Flash | 0.14 | 0.28 | 0.0028 | — | — | vision |
+| beam-free | Beam Free | 0 | 0 | 0 | — | — | free, thinking |
+| longcat-2.5-free | LongCat 2.5 Free | 0 | 0 | 0 | — | — | free, thinking |
+| hy4-flash-free | Hy4 Flash Free | 0 | 0 | 0 | — | — | free, vision |
+| mimo-v2.6-flash | MiMo V2.6 Flash | 0.14 | 0.28 | 0.0028 | — | — | thinking, vision |
 | glm-5.3-flash | GLM-5.3 Flash | 0.15 | 0.50 | 0.03 | — | — | thinking, vision |
-| **gpt-6-luna** | GPT 6 Luna | 0.10 | 0.50 | 0.01 | 272000 → 0.20/0.75/0.02 | | responses, effort, vision |
 | hy3 | Hy3 | 0.14 | 0.58 | 0.035 | — | — | |
-| minimax-m3.1-flash | MiniMax M3.1 Flash | 0.15 | 0.60 | 0.015 | — | — | vision |
+| minimax-m3.1-flash | MiniMax M3.1 Flash | 0.15 | 0.60 | 0.015 | — | — | thinking, vision |
 | deepseek-v4.1-flash | DeepSeek V4.1 Flash | 0.15 | 0.60 | 0.003 | peak: 0.30/1.20/0.006 | | thinking, vision |
-| mimo-v2.6-pro | MiMo V2.6 Pro | 0.435 | 0.87 | 0.003625 | — | — | vision |
+| mimo-v2.6-pro | MiMo V2.6 Pro | 0.435 | 0.87 | 0.003625 | — | — | thinking, vision |
 | longcat-2.0 | LongCat 2.0 | 0.30 | 1.20 | 0.006 | — | — | thinking |
-| **gpt-5.6-luna** | GPT 5.6 Luna | 0.20 | 1.20 | 0.02 | 272000 → 0.40/1.80/0.04 | | responses, effort, vision |
 | deepseek-v4-pro | DeepSeek V4 Pro | 0.66 | 1.98 | 0.022 | peak: 1.32/3.96/0.044 | | thinking |
 | hy4-preview | Hy4 Preview | 0.834 | 2.501 | 0.042 | — | — | |
-| step-5-preview | Step 5 Preview | 1.00 | 2.70 | 0.10 | — | — | vision |
+| hy4 | Hy4 | 0.834 | 2.501 | 0.042 | — | — | vision |
+| **gpt-6-luna** | GPT 6 Luna | 0.10 | 0.50 | 0.01 | 272000 → 0.20/0.75/0.02 | | responses, effort, thinking, vision |
+| **gpt-5.6-luna** | GPT 5.6 Luna | 0.20 | 1.20 | 0.02 | 272000 → 0.40/1.80/0.04 | | responses, effort, thinking, vision |
+| step-5-preview | Step 5 Preview | 1.00 | 2.70 | 0.10 | — | — | thinking, vision |
 | kimi-k2.7-code | Kimi K2.7 Code | 0.95 | 4.00 | 0.19 | — | — | thinking, vision |
-| glm-5.2 | GLM-5.2 | 1.40 | 4.40 | 0.26 | — | — | thinking |
 | glm-5.3 | GLM-5.3 | 1.40 | 4.40 | 0.26 | — | — | thinking |
-| **grok-4.7** | Grok 4.7 | 2.00 | 6.00 | 0.50 | 200000 → 4.00/12.00/1.00 | | responses, effort, vision |
-| kimi-k3.1-pro | Kimi K3.1 Pro | 2.00 | 10.00 | 0.20 | — | — | vision |
-| kimi-k3 | Kimi K3 | 3.00 | 15.00 | 0.30 | — | — | vision |
+| **grok-4.7** | Grok 4.7 | 2.00 | 6.00 | 0.50 | 200000 → 4.00/12.00/1.00 | | responses, effort, thinking, vision |
+| kimi-k3.1-pro | Kimi K3.1 Pro | 2.00 | 10.00 | 0.20 | — | — | thinking, vision |
+| kimi-k3 | Kimi K3 | 3.00 | 15.00 | 0.30 | — | — | thinking, vision |
 
 DeepSeek peak hours: 01:00–04:00 and 06:00–10:00 UTC, **Mon–Fri**; all other
 times use base prices.
 
 **Retired IDs** are kept resolvable (`models.ByID`) so existing conversations
 still load and can be switched to a current model, but they never appear in
-`models.Sorted()` or `GET /api/models`: `longcat-2.5-preview-free`,
-`space-bunny`, `mimo-v2.5`, `mimo-v2.5-pro`, `deepseek-v4-flash`,
-`deepseek-v4-flash-vision-exp`, `kimi-k2.6`, `grok-4.6`.
+`models.Sorted()` or `GET /api/models`: `glm-5.2`,
+`longcat-2.5-preview-free` (replaced by the differently-named
+`longcat-2.5-free`), `space-bunny`, `mimo-v2.5`, `mimo-v2.5-pro`,
+`deepseek-v4-flash`, `deepseek-v4-flash-vision-exp`, `kimi-k2.6`, `grok-4.6`.
+
+**Live but not registered** (kept out by `notRegistered` in
+`internal/models/models_test.go`, which also fails when a refreshed snapshot adds
+an undecided model):
+
+- Anthropic `/messages` dialect, no adapter: `claude-haiku-5-5`, `minimax-m3`,
+  `qwen3.7-plus`, `qwen3.8-flash`, `qwen3.8-max`, `qwen4-max`.
+- Google `generate-content`/`interactions` dialect, no adapter:
+  `gemini-4-argon`.
+- `go.training: true` — provider trains on prompts, excluded by policy:
+  `iceman-contributor-free`, `muse-spark-1.2-contributor`,
+  `muse-spark-1.3-contributor`.
 
 The free Zen catalog (`https://opencode.ai/zen/v1`) is a separate quota and is
 **not** part of this registry; the app does not use it (§4).
 
 `Model` also carries `vision bool` (exposed in `/api/models`), true for the
-models that accept image input (feature 2.13): `deepseek-v4.1-flash`,
-`gpt-6-luna`, `gpt-5.6-luna`, `grok-4.7`, `glm-5.3-flash`, `mimo-v2.6-flash`,
-`minimax-m3.1-flash`, `mimo-v2.6-pro`, `step-5-preview`, `kimi-k3`,
-`kimi-k3.1-pro`, `kimi-k2.7-code`.
+models whose catalog entry accepts `image/*` input (feature 2.13):
+`deepseek-v4.1-flash`, `gpt-6-luna`, `gpt-5.6-luna`, `grok-4.7`,
+`glm-5.3-flash`, `mimo-v2.6-flash`, `minimax-m3.1-flash`, `mimo-v2.6-pro`,
+`step-5-preview`, `kimi-k3`, `kimi-k3.1-pro`, `kimi-k2.7-code`, `hy4`,
+`hy4-flash-free`.
 
 **Cost formula** (integer micros, `math.Round`):
 `cost_micros = (prompt−cached)·in_rate + cached·cache_rate + completion·out_rate`
@@ -500,10 +521,12 @@ nothing else; `updated_at` is bumped.
 ### 8.7 Model registry
 
 `Model` gains `thinking bool` (exposed in `/api/models`) — true when the model
-**surfaces visible reasoning text** (chat dialect) or exposes a reasoning-effort
-control (responses dialect). Models that reason internally without surfacing it
-(e.g. Kimi K3, Kimi K2.6, MiMo, Hy) are `false`. The UI shows a "thinking" badge
-for `true` models.
+**surfaces visible reasoning text** or exposes a reasoning-effort control. For
+chat models the catalog declares this per model as `reasoning_field`
+(e.g. `reasoning_content`); Hy3, Hy4 and Hy4 Flash reason internally but declare
+no field, so they stay `false`. Responses models are `true` whenever
+`capabilities.reasoning.supported`. The UI shows a "thinking" badge for `true`
+models.
 
 ### 8.8 Frontend additions
 

@@ -58,10 +58,13 @@ in two independent ways.
    `longcat-2.5-preview-free`; when that model was retired every `PUT
    /api/me/key` returned `400 key check failed`. Now it is
    `GET /inference/go/v1/models` (401/403 → `invalid API key`).
-4. **Catalog churn.** Registry refreshed to the 19 current chat/responses
-   models; 8 retired IDs stay resolvable (`models.legacy`) so old conversations
-   still load. Vision default is now `deepseek-v4.1-flash` (the old
-   `deepseek-v4-flash-vision-exp` was retired).
+4. **Catalog churn.** Registry refreshed to the 21 current chat/responses
+   models (2026-11-21: added `hy4`, `longcat-2.5-free`, `hy4-flash-free`;
+   retired `glm-5.2`); 9 retired IDs stay resolvable (`models.legacy`) so old
+   conversations still load. Vision default is now `deepseek-v4.1-flash` (the
+   old `deepseek-v4-flash-vision-exp` was retired). The live catalog is pinned
+   as a test fixture (`internal/models/testdata/catalog.json`) so price, tier,
+   peak, vision and thinking drift fails a test.
 5. **Auto-titles** run on the caller's own key with the cheap Go model
    `mimo-v2.6-flash` (the free Zen quota kept returning `429 FreeUsageLimitError`
    with a key). Any failure keeps the truncated prompt as the title.
