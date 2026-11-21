@@ -124,7 +124,7 @@ key when sharing is allowed.
 ### 2.6 Python sandbox (multi-purpose app) — ✅ done
 
 - `run_python` runs a script in a hardened, ephemeral **Docker** container
-  (`python:3.14-slim`): CPU/mem/pids limits, read-only rootfs + writable `/work`
+  (`python:3.15-slim`): CPU/mem/pids limits, read-only rootfs + writable `/work`
   tmpfs, non-root user, all caps dropped, dedicated bridge network, per-call
   timeout with forced cleanup. Code goes in over stdin. Outbound network is
   available (owner's choice); optional LAN-egress hardening via
@@ -157,7 +157,7 @@ key when sharing is allowed.
 
 > **Status: Phase 2 is complete and deployed** (`https://chat.example.com`).
 > Host provisioning done on the Pi: `deploy/sandbox-setup.sh` (network + builds
-> the local `myogchat-sandbox-*` images from pulled `bash:5.3`/`python:3.14-slim`
+> the local `myogchat-sandbox-*` images from pulled `bash:5.3`/`python:3.15-slim`
 > bases, always rebuilding) and `deploy/ocr-setup.sh` (`myogchat-ocr`).
 > Optional hardening still pending owner action:
 > `sudo deploy/sandbox-setup.sh --harden` (blocks sandbox LAN egress).

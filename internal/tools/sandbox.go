@@ -145,7 +145,7 @@ const ephemeralBashDescription = "Run a Bash script (bash 5.3) inside a fresh, e
 	"Prefer non-interactive, self-contained scripts that only use the pre-installed " +
 	"tools."
 
-const ephemeralPythonDescription = "Run a Python 3.14 script inside a fresh, ephemeral, resource-limited Linux " +
+const ephemeralPythonDescription = "Run a Python 3.15 script inside a fresh, ephemeral, resource-limited Linux " +
 	"sandbox container and return its stdout and stderr. The filesystem does NOT " +
 	"persist: every call starts a brand-new container, so files written in one call " +
 	"are gone by the next. The sandbox has outbound network access (urllib works), " +
@@ -177,7 +177,7 @@ func workspaceBashDescription(ws *Workspace) string {
 }
 
 func workspacePythonDescription(ws *Workspace) string {
-	return "Run a Python 3.14 script inside a fresh, resource-limited Linux sandbox " +
+	return "Run a Python 3.15 script inside a fresh, resource-limited Linux sandbox " +
 		"container and return its stdout and stderr. Files under /work persist between " +
 		"calls in this conversation for the duration of the job: a file written in one " +
 		"call is still there in the next, so build on earlier work instead of redoing it. " +

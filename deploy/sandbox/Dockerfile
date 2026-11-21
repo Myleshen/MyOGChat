@@ -13,8 +13,8 @@
 #
 # CSV / TXT / JSON / Markdown need no libraries. Keep this list small: a bigger
 # image costs disk on the Pi. The base is pinned for reproducibility; it must
-# match the server's Python version expectation (3.14).
-FROM python:3.14-slim
+# match the server's Python version expectation (3.15).
+FROM python:3.15-slim
 
 # The shared CLI toolbelt (git, curl, ripgrep, jq, sqlite3, poppler, ImageMagick,
 # make, archives…). tools.list is the single source of truth for both sandbox

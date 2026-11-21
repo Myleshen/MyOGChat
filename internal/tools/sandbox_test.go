@@ -47,8 +47,8 @@ func TestRunPythonToolMetadata(t *testing.T) {
 	if tool.Name() != "run_python" {
 		t.Errorf("Name = %q", tool.Name())
 	}
-	if !strings.Contains(tool.Description(), "Python 3.14") {
-		t.Error("description must mention Python 3.14")
+	if !strings.Contains(tool.Description(), "Python 3.15") {
+		t.Error("description must mention Python 3.15")
 	}
 }
 
