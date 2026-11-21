@@ -79,6 +79,8 @@ const imageCancel = document.getElementById("image-cancel");
 /* Agent mode — composer chip + hint (self-contained). */
 const agentBtn = document.getElementById("agent-btn");
 const agentHint = document.getElementById("agent-hint");
+/* Phone composer overflow menu (replaces the four secondary buttons < 640px). */
+const composerMenuBtn = document.getElementById("composer-menu-btn");
 /* Prompt preview & edit modal (feature 4.3). */
 const imageModal = document.getElementById("image-modal");
 const imageModalPrompt = document.getElementById("image-modal-prompt");
@@ -2769,7 +2771,10 @@ function closeMenu() {
 }
 
 function onDocClickForMenu(e) {
-  if (activeMenu && !activeMenu.contains(e.target)) closeMenu();
+  if (!activeMenu) return;
+  // The anchor toggles itself (see its click handler), so don't close first.
+  if (activeMenu.contains(e.target) || activeMenuAnchor.contains(e.target)) return;
+  closeMenu();
 }
 
 function showMenu(anchor, items) {
@@ -2819,7 +2824,10 @@ function showMenu(anchor, items) {
   let left = r.left;
   let top = r.bottom + 4;
   if (left + mw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - mw - 8);
-  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+  // Composer menus sit at the bottom of the screen, so flip above the anchor
+  // when there is no room below, then clamp so no item ends up off-screen.
+  if (top + mh > window.innerHeight - 8) top = r.top - mh - 4;
+  top = Math.max(8, Math.min(top, window.innerHeight - mh - 8));
   menu.style.left = left + "px";
   menu.style.top = top + "px";
   activeMenu = menu;
@@ -4120,6 +4128,14 @@ function syncAgentChip() {
       ? "Agent mode on — long jobs, files persist between steps"
       : "Turn on agent mode"
     : reason;
+  /* Same state, mirrored on the phone overflow menu that hides this chip. */
+  if (composerMenuBtn) {
+    composerMenuBtn.classList.toggle("is-on", on);
+    composerMenuBtn.setAttribute(
+      "aria-label",
+      on ? "More actions, agent mode on" : "More actions"
+    );
+  }
   if (agentHint) {
     agentHint.hidden = !reason && !on;
     // Only touch the live region when the text actually changes, so a screen
@@ -5973,7 +5989,9 @@ function wireEvents() {
       return;
     }
     if (activeMenu) {
+      const anchor = activeMenuAnchor;
       closeMenu();
+      if (anchor) anchor.focus({ preventScroll: true });
       return;
     }
     if (sidebar.classList.contains("open")) {
@@ -6214,6 +6232,39 @@ function wireEvents() {
   /* Agent mode: the chip toggles agent mode on the open conversation (or the
      next new chat when none is open yet). */
   if (agentBtn) agentBtn.addEventListener("click", toggleAgentMode);
+
+  /* Phones (< 640px) collapse attach/image/agent/voice into one menu. The
+     buttons stay in the DOM and are the single source of truth: each item just
+     clicks its button, so the handlers above (and their disabled guards) apply. */
+  if (composerMenuBtn) {
+    composerMenuBtn.innerHTML = ICONS.more;
+    composerMenuBtn.addEventListener("click", () => {
+      if (composerMenuBtn.getAttribute("aria-expanded") === "true") {
+        closeMenu();
+        return;
+      }
+      const items = [];
+      if (!attachBtn.disabled) {
+        items.push({ label: "Attach files", onClick: () => attachBtn.click() });
+      }
+      items.push({ label: "Generate image", onClick: () => imageBtn.click() });
+      if (agentAvailable()) {
+        items.push({
+          label: "Agent mode: " + (agentActive() ? "on" : "off"),
+          onClick: () => agentBtn.click(),
+        });
+      }
+      // Only offer voice when STT is configured; while recording the item must
+      // stay reachable or the microphone would be left running.
+      if (micBtn && !micBtn.hidden && (micState === "recording" || !micBtn.disabled)) {
+        items.push({
+          label: micState === "recording" ? "Stop recording" : "Voice message",
+          onClick: () => micBtn.click(),
+        });
+      }
+      showMenu(composerMenuBtn, items);
+    });
+  }
 
   /* Image generation (feature 3.1/4.3): the image button toggles the prompt bar;
      Generate opens the enhance + preview modal. */
