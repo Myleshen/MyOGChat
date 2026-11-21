@@ -1709,6 +1709,57 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
   font-size: 0.85rem;
 }
 
+/* ---------- Settings: custom providers (per-user) ---------- */
+
+.settings-providers { display: flex; flex-direction: column; gap: 12px; }
+/* .field-hint is built for a horizontal .field-meta row; here it must not grow
+   and leave a gap inside the column form. */
+.settings-providers .field-hint { flex: none; }
+.providers-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.provider-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  min-width: 0;
+}
+.provider-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.provider-name {
+  min-width: 0;
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.provider-url {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+.provider-status { margin: 0; color: var(--text-dim); font-size: 0.78rem; }
+.provider-status-error { color: var(--red); }
+.provider-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+/* The URL hint is one tap-selectable unit, so it can be copied verbatim. */
+.provider-url-hint {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--code-inline-bg);
+  font-size: 0.85em;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
 body.modal-open { overflow: hidden; }
 
 /* ---------- Popup menus ---------- */
@@ -1861,7 +1912,8 @@ body.modal-open { overflow: hidden; }
   .msg-action,
   .msg-edit-actions .btn,
   .menu-item,
-  .agent-workspace-delete {
+  .agent-workspace-delete,
+  .provider-actions .user-action {
     min-height: 44px;
   }
 }

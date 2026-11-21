@@ -58,9 +58,13 @@ Enable `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON`.
 Returns the **static registry** (§5) as JSON array, sorted by `output_per_m` ascending:
 ```json
 [{"id":"kimi-k2.7-code","name":"Kimi K2.7 Code","dialect":"chat","effort":false,
-  "input_per_m":0.95,"output_per_m":4.0,"cache_read_per_m":0.19}]
+  "input_per_m":0.95,"output_per_m":4.0,"cache_read_per_m":0.19,
+  "cost_tracked":true}]
 ```
-(Fields `tier_*` and peak-pricing internals are NOT exposed.)
+(Fields `tier_*` and peak-pricing internals are NOT exposed.) Registry entries
+carry `"cost_tracked":true`. Per-user custom-provider models (§22) are appended
+after them with `"provider":"<slug>"`, `"dialect":"chat"` and
+`"cost_tracked":false`.
 
 ### `GET /api/conversations`
 `[{"id","title","model","effort","created_at","updated_at"}]`, `updated_at` DESC.
@@ -276,6 +280,13 @@ type Event struct {
 
 The dialogs and their mapping gaps are described in
 [`docs/6.4-upstream-dialects.md`](docs/6.4-upstream-dialects.md).
+
+**Custom providers (§22).** `Params.BaseURL` overrides the OpenCode base for one
+request. When it is set the adapters post to `<BaseURL>/chat/completions` with
+`Authorization: Bearer <key>` and `User-Agent: myogchat/1.0`, and **do not send
+`x-opencode-session`** (that header belongs to OpenCode). Custom models are
+chat-dialect only; the internal helpers (auto-title, project memory, image-prompt
+enhancement, OCR vision) keep bare OpenCode ids and never use a custom base.
 
 **chat dialect** → `POST https://opencode.ai/inference/go/openai/v1/chat/completions`:
 `{"model":…, "messages":[{"role","content"}…], "stream":true,
@@ -1659,3 +1670,75 @@ openssl, ripgrep, jq, tree, file, less, bc, zip, unzip, xz-utils, bzip2, zstd,
 poppler-utils, sqlite3, imagemagick, make); adding a tool is a one-line edit
 there plus a re-run of the script. `MYOGCHAT_SANDBOX_IMAGE_BASH` /
 `MYOGCHAT_SANDBOX_IMAGE_PYTHON` override the image names.
+
+## 22. Custom upstream providers (per-user)
+
+A user can add their own OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter, a
+local vLLM, …). Its models appear in `GET /api/models`, are selected through the
+normal conversation `model` field, and always speak the **chat-completions**
+dialect. Third-party prices are unknown, so their cost is reported as untracked
+rather than as zero dollars. Details and the NVIDIA example:
+[`docs/6.5-custom-providers.md`](docs/6.5-custom-providers.md).
+
+### 22.1 Schema (additive)
+
+```sql
+CREATE TABLE IF NOT EXISTS user_providers (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  slug       TEXT NOT NULL,
+  base_url   TEXT NOT NULL,
+  key_enc    TEXT NOT NULL,
+  models     TEXT NOT NULL DEFAULT '[]',   -- JSON [{"id","name"}]
+  created_at INTEGER NOT NULL,
+  UNIQUE(user_id, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_user_providers_user ON user_providers(user_id);
+```
+
+`key_enc` is encrypted with `internal/secret` (AES-256-GCM) and is never
+returned. `models` is the cached `GET <base_url>/models` list.
+
+`slug` is the lowercased name with runs of non-alphanumerics collapsed to one
+`-` and trimmed; it is unique per user (`-2`, `-3`, … are appended on collision).
+
+### 22.2 Endpoints (session required, per-user)
+
+- `GET /api/me/providers` → `200`
+  `{"providers":[{"id","name","slug","base_url","has_key":true,"models":[{"id","name"}]}]}`.
+  The key and its ciphertext are never included.
+- `POST /api/me/providers` `{"name","base_url","api_key"}` → `201` with the
+  provider object. Validation: name 1..64 runes; `base_url` an absolute
+  `http`/`https` URL with no query, fragment or credentials; `api_key`
+  non-empty. Before storing anything the server calls
+  `GET <base_url>/models` with `Authorization: Bearer <api_key>`,
+  `User-Agent: myogchat/1.0`, 10 s timeout, to prove the key and fill `models`.
+  That response may be `{"data":[{"id","name"?}]}` or a bare array; a missing
+  `name` falls back to `id`. A failure returns
+  `400 {"error":"could not list models: upstream HTTP <code>: <snippet>"}` and
+  persists nothing.
+- `POST /api/me/providers/{id}/models` → re-fetch and replace the cached list,
+  `200 {"models":[…]}`. On failure `502
+  {"error":"could not list models: …"}` and the old list is kept.
+- `DELETE /api/me/providers/{id}` → `204`. Unknown or foreign ids → `404` (the
+  same as every other provider route).
+
+### 22.3 Model ids
+
+`GET /api/models` appends one entry per cached model:
+`{"id":"<slug>/<vendor-id>","name":"<vendor name>","dialect":"chat",
+"provider":"<slug>","cost_tracked":false}`. The vendor id may itself contain a
+slash (NVIDIA's are `meta/llama-3.1-8b`), so only the **first** slash splits the
+local slug from the vendor id, and the vendor id alone goes upstream.
+
+A request model id containing `/` is accepted only when its prefix is one of the
+caller's provider slugs. A vendor id missing from the cached list is still sent
+(the cache may be stale; the provider's own error is authoritative). Built-in
+ids never contain `/` and resolve through the static registry as before.
+
+### 22.4 Cost and usage
+
+Custom models report `cost_tracked:false` and `cost_micros:0` because no price is
+known — the SPA renders "not tracked". Token counts are still recorded. `GET
+/api/me/usage` therefore counts their tokens and their cost as 0.

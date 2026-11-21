@@ -291,9 +291,11 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	// Inline images are only meaningful for a vision-capable model. For any other
 	// model they are ignored (the folded OCR text is used), so image caps must
-	// never reject a message the model cannot even see (5.1 hardening).
-	m, ok := models.ByID(conv.Model)
-	if !ok {
+	// never reject a message the model cannot even see (5.1 hardening). A custom
+	// provider model is chat-only and never vision-capable.
+	m, prov, err := s.resolveModel(r.Context(), u, conv.Model)
+	if err != nil {
+		s.log.Error("resolve conversation model", "model", conv.Model, "error", err)
 		writeError(w, http.StatusInternalServerError, "conversation has unknown model")
 		return
 	}
@@ -327,10 +329,15 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "content is required")
 		return
 	}
-	apiKey, err := s.resolveKey(r.Context(), u)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	// A custom provider carries its own key; only an OpenCode model needs the
+	// user's OpenCode key here.
+	apiKey := ""
+	if prov == nil {
+		apiKey, err = s.resolveKey(r.Context(), u)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	// Quota is enforced before the user message is persisted, so a rejection
 	// leaves no orphan row (2.11).
@@ -373,10 +380,19 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "conversation has no user message to regenerate")
 		return
 	}
-	apiKey, err := s.resolveKey(r.Context(), u)
+	_, prov, err := s.resolveModel(r.Context(), u, conv.Model)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.log.Error("resolve conversation model", "model", conv.Model, "error", err)
+		writeError(w, http.StatusInternalServerError, "conversation has unknown model")
 		return
+	}
+	apiKey := ""
+	if prov == nil {
+		apiKey, err = s.resolveKey(r.Context(), u)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	// Quota is enforced before the trailing assistant row is deleted (2.11).
 	if err := s.checkQuota(r.Context(), u); err != nil {
@@ -409,22 +425,36 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	conv := spec.conv
 	u := spec.user
 	agent := j.agent
+
+	// Resolve the model first: a custom provider carries its own key, so an
+	// OpenCode key is only required for an OpenCode model.
+	m, prov, err := s.resolveModel(ctx, u, conv.Model)
+	if err != nil {
+		j.finish(jobError, "", "conversation has unknown model")
+		return
+	}
 	apiKey := spec.apiKey
-	if apiKey == "" {
+	// helperKey is the OpenCode key used by the internal helpers (auto-title,
+	// project memory). It stays empty for a custom chat when the user has no
+	// OpenCode key, and those helpers then fall back or are skipped.
+	helperKey := spec.apiKey
+	if prov != nil {
+		apiKey = prov.apiKey
+		if k, kerr := s.resolveKey(ctx, u); kerr == nil {
+			helperKey = k
+		} else {
+			helperKey = ""
+		}
+	} else if apiKey == "" {
 		// A queued agent send resolves the key when it actually starts, never
 		// when it was enqueued.
-		k, err := s.resolveKey(ctx, u)
-		if err != nil {
-			j.finish(jobError, "", err.Error())
+		k, kerr := s.resolveKey(ctx, u)
+		if kerr != nil {
+			j.finish(jobError, "", kerr.Error())
 			return
 		}
 		apiKey = k
-	}
-
-	m, ok := models.ByID(conv.Model)
-	if !ok {
-		j.finish(jobError, "", "conversation has unknown model")
-		return
+		helperKey = k
 	}
 
 	atts := spec.userAtts
@@ -455,7 +485,7 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	if conv.Title == "" {
 		if firstUser := firstUserMessage(history); firstUser != "" {
 			j.titleCh = make(chan string, 1)
-			go s.generateTitle(ctx, j.titleCh, conv.ID, apiKey, firstUser)
+			go s.generateTitle(ctx, j.titleCh, conv.ID, helperKey, firstUser)
 		}
 	}
 	msgs := make([]upstream.Message, 0, len(history))
@@ -531,12 +561,19 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	}
 	// Tool calling runs the same agentic code path even when the registry is
 	// empty. The generated images/artifacts were collected above.
+	// A custom provider's wire model id is the vendor id alone (the "<slug>/"
+	// prefix is only the local selector) and its base URL replaces OpenCode's.
+	wireModel, baseURL := conv.Model, ""
+	if prov != nil {
+		wireModel, baseURL = prov.model, prov.baseURL
+	}
 	events := s.streamAgent(ctx, upstream.Params{
 		Dialect:      m.Dialect,
-		Model:        conv.Model,
+		Model:        wireModel,
 		Effort:       effort,
 		SessionID:    conv.ID,
 		APIKey:       apiKey,
+		BaseURL:      baseURL,
 		Messages:     msgs,
 		Instructions: instructions,
 		Context:      chatCtx,
@@ -696,7 +733,7 @@ stream:
 			userTurn = lastUserMessage(history)
 		}
 		if strings.TrimSpace(userTurn) != "" {
-			go s.updateProjectMemory(ctx, u.ID, conv.ID, *conv.ProjectID, apiKey, userTurn, asstMsg.Content)
+			go s.updateProjectMemory(ctx, u.ID, conv.ID, *conv.ProjectID, helperKey, userTurn, asstMsg.Content)
 		}
 	}
 
@@ -742,7 +779,7 @@ func lastUserMessage(history []store.Message) string {
 // user edited during the call is never clobbered.
 func (s *Server) updateProjectMemory(ctx context.Context, userID, convID, projectID, apiKey, userTurn, reply string) {
 	ctx = context.WithoutCancel(ctx)
-	if s.chatOnceFn == nil {
+	if s.chatOnceFn == nil || apiKey == "" {
 		return
 	}
 	p, err := s.st.GetProject(ctx, projectID, userID)
@@ -995,8 +1032,9 @@ func (s *Server) projectInstructions(ctx context.Context, projectID *string, use
 // failure. Only the first 400 chars of that message are sent, so a title costs a
 // fraction of a cent.
 func (s *Server) autoTitle(ctx context.Context, convID, apiKey, firstUser string) string {
-	if s.chatOnceFn == nil {
-		// Tests may build a Server without New; a title is never worth a panic.
+	if s.chatOnceFn == nil || apiKey == "" {
+		// Tests may build a Server without New, and a custom-provider chat may
+		// have no OpenCode key: the prompt fallback costs nothing.
 		return fallbackTitle(firstUser)
 	}
 	ctx, cancel := context.WithTimeout(ctx, titleTimeout)

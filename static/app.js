@@ -132,6 +132,17 @@ const groupName = document.getElementById("group-name");
 const groupShareKey = document.getElementById("group-share-key");
 const groupError = document.getElementById("group-error");
 
+/* Custom providers (per-user) — self-contained block; safe to relocate. */
+const providersList = document.getElementById("providers-list");
+const providersEmpty = document.getElementById("providers-empty");
+const providerAddToggle = document.getElementById("provider-add-toggle");
+const providerForm = document.getElementById("provider-form");
+const providerName = document.getElementById("provider-name");
+const providerBaseUrl = document.getElementById("provider-base-url");
+const providerKey = document.getElementById("provider-key");
+const providerError = document.getElementById("provider-error");
+const providerCancel = document.getElementById("provider-cancel");
+
 /* Calendar (per-user, feature 3.3) — self-contained block; safe to relocate. */
 const calendarSection = document.getElementById("calendar-section");
 const calendarStatus = document.getElementById("calendar-status");
@@ -284,6 +295,7 @@ const state = {
   conversations: [],       // GET /api/conversations (server order)
   projects: [],            // GET /api/projects
   groups: [],              // GET /api/groups
+  providers: [],           // GET /api/me/providers (custom upstreams)
   expandedProjects: new Set(), // project ids whose chats are shown inline
   activeProjectId: null,   // project new chats are filed into
   current: null,           // open conversation object (with messages)
@@ -469,7 +481,9 @@ function projectById(id) {
 }
 
 function modelOptionLabel(m) {
-  return m.name + (m.thinking ? " · thinking" : "");
+  let label = m.name + (m.thinking ? " · thinking" : "");
+  if (m.cost_tracked === false) label += " · not tracked";
+  return label;
 }
 
 /* micro-dollars -> display string; null when no cost info */
@@ -480,6 +494,8 @@ function fmtMicros(micros) {
 }
 
 function fmtMsgCost(micros, modelId) {
+  const m = modelId ? modelById(modelId) : null;
+  if (m && m.cost_tracked === false) return "not tracked";
   if (modelId && isFreeModel(modelId)) return "Free";
   return fmtMicros(micros);
 }
@@ -738,6 +754,9 @@ async function enterApp() {
   if (state.user && state.user.is_admin) {
     loadSettingsInfo(true).catch(() => {});
   }
+  // Providers first: /api/models names custom models by provider slug, and the
+  // picker groups them under the provider's display name.
+  await loadProviders();
   try {
     await loadModels();
   } catch (err) {
@@ -878,7 +897,7 @@ function applyRoute() {
 const SETTINGS_CATEGORIES = [
   { id: "account", label: "Account", icon: "👤", sections: ["account-section"] },
   { id: "appearance", label: "Appearance", icon: "🎨", sections: ["appearance-section"] },
-  { id: "ai", label: "AI & access", icon: "🔑", sections: ["key-section", "groups-section"] },
+  { id: "ai", label: "AI & access", icon: "🔑", sections: ["key-section", "providers-section", "groups-section"] },
   {
     id: "integrations",
     label: "Integrations",
@@ -997,6 +1016,7 @@ function showSettingsPage() {
   refreshSettingsNav();
   selectSettingsCategory(settingsCategory);
   loadKeyStatus().catch(() => {});
+  loadProviders().catch(() => {}); /* custom providers (per-user) */
   loadGroups().catch(() => {});
   loadUsage().catch(() => {}); /* usage & quotas (2.11) */
   loadMySearch().catch(() => {}); /* per-user web search (2.12) */
@@ -2327,6 +2347,160 @@ async function saveShareServerKey() {
   }
 }
 
+/* ============================== Custom providers (per-user) ============================== */
+
+async function loadProviders() {
+  try {
+    const r = await api("/api/me/providers");
+    state.providers = r && Array.isArray(r.providers) ? r.providers : [];
+    renderProviders();
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(err.message || "Could not load providers");
+  }
+}
+
+function renderProviders() {
+  providersList.textContent = "";
+  providersEmpty.hidden = state.providers.length !== 0;
+  for (const p of state.providers) providersList.appendChild(buildProviderRow(p));
+}
+
+function buildProviderRow(p) {
+  const li = el("li", "provider-item");
+  const n = (p.models || []).length;
+
+  const head = el("div", "provider-head");
+  const name = el("span", "provider-name");
+  name.textContent = p.name;
+  const count = el("span", "badge");
+  count.textContent = n === 0 ? "no models" : n + (n === 1 ? " model" : " models");
+  head.append(name, count);
+  li.appendChild(head);
+
+  const url = el("p", "provider-url");
+  url.textContent = p.base_url;
+  li.appendChild(url);
+
+  const status = el("p", "provider-status");
+  if (!p.has_key) {
+    status.textContent = "No API key stored.";
+  } else if (n === 0) {
+    status.textContent = "Key stored — no models loaded yet. Refresh models to fetch them.";
+  } else {
+    status.textContent = "Key stored · models ready.";
+  }
+  li.appendChild(status);
+
+  const actions = el("div", "provider-actions");
+  const refresh = el("button", "user-action");
+  refresh.type = "button";
+  refresh.textContent = "Refresh models";
+  refresh.setAttribute("aria-label", "Refresh models for " + p.name);
+  refresh.addEventListener("click", () => refreshProviderModels(p, status, refresh));
+  const del = el("button", "user-action danger");
+  del.type = "button";
+  del.textContent = "Delete";
+  del.setAttribute("aria-label", "Delete " + p.name);
+  del.addEventListener("click", () => deleteProvider(p));
+  actions.append(refresh, del);
+  li.appendChild(actions);
+  return li;
+}
+
+function openProviderForm() {
+  providerForm.hidden = false;
+  providerAddToggle.hidden = true;
+  providerName.focus();
+}
+
+function closeProviderForm() {
+  providerForm.reset();
+  setFormError(providerError, "");
+  providerForm.hidden = true;
+  providerAddToggle.hidden = false;
+  providerAddToggle.focus();
+}
+
+/* Re-read /api/models after a provider change, keeping the current selection. */
+async function reloadModels() {
+  const prev = modelSelect.value;
+  const models = await api("/api/models");
+  if (!Array.isArray(models) || models.length === 0) return;
+  state.models = models;
+  renderModelSelect();
+  modelSelect.value = modelById(prev) ? prev : models[0].id;
+  updateEffortVisibility();
+}
+
+async function saveProvider(e) {
+  if (e) e.preventDefault();
+  setFormError(providerError, "");
+  const name = providerName.value.trim();
+  const baseUrl = providerBaseUrl.value.trim();
+  const key = providerKey.value.trim();
+  if (!name || !baseUrl || !key) {
+    setFormError(providerError, "Name, base URL and API key are all required.");
+    return;
+  }
+  const btn = providerForm.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  try {
+    const created = await api("/api/me/providers", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name: name.slice(0, 120), base_url: baseUrl, api_key: key }),
+    });
+    state.providers.unshift(created);
+    closeProviderForm();
+    renderProviders();
+    await reloadModels().catch(() => {});
+    toast("Provider added — refresh models to list them");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    setFormError(providerError, err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Save";
+  }
+}
+
+async function refreshProviderModels(p, statusEl, btn) {
+  statusEl.classList.remove("provider-status-error");
+  statusEl.removeAttribute("role");
+  statusEl.textContent = "Fetching models…";
+  btn.disabled = true;
+  try {
+    const r = await api("/api/me/providers/" + enc(p.id) + "/models", { method: "POST" });
+    p.models = r && Array.isArray(r.models) ? r.models : [];
+    await reloadModels();
+    renderProviders();
+    toast("Models refreshed — " + p.models.length + " found");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    statusEl.textContent = err.message;
+    statusEl.classList.add("provider-status-error");
+    statusEl.setAttribute("role", "alert");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteProvider(p) {
+  if (!confirm('Delete provider "' + p.name + '"? Its models disappear from the picker.')) return;
+  try {
+    await api("/api/me/providers/" + enc(p.id), { method: "DELETE" });
+    state.providers = state.providers.filter((x) => x.id !== p.id);
+    renderProviders();
+    await reloadModels().catch(() => {});
+    toast("Provider deleted");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    toast(err.message);
+  }
+}
+
 /* ============================== Calendar (feature 3.3) ============================== */
 
 /* Default CalDAV endpoints per provider preset; discovery refines them. */
@@ -3307,6 +3481,9 @@ async function saveProject() {
 
 function renderModelSelect() {
   modelSelect.innerHTML = "";
+  // Built-ins keep the price-tier grouping; custom provider models carry a
+  // `provider` slug and get their own group under the provider's name.
+  const builtins = state.models.filter((m) => !m.provider);
   const groups = [
     ["Free", (m) => m.output_per_m === 0],
     ["Budget", (m) => m.output_per_m > 0 && m.output_per_m <= 0.6],
@@ -3314,10 +3491,28 @@ function renderModelSelect() {
     ["Premium", (m) => m.output_per_m > 2],
   ];
   for (const [label, pred] of groups) {
-    const models = state.models.filter(pred);
+    const models = builtins.filter(pred);
     if (models.length === 0) continue;
     const og = document.createElement("optgroup");
     og.label = label;
+    for (const m of models) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = modelOptionLabel(m);
+      og.appendChild(opt);
+    }
+    modelSelect.appendChild(og);
+  }
+  const byProvider = new Map();
+  for (const m of state.models) {
+    if (!m.provider) continue;
+    if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
+    byProvider.get(m.provider).push(m);
+  }
+  for (const [slug, models] of byProvider) {
+    const p = state.providers.find((x) => x.slug === slug);
+    const og = document.createElement("optgroup");
+    og.label = p && p.name ? p.name : slug;
     for (const m of models) {
       const opt = document.createElement("option");
       opt.value = m.id;
@@ -6183,6 +6378,11 @@ function wireEvents() {
   keyForm.addEventListener("submit", saveKey);
   keyRemove.addEventListener("click", removeKey);
   settingShareServerKey.addEventListener("change", saveShareServerKey);
+
+  /* Custom providers (per-user). */
+  providerForm.addEventListener("submit", saveProvider);
+  providerAddToggle.addEventListener("click", openProviderForm);
+  providerCancel.addEventListener("click", closeProviderForm);
 
   /* Groups & shared keys (§2.2). */
   groupForm.addEventListener("submit", createGroup);

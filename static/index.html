@@ -375,6 +375,43 @@
         </label>
       </section>
 
+      <!-- Custom providers (per-user, OpenAI-compatible endpoints) -->
+      <section id="providers-section" class="settings-section settings-providers">
+        <h2 class="settings-heading">Providers</h2>
+        <p class="settings-subtitle-sm">
+          Add another OpenAI-compatible endpoint with your own key; its models
+          appear in the model picker.
+        </p>
+        <ul id="providers-list" class="providers-list"></ul>
+        <p id="providers-empty" class="nav-empty" hidden>
+          A provider is another OpenAI-compatible API you supply a key for;
+          NVIDIA's endpoint <code class="provider-url-hint">https://integrate.api.nvidia.com/v1</code>
+          works as-is.
+        </p>
+        <button type="button" id="provider-add-toggle" class="btn btn-ghost">Add provider</button>
+        <form id="provider-form" class="add-user-form" autocomplete="off" hidden>
+          <label class="field">
+            <span class="field-label">Name</span>
+            <input id="provider-name" type="text" required maxlength="120" placeholder="NVIDIA">
+          </label>
+          <label class="field">
+            <span class="field-label">Base URL</span>
+            <input id="provider-base-url" type="text" required
+                   placeholder="https://integrate.api.nvidia.com/v1">
+          </label>
+          <label class="field">
+            <span class="field-label">API key</span>
+            <input id="provider-key" type="password" autocomplete="off" required placeholder="nvapi-…">
+          </label>
+          <p class="field-hint">The key is stored encrypted and never shown again.</p>
+          <p id="provider-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button type="button" id="provider-cancel" class="btn btn-ghost">Cancel</button>
+          </div>
+        </form>
+      </section>
+
       <!-- Groups & shared keys (contract §2.2) -->
       <section id="groups-section" class="settings-section settings-groups">
         <h2 class="settings-heading">Groups</h2>

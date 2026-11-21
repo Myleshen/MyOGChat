@@ -94,13 +94,13 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, opts
 		}
 
 		roundCtx, cancelRound := context.WithTimeout(ctx, opts.callTimeout())
-		resp, err := c.do(roundCtx, "/chat/completions", p.SessionID, p.APIKey, payload)
+		resp, err := c.do(roundCtx, p.BaseURL, "/chat/completions", p.SessionID, p.APIKey, payload)
 		if err != nil && useTools && iter == 0 {
 			// A model that rejects tool calling must not break the chat: retry
 			// once without tools and answer normally.
 			delete(payload, "tools")
 			delete(payload, "tool_choice")
-			resp, err = c.do(roundCtx, "/chat/completions", p.SessionID, p.APIKey, payload)
+			resp, err = c.do(roundCtx, p.BaseURL, "/chat/completions", p.SessionID, p.APIKey, payload)
 		}
 		if err != nil {
 			cancelRound()
@@ -251,10 +251,10 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 		}
 
 		roundCtx, cancelRound := context.WithTimeout(ctx, opts.callTimeout())
-		resp, err := c.do(roundCtx, "/responses", p.SessionID, p.APIKey, payload)
+		resp, err := c.do(roundCtx, p.BaseURL, "/responses", p.SessionID, p.APIKey, payload)
 		if err != nil && useTools && iter == 0 {
 			delete(payload, "tools")
-			resp, err = c.do(roundCtx, "/responses", p.SessionID, p.APIKey, payload)
+			resp, err = c.do(roundCtx, p.BaseURL, "/responses", p.SessionID, p.APIKey, payload)
 		}
 		if err != nil {
 			cancelRound()
