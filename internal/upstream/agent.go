@@ -41,9 +41,14 @@ func (c *Client) StreamAgent(ctx context.Context, p Params, exec ExecuteTool, op
 			}
 		}
 		var err error
-		if p.Dialect == "responses" {
+		switch p.Dialect {
+		case "responses":
 			err = c.agentResponses(ctx, p, exec, opts, send)
-		} else {
+		case "anthropic":
+			err = c.agentAnthropic(ctx, p, exec, opts, send)
+		case "google":
+			err = c.agentGoogle(ctx, p, exec, opts, send)
+		default:
 			err = c.agentChat(ctx, p, exec, opts, send)
 		}
 		if err != nil && ctx.Err() == nil {
@@ -235,7 +240,7 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 			"input":             input,
 			"store":             false,
 			"stream":            true,
-			"max_output_tokens": 4096,
+			"max_output_tokens": p.budget(),
 			"reasoning":         map[string]any{"effort": effort, "summary": "auto"},
 		}
 		if p.Instructions != "" {

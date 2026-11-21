@@ -94,8 +94,8 @@ func TestCostMicros(t *testing.T) {
 }
 
 func TestRegistryShape(t *testing.T) {
-	if len(Registry) != 21 {
-		t.Errorf("registry has %d models, want 21", len(Registry))
+	if len(Registry) != 28 {
+		t.Errorf("registry has %d models, want 28", len(Registry))
 	}
 	seen := make(map[string]bool, len(Registry))
 	for _, m := range Registry {
@@ -158,15 +158,6 @@ func TestLegacyModels(t *testing.T) {
 // Every catalog id must be either in Registry or listed here, so that a
 // refreshed snapshot cannot silently drop a new model.
 var notRegistered = []string{
-	// Anthropic /messages dialect — no adapter.
-	"claude-haiku-5-5",
-	"minimax-m3",
-	"qwen3.7-plus",
-	"qwen3.8-flash",
-	"qwen3.8-max",
-	"qwen4-max",
-	// Google generate-content/interactions dialect — no adapter.
-	"gemini-4-argon",
 	// go.training=true: the provider trains on prompts (repo policy).
 	"iceman-contributor-free",
 	"muse-spark-1.2-contributor",
@@ -198,6 +189,12 @@ type catalogModel struct {
 			Output catalogPrice `json:"output"`
 		} `json:"text"`
 		Multipliers []struct {
+			When struct {
+				// A date-gated multiplier is a scheduled price change, not peak hours.
+				Date struct {
+					GTE string `json:"gte"`
+				} `json:"date"`
+			} `json:"when"`
 			Factor float64 `json:"factor"`
 		} `json:"multipliers"`
 	} `json:"cost"`
@@ -253,10 +250,10 @@ func (m catalogModel) hasImageInput() bool {
 }
 
 // visibleReasoning mirrors the registry doc: chat models surface reasoning only
-// when the catalog declares a reasoning_field; responses models expose the
-// effort control whenever reasoning is supported.
+// when the catalog declares a reasoning_field; responses and Google models
+// expose a reasoning control whenever reasoning is supported.
 func (m catalogModel) visibleReasoning(dialect string) bool {
-	if dialect == DialectResponses {
+	if dialect == DialectResponses || dialect == DialectGoogle {
 		return m.ReasoningSupport
 	}
 	for _, api := range m.API {
@@ -265,6 +262,22 @@ func (m catalogModel) visibleReasoning(dialect string) bool {
 		}
 	}
 	return false
+}
+
+// dialectFor maps a catalog recommended_api to our dialect constant, and false
+// for an API this app has no adapter for.
+func dialectFor(api string) (string, bool) {
+	switch api {
+	case "chat-completions":
+		return DialectChat, true
+	case "responses":
+		return DialectResponses, true
+	case "messages":
+		return DialectAnthropic, true
+	case "generate-content", "interactions":
+		return DialectGoogle, true
+	}
+	return "", false
 }
 
 // TestCatalogFixtureFresh checks the snapshot records where it came from and
@@ -303,9 +316,10 @@ func TestRegistryMatchesCatalog(t *testing.T) {
 			t.Errorf("registered model %q has training:true in the catalog", m.ID)
 		}
 
-		dialect := DialectChat
-		if _, ok := cm.API["chat-completions"]; !ok {
-			dialect = DialectResponses
+		dialect, known := dialectFor(cm.RecommendedAPI)
+		if !known {
+			t.Errorf("%s: catalog recommends %q, which has no adapter", m.ID, cm.RecommendedAPI)
+			continue
 		}
 		if m.Dialect != dialect {
 			t.Errorf("%s: dialect = %q, catalog says %q", m.ID, m.Dialect, dialect)
@@ -337,7 +351,7 @@ func TestRegistryMatchesCatalog(t *testing.T) {
 
 		peak := false
 		for _, mult := range cm.Cost.Multipliers {
-			if mult.Factor == 2 {
+			if mult.Factor == 2 && mult.When.Date.GTE == "" {
 				peak = true
 			}
 		}

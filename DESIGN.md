@@ -16,16 +16,15 @@ and Cloudflare Tunnel.
 
 - Multi-user accounts, file uploads, RAG, tools/function-calling, voice
 - React Native / native apps (PWA covers mobile)
-- Anthropic `/messages` dialect models (Claude Haiku 5.5, MiniMax M3, Qwen 3.7
-  Plus / 3.8 Flash / 3.8 Max / Qwen4 Max) and Google `generateContent` models
-  (Gemini 4 Argon) — excluded; those dialects are not implemented
 
 ## Architecture
 
 ```
-browser (PWA) ──▶ Go binary :8787 ──▶ https://opencode.ai/inference/go/openai/v1
-                   │  embedded SPA      ├─ /chat/completions  (chat dialect)
-                   │  SQLite (WAL)      └─ /responses         (responses dialect)
+browser (PWA) ──▶ Go binary :8787 ──▶ https://opencode.ai/inference/go/…
+                   │  embedded SPA      ├─ openai/v1/chat/completions  (chat)
+                   │  SQLite (WAL)      ├─ openai/v1/responses         (responses)
+                   │                    ├─ anthropic/v1/messages      (anthropic)
+                   │                    └─ google/v1beta/…            (google)
                    └─ hourly retention janitor
 ```
 

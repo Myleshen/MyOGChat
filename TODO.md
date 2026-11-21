@@ -7,9 +7,10 @@
 - Single Go binary (`net/http` + `modernc.org/sqlite`), embedded PWA, SQLite
   (WAL), ~24 MB RSS at idle (measured on the workstation). Cross-compiled `linux/arm64` on the
   workstation.
-- Two upstream dialects against OpenCode Go: OpenAI-compatible
-  `/chat/completions` (Kimi, GLM, DeepSeek, MiMo, …) and the Responses API
-  `/responses` (GPT 6 Luna, Grok) with a reasoning-effort selector.
+- Four upstream dialects against OpenCode Go: OpenAI-compatible
+  `/chat/completions` (Kimi, GLM, DeepSeek, MiMo, …), the Responses API
+  `/responses` (GPT 6 Luna, Grok), Anthropic `/messages` and Google
+  `generateContent`, with a reasoning-effort selector where supported.
   Per-conversation `x-opencode-session` + custom User-Agent (required by
   OpenCode Go).
 - Streaming SSE chat; markdown + syntax highlighting; collapsible **thinking**

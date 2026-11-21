@@ -47,6 +47,11 @@ const (
 	memoryUserBytes  = 2048
 	memoryReplyBytes = 6144
 
+	// turnMaxTokens is the output budget for one chat turn, sent to every
+	// dialect that takes an explicit budget (responses, anthropic, google).
+	// The chat-completions dialect sends no cap, as it always has.
+	turnMaxTokens = 8192
+
 	// Vision image input (Phase 5.1): the SPA sends up to a few inline image
 	// data URIs with a message when the conversation's model can see images.
 	// The caps bound the request body and the upstream payload.
@@ -535,6 +540,7 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 		Instructions: instructions,
 		Context:      chatCtx,
 		Tools:        upstreamToolSpecs(reg.Specs()),
+		MaxTokens:    turnMaxTokens,
 	}, s.toolExecutor(reg, toolTimeout), opts)
 
 	var content, reasoning strings.Builder

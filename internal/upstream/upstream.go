@@ -1,6 +1,7 @@
-// Package upstream implements the two OpenCode Go API dialect adapters
-// (chat completions and responses) per contract §4. Both emit a common
-// channel of normalized events.
+// Package upstream implements the four OpenCode Go API dialect adapters
+// (chat completions, responses, Anthropic messages and Google
+// generate-content) per contract §4. All
+// emit a common channel of normalized events.
 package upstream
 
 import (
@@ -383,7 +384,7 @@ type Event struct {
 
 // Params describes one streaming upstream call.
 type Params struct {
-	Dialect   string // "chat" | "responses"
+	Dialect   string // "chat" | "responses" | "anthropic" | "google"
 	Model     string
 	Effort    string // may be empty; responses dialect defaults to "medium"
 	SessionID string // conversation UUID, sent as x-opencode-session
@@ -398,20 +399,45 @@ type Params struct {
 	// Tools are exposed to the model for the agentic loop (Phase 2.4). Empty
 	// disables tool calling.
 	Tools []ToolSpec
+	// MaxTokens bounds the reply for the dialects that take an explicit output
+	// budget (responses, anthropic, google). 0 lets the dialect use its default.
+	MaxTokens int
+	// Temperature is sent only when non-nil.
+	Temperature *float64
+}
+
+// defaultMaxTokens is the output budget used when a caller sets none. The
+// server always sets Params.MaxTokens; this only serves direct callers/tests.
+const defaultMaxTokens = 4096
+
+// budget resolves the output budget for a dialect that takes one.
+func (p Params) budget() int {
+	if p.MaxTokens > 0 {
+		return p.MaxTokens
+	}
+	return defaultMaxTokens
 }
 
 // Client calls the OpenCode Go API. The bearer key is supplied per request
 // (per-user keys, §2.1), so a single Client serves every user.
 type Client struct {
-	hc        *http.Client
-	baseURL   string // defaults to BaseURL; overridable in tests
-	modelsURL string // defaults to ModelsURL; overridable in tests
+	hc           *http.Client
+	baseURL      string // defaults to BaseURL; overridable in tests
+	modelsURL    string // defaults to ModelsURL; overridable in tests
+	messagesBase string // defaults to AnthropicBaseURL; overridable in tests
+	googleURL    string // defaults to GoogleBaseURL; overridable in tests
 }
 
 // NewClient returns a Client. The HTTP client has no overall timeout; every
 // call is bounded by its context.
 func NewClient() *Client {
-	return &Client{hc: &http.Client{}, baseURL: BaseURL, modelsURL: ModelsURL}
+	return &Client{
+		hc:           &http.Client{},
+		baseURL:      BaseURL,
+		modelsURL:    ModelsURL,
+		messagesBase: AnthropicBaseURL,
+		googleURL:    GoogleBaseURL,
+	}
 }
 
 // ValidateKey checks an API key against the model catalog, which answers 401
@@ -471,9 +497,14 @@ func (c *Client) Stream(ctx context.Context, p Params) <-chan Event {
 			}
 		}
 		var err error
-		if p.Dialect == "responses" {
+		switch p.Dialect {
+		case "responses":
 			err = c.streamResponses(ctx, p, send)
-		} else {
+		case "anthropic":
+			err = c.streamAnthropic(ctx, p, send)
+		case "google":
+			err = c.streamGoogle(ctx, p, send)
+		default:
 			err = c.streamChat(ctx, p, send)
 		}
 		if err != nil && ctx.Err() == nil {
@@ -656,7 +687,7 @@ func (c *Client) streamResponses(ctx context.Context, p Params, send func(Event)
 		"input":             responsesInput(p),
 		"store":             false,
 		"stream":            true,
-		"max_output_tokens": 4096,
+		"max_output_tokens": p.budget(),
 		"reasoning":         map[string]any{"effort": effort, "summary": "auto"},
 	}
 	// Project instructions go in the responses API's dedicated field (§8.6).
