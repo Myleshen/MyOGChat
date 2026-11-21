@@ -1,6 +1,6 @@
-// Package upstream implements the two OpenCode Go API dialect adapters
-// (chat completions and responses) per contract §4. Both emit a common
-// channel of normalized events.
+// Package upstream implements the three OpenCode Go API dialect adapters
+// (chat completions, responses and Anthropic messages) per contract §4. All
+// emit a common channel of normalized events.
 package upstream
 
 import (
@@ -383,7 +383,7 @@ type Event struct {
 
 // Params describes one streaming upstream call.
 type Params struct {
-	Dialect   string // "chat" | "responses"
+	Dialect   string // "chat" | "responses" | "anthropic"
 	Model     string
 	Effort    string // may be empty; responses dialect defaults to "medium"
 	SessionID string // conversation UUID, sent as x-opencode-session
@@ -398,20 +398,31 @@ type Params struct {
 	// Tools are exposed to the model for the agentic loop (Phase 2.4). Empty
 	// disables tool calling.
 	Tools []ToolSpec
+	// MaxTokens bounds the reply for dialects that require a budget (anthropic
+	// Messages). 0 lets the dialect choose its default.
+	MaxTokens int
+	// Temperature is sent only when non-nil.
+	Temperature *float64
 }
 
 // Client calls the OpenCode Go API. The bearer key is supplied per request
 // (per-user keys, §2.1), so a single Client serves every user.
 type Client struct {
-	hc        *http.Client
-	baseURL   string // defaults to BaseURL; overridable in tests
-	modelsURL string // defaults to ModelsURL; overridable in tests
+	hc           *http.Client
+	baseURL      string // defaults to BaseURL; overridable in tests
+	modelsURL    string // defaults to ModelsURL; overridable in tests
+	messagesBase string // defaults to AnthropicBaseURL; overridable in tests
 }
 
 // NewClient returns a Client. The HTTP client has no overall timeout; every
 // call is bounded by its context.
 func NewClient() *Client {
-	return &Client{hc: &http.Client{}, baseURL: BaseURL, modelsURL: ModelsURL}
+	return &Client{
+		hc:           &http.Client{},
+		baseURL:      BaseURL,
+		modelsURL:    ModelsURL,
+		messagesBase: AnthropicBaseURL,
+	}
 }
 
 // ValidateKey checks an API key against the model catalog, which answers 401
@@ -471,9 +482,12 @@ func (c *Client) Stream(ctx context.Context, p Params) <-chan Event {
 			}
 		}
 		var err error
-		if p.Dialect == "responses" {
+		switch p.Dialect {
+		case "responses":
 			err = c.streamResponses(ctx, p, send)
-		} else {
+		case "anthropic":
+			err = c.streamAnthropic(ctx, p, send)
+		default:
 			err = c.streamChat(ctx, p, send)
 		}
 		if err != nil && ctx.Err() == nil {
