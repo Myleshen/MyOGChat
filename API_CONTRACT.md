@@ -106,15 +106,20 @@ Server flow:
 4. Stream normalized SSE to the client as upstream events arrive.
 5. On completion: insert assistant message (content, reasoning, usage, cost_micros),
    bump conversation `updated_at`.
-6. **Auto-title**: if conversation `title` is still empty after the first assistant
-   reply, make ONE non-streaming chat-dialect call on the **caller's resolved key**
-   to the cheap non-reasoning Go model `mimo-v2.6-flash`:
+6. **Auto-title**: when the conversation `title` is still empty, make ONE
+   non-streaming chat-dialect call on the **caller's resolved key** to the
+   cheapest Go model `mimo-v2.6-flash`. It starts as soon as the job's history is
+   loaded and runs **in parallel with the reply**, so a slow title never delays
+   `done`:
    messages = `[{"role":"user","content":"Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\nUser: <first user msg, truncated to 400 chars>"}]`,
-   `max_tokens: 24`, no tools, no streaming, bounded by an 8 s timeout so it can
-   never outlive the job. Sanitize to one line ≤80 chars. On any failure (no key,
-   non-2xx, timeout, empty reply) use the first 40 chars of the first user
-   message — a title failure never fails the reply. Persist title and include it
-   in `done`.
+   `max_tokens: 64` (the model reasons before answering and those tokens share
+   the budget, so 24 left empty content), no tools, no streaming, on a context
+   detached from the job and bounded by a 30 s timeout. Sanitize to one line ≤80
+   chars. On any failure (no key, non-2xx, timeout, empty reply) use the first 40
+   chars of the first user message — a title failure never fails the reply. The
+   title is persisted only while the conversation still has none, so it never
+   overwrites a rename. `done` carries the title when it has already landed;
+   otherwise `done` goes out immediately and the write happens afterwards.
 
 **SSE wire format** (`Content-Type: text/event-stream`, `Cache-Control: no-cache`);
 each event is `event: <type>\ndata: <json>\n\n`, plus `: keepalive\n\n` comment
