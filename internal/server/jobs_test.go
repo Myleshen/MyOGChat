@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -363,4 +364,24 @@ func getGeneration(t *testing.T, srv *Server, u store.User, convID string) gener
 		t.Fatalf("decode snapshot: %v", err)
 	}
 	return snap
+}
+
+// TestJobReportsSilentProvider verifies the first-byte timeout of a custom
+// provider reaches the client as a job error that names the model, not the
+// generic "upstream stream ended unexpectedly".
+func TestJobReportsSilentProvider(t *testing.T) {
+	srv, st := newJobTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "key")
+	mkConv(t, st, u, "c1")
+
+	msg := `provider did not respond within 60s (model "z-ai/glm-5.3-flash"); the model may not be available — try another model`
+	srv.streamAgentFn = fixedStream(upstream.Event{Kind: upstream.EventError, Err: errors.New(msg)})
+
+	if rec := postMessage(srv, u, "c1", "hi"); rec.Code != http.StatusOK {
+		t.Fatalf("post status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	waitFor(t, func() bool { return getGeneration(t, srv, u, "c1").Status == jobError })
+	if snap := getGeneration(t, srv, u, "c1"); snap.Error != msg {
+		t.Fatalf("job error = %q, want %q", snap.Error, msg)
+	}
 }

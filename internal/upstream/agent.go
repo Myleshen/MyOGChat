@@ -94,13 +94,13 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, opts
 		}
 
 		roundCtx, cancelRound := context.WithTimeout(ctx, opts.callTimeout())
-		resp, err := c.do(roundCtx, p.BaseURL, "/chat/completions", p.SessionID, p.APIKey, payload)
-		if err != nil && useTools && iter == 0 {
+		resp, err := c.openChatStream(roundCtx, p, payload)
+		if err != nil && useTools && iter == 0 && !isSilentProvider(err) {
 			// A model that rejects tool calling must not break the chat: retry
 			// once without tools and answer normally.
 			delete(payload, "tools")
 			delete(payload, "tool_choice")
-			resp, err = c.do(roundCtx, p.BaseURL, "/chat/completions", p.SessionID, p.APIKey, payload)
+			resp, err = c.openChatStream(roundCtx, p, payload)
 		}
 		if err != nil {
 			cancelRound()

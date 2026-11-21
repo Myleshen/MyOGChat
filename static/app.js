@@ -2388,7 +2388,7 @@ function buildProviderRow(p) {
   } else if (n === 0) {
     status.textContent = "Key stored — no models loaded yet. Refresh models to fetch them.";
   } else {
-    status.textContent = "Key stored · models ready.";
+    status.textContent = "Models listed by the provider; a wrong key shows its error on your first message.";
   }
   li.appendChild(status);
 

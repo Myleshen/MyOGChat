@@ -287,6 +287,10 @@ request. When it is set the adapters post to `<BaseURL>/chat/completions` with
 `x-opencode-session`** (that header belongs to OpenCode). Custom models are
 chat-dialect only; the internal helpers (auto-title, project memory, image-prompt
 enhancement, OCR vision) keep bare OpenCode ids and never use a custom base.
+A custom-provider stream must deliver its first byte within 60 s or the call
+fails with `provider did not respond within 60s (model "<id>"); the model may
+not be available — try another model`; the deadline is stopped by the first byte,
+so it never bounds the rest of the reply. OpenCode turns have no such deadline.
 
 **chat dialect** → `POST https://opencode.ai/inference/go/openai/v1/chat/completions`:
 `{"model":…, "messages":[{"role","content"}…], "stream":true,
@@ -1713,7 +1717,9 @@ returned. `models` is the cached `GET <base_url>/models` list.
   `http`/`https` URL with no query, fragment or credentials; `api_key`
   non-empty. Before storing anything the server calls
   `GET <base_url>/models` with `Authorization: Bearer <api_key>`,
-  `User-Agent: myogchat/1.0`, 10 s timeout, to prove the key and fill `models`.
+  `User-Agent: myogchat/1.0`, 10 s timeout, to fill `models`. A `401`/`403`
+  rejects a bad key, but not every provider checks it here (NVIDIA's `/models`
+  answers without one), so the key is only really proven by the first message.
   That response may be `{"data":[{"id","name"?}]}` or a bare array; a missing
   `name` falls back to `id`. A failure returns
   `400 {"error":"could not list models: upstream HTTP <code>: <snippet>"}` and
