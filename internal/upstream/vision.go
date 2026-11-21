@@ -88,7 +88,7 @@ func (c *Client) VisionOnce(ctx context.Context, req VisionRequest) (string, err
 		}
 	}
 
-	resp, err := c.do(ctx, path, req.SessionID, req.APIKey, payload)
+	resp, err := c.do(ctx, "", path, req.SessionID, req.APIKey, payload)
 	if err != nil {
 		return "", err
 	}

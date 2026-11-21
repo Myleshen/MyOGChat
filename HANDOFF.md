@@ -20,6 +20,9 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
   digest, 5.10 reuse empty draft, 5.11 multiple mailboxes — plus the hardening
   pass (see `TODO.md` → Phase 5). **5.12 agent mode** is implemented and
   unit-tested but **not deployed** (`docs/5.12-agent-mode.md`).
+- **Custom providers** (2026-11-21): each user can add an OpenAI-compatible
+  endpoint (e.g. NVIDIA NIM) with their own key; its models join the picker,
+  chat-completions only, prices untracked (`docs/6.5-custom-providers.md`).
 
 ## Live deployment
 

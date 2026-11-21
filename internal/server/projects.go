@@ -1,12 +1,12 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
-	"myogchat/internal/models"
 	"myogchat/internal/store"
 )
 
@@ -64,7 +64,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "instructions exceed 8000 characters")
 		return
 	}
-	dm, ok := validDefaultModel(w, req.DefaultModel)
+	dm, ok := s.validDefaultModel(r.Context(), u, w, req.DefaultModel)
 	if !ok {
 		return
 	}
@@ -153,7 +153,7 @@ func (s *Server) handlePatchProject(w http.ResponseWriter, r *http.Request) {
 		p.MemoryAuto = *req.MemoryAuto
 	}
 	if req.DefaultModel != nil {
-		dm, ok := validDefaultModel(w, req.DefaultModel)
+		dm, ok := s.validDefaultModel(r.Context(), u, w, req.DefaultModel)
 		if !ok {
 			return
 		}
@@ -204,12 +204,13 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request, userID strin
 }
 
 // validDefaultModel validates an optional default-model reference. nil and ""
-// both mean "no default".
-func validDefaultModel(w http.ResponseWriter, m *string) (*string, bool) {
+// both mean "no default". A custom provider id is valid when the caller owns
+// the provider (§22).
+func (s *Server) validDefaultModel(ctx context.Context, u store.User, w http.ResponseWriter, m *string) (*string, bool) {
 	if m == nil || *m == "" {
 		return nil, true
 	}
-	if _, ok := models.ByID(*m); !ok {
+	if _, _, err := s.resolveModel(ctx, u, *m); err != nil {
 		writeError(w, http.StatusBadRequest, "unknown model")
 		return nil, false
 	}

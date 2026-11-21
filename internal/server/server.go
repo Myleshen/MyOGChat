@@ -200,6 +200,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/me/key", s.handleGetMyKey)
 	mux.HandleFunc("PUT /api/me/key", s.handlePutMyKey)
+	// Per-user custom upstream providers (§22).
+	mux.HandleFunc("GET /api/me/providers", s.handleListProviders)
+	mux.HandleFunc("POST /api/me/providers", s.handleCreateProvider)
+	mux.HandleFunc("POST /api/me/providers/{id}/models", s.handleRefreshProviderModels)
+	mux.HandleFunc("DELETE /api/me/providers/{id}", s.handleDeleteProvider)
 	// Usage & quotas (2.11).
 	mux.HandleFunc("GET /api/me/usage", s.handleMyUsage)
 	mux.HandleFunc("GET /api/users/usage", s.handleUsersUsage)
@@ -302,9 +307,32 @@ func currentUser(w http.ResponseWriter, r *http.Request) (store.User, bool) {
 	return u, true
 }
 
-// handleModels returns the static registry sorted by output_per_m ascending.
-func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, models.Sorted())
+// handleModels returns the static registry sorted by output_per_m ascending,
+// plus one entry per model of each of the caller's custom providers (§22).
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	list := models.Sorted()
+	providers, err := s.st.ListUserProviders(r.Context(), u.ID)
+	if err != nil {
+		s.log.Error("list providers for models", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list models")
+		return
+	}
+	for _, p := range providers {
+		for _, pm := range p.Models {
+			list = append(list, models.Model{
+				ID:       p.Slug + "/" + pm.ID,
+				Name:     pm.Name,
+				Dialect:  models.DialectChat,
+				Provider: p.Slug,
+				// CostTracked stays false: the provider's prices are unknown.
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
@@ -408,9 +436,14 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 	if modelID == "" && project != nil && project.DefaultModel != nil {
 		modelID = *project.DefaultModel
 	}
-	m, ok := models.ByID(modelID)
-	if !ok {
+	m, _, err := s.resolveModel(r.Context(), u, modelID)
+	if errors.Is(err, errUnknownModel) {
 		writeError(w, http.StatusBadRequest, "unknown model")
+		return
+	}
+	if err != nil {
+		s.log.Error("resolve model", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve model")
 		return
 	}
 	var effort *string
@@ -548,9 +581,14 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 		conv.Title = *req.Title
 	}
 	if req.Model != nil {
-		m, ok := models.ByID(*req.Model)
-		if !ok {
+		m, _, err := s.resolveModel(r.Context(), u, *req.Model)
+		if errors.Is(err, errUnknownModel) {
 			writeError(w, http.StatusBadRequest, "unknown model")
+			return
+		}
+		if err != nil {
+			s.log.Error("resolve model", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to resolve model")
 			return
 		}
 		conv.Model = m.ID
@@ -563,7 +601,11 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 				writeError(w, http.StatusBadRequest, "invalid effort")
 				return
 			}
-			m, _ := models.ByID(conv.Model)
+			m, _, err := s.resolveModel(r.Context(), u, conv.Model)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "unknown model")
+				return
+			}
 			if m.Dialect != models.DialectResponses {
 				writeError(w, http.StatusBadRequest, "effort is only valid for responses-dialect models")
 				return
@@ -573,7 +615,7 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 	}
 	// Effort is meaningless on chat-dialect models; keep the row consistent
 	// when the model was switched across dialects.
-	if m, ok := models.ByID(conv.Model); ok && m.Dialect != models.DialectResponses {
+	if m, _, err := s.resolveModel(r.Context(), u, conv.Model); err == nil && m.Dialect != models.DialectResponses {
 		conv.Effort = nil
 	}
 	// Pinned chats (feature B) are toggled through a dedicated owner-guarded

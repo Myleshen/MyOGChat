@@ -415,6 +415,11 @@ type Params struct {
 	MaxTokens int
 	// Temperature is sent only when non-nil.
 	Temperature *float64
+	// BaseURL overrides the OpenCode Go base for a user-added OpenAI-compatible
+	// provider (§22). When set, the request goes to BaseURL+path with a Bearer
+	// key and User-Agent, and x-opencode-session is NOT sent: the header belongs
+	// to OpenCode. Custom models are always chat-dialect.
+	BaseURL string
 }
 
 // defaultMaxTokens is the output budget used when a caller sets none. The
@@ -537,7 +542,7 @@ func (c *Client) ChatOnce(ctx context.Context, apiKey, sessionID, model string, 
 		"max_tokens": maxTokens,
 		"stream":     false,
 	}
-	resp, err := c.do(ctx, "/chat/completions", sessionID, apiKey, payload)
+	resp, err := c.do(ctx, "", "/chat/completions", sessionID, apiKey, payload)
 	if err != nil {
 		return "", err
 	}
@@ -562,22 +567,29 @@ func (c *Client) ChatOnce(ctx context.Context, apiKey, sessionID, model string, 
 	return out.Choices[0].Message.Content, nil
 }
 
-// do issues one POST against the Go base with the required headers and returns
-// the response if its status is 2xx. Non-2xx yields an error with status +
-// body snippet.
-func (c *Client) do(ctx context.Context, path, sessionID, apiKey string, payload any) (*http.Response, error) {
+// do issues one POST against the Go base (or baseURL when set) with the required
+// headers and returns the response if its status is 2xx. Non-2xx yields an error
+// with status + body snippet. x-opencode-session is sent only to OpenCode itself:
+// a custom provider (§22) never receives it.
+func (c *Client) do(ctx context.Context, baseURL, path, sessionID, apiKey string, payload any) (*http.Response, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	base := c.baseURL
+	if baseURL != "" {
+		base = strings.TrimRight(baseURL, "/")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("x-opencode-session", sessionID)
+	if baseURL == "" {
+		req.Header.Set("x-opencode-session", sessionID)
+	}
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -641,7 +653,7 @@ func (c *Client) streamChat(ctx context.Context, p Params, send func(Event) bool
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
 	}
-	resp, err := c.do(ctx, "/chat/completions", p.SessionID, p.APIKey, payload)
+	resp, err := c.do(ctx, p.BaseURL, "/chat/completions", p.SessionID, p.APIKey, payload)
 	if err != nil {
 		return err
 	}
@@ -705,7 +717,7 @@ func (c *Client) streamResponses(ctx context.Context, p Params, send func(Event)
 	if p.Instructions != "" {
 		payload["instructions"] = p.Instructions
 	}
-	resp, err := c.do(ctx, "/responses", p.SessionID, p.APIKey, payload)
+	resp, err := c.do(ctx, p.BaseURL, "/responses", p.SessionID, p.APIKey, payload)
 	if err != nil {
 		return err
 	}

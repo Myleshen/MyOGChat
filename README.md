@@ -27,6 +27,10 @@ docs under [`docs/`](docs/).
   Qwen3.7/3.8, Qwen4 Max) and Google `generateContent` (Gemini 4 Argon), with a
   reasoning-effort selector. 28 models in total, all priced from the live catalog
   ([`docs/6.4-upstream-dialects.md`](docs/6.4-upstream-dialects.md)).
+- **Custom providers** — add your own OpenAI-compatible endpoint (e.g. NVIDIA
+  NIM) with your own key; its models join the picker, chat-completions only and
+  prices reported as untracked
+  ([`docs/6.5-custom-providers.md`](docs/6.5-custom-providers.md))
 - Collapsible **thinking** blocks (duration + reasoning-token count) and a
   thinking badge on models that surface reasoning
 - Per-message **cost** and **tokens/sec**, plus a conversation running total

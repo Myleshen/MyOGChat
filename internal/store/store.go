@@ -166,6 +166,24 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_user ON artifacts(user_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts(conversation_id);
+` + userProvidersSchema
+
+// userProvidersSchema is the per-user custom upstream provider table (§22).
+// It is kept in its own constant because it is applied twice: by the base
+// schema on a fresh database and by migrate() on an existing one.
+const userProvidersSchema = `
+CREATE TABLE IF NOT EXISTS user_providers (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  slug       TEXT NOT NULL,
+  base_url   TEXT NOT NULL,
+  key_enc    TEXT NOT NULL,
+  models     TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  UNIQUE(user_id, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_user_providers_user ON user_providers(user_id);
 `
 
 // User mirrors a row of the users table (§9.1).
@@ -375,6 +393,26 @@ type Project struct {
 	ConversationCount int64   `json:"conversation_count"`
 }
 
+// ProviderModel is one model a custom provider's catalog lists (id is the
+// provider's own model id, which may itself contain a slash).
+type ProviderModel struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Provider mirrors a row of user_providers (§22): a user-added OpenAI-compatible
+// upstream. KeyEnc is the AES-256-GCM encrypted API key and is never returned.
+type Provider struct {
+	ID        string          `json:"id"`
+	UserID    string          `json:"-"`
+	Name      string          `json:"name"`
+	Slug      string          `json:"slug"`
+	BaseURL   string          `json:"base_url"`
+	KeyEnc    string          `json:"-"`
+	Models    []ProviderModel `json:"models"`
+	CreatedAt int64           `json:"created_at"`
+}
+
 // Group mirrors a row of the groups table (§2.2). IsOwner and Members are
 // filled by the read helpers relative to the requesting user.
 type Group struct {
@@ -430,6 +468,11 @@ func Open(path string) (*Store, error) {
 // migrate adds columns introduced after earlier releases without dropping data.
 func (s *Store) migrate() error {
 	if err := s.migrateMailAccounts(); err != nil {
+		return err
+	}
+	// Custom upstream providers (§22): a new table, so an existing database
+	// gains it without touching any other row.
+	if _, err := s.db.Exec(userProvidersSchema); err != nil {
 		return err
 	}
 	steps := []struct {
@@ -1447,6 +1490,119 @@ func (s *Store) projectCounts(ctx context.Context, userID string) (map[string]in
 		counts[id] = n
 	}
 	return counts, rows.Err()
+}
+
+// ---------- custom upstream providers (§22) ----------
+
+const providerCols = "id, user_id, name, slug, base_url, key_enc, models, created_at"
+
+func scanProvider(sc scanner) (Provider, error) {
+	var p Provider
+	var models sql.NullString
+	if err := sc.Scan(&p.ID, &p.UserID, &p.Name, &p.Slug, &p.BaseURL, &p.KeyEnc, &models, &p.CreatedAt); err != nil {
+		return Provider{}, err
+	}
+	p.Models = []ProviderModel{}
+	if models.Valid && models.String != "" {
+		// A malformed blob must not break the provider list; it just looks empty.
+		_ = json.Unmarshal([]byte(models.String), &p.Models)
+	}
+	if p.Models == nil {
+		p.Models = []ProviderModel{}
+	}
+	return p, nil
+}
+
+// CreateUserProvider inserts a provider owned by p.UserID. The caller resolves
+// the slug; the table's UNIQUE(user_id, slug) is the final guard.
+func (s *Store) CreateUserProvider(ctx context.Context, p *Provider) error {
+	models := p.Models
+	if models == nil {
+		models = []ProviderModel{}
+	}
+	blob, err := json.Marshal(models)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO user_providers (`+providerCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.UserID, p.Name, p.Slug, p.BaseURL, p.KeyEnc, string(blob), p.CreatedAt)
+	return err
+}
+
+// ListUserProviders returns the caller's providers, oldest first.
+func (s *Store) ListUserProviders(ctx context.Context, userID string) ([]Provider, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+providerCols+` FROM user_providers WHERE user_id = ? ORDER BY created_at ASC, rowid ASC`,
+		userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	providers := make([]Provider, 0)
+	for rows.Next() {
+		p, err := scanProvider(rows)
+		if err != nil {
+			return nil, err
+		}
+		providers = append(providers, p)
+	}
+	return providers, rows.Err()
+}
+
+// GetUserProvider loads one provider owned by userID, else ErrNotFound (a row
+// owned by another user is indistinguishable from a missing one).
+func (s *Store) GetUserProvider(ctx context.Context, id, userID string) (Provider, error) {
+	p, err := scanProvider(s.db.QueryRowContext(ctx,
+		`SELECT `+providerCols+` FROM user_providers WHERE id = ? AND user_id = ?`, id, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Provider{}, ErrNotFound
+	}
+	if err != nil {
+		return Provider{}, err
+	}
+	return p, nil
+}
+
+// UpdateUserProviderModels replaces the cached model list of one owned provider.
+func (s *Store) UpdateUserProviderModels(ctx context.Context, id, userID string, models []ProviderModel) error {
+	if models == nil {
+		models = []ProviderModel{}
+	}
+	blob, err := json.Marshal(models)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE user_providers SET models = ? WHERE id = ? AND user_id = ?`, string(blob), id, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteUserProvider removes one owned provider, else ErrNotFound.
+func (s *Store) DeleteUserProvider(ctx context.Context, id, userID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM user_providers WHERE id = ? AND user_id = ?`, id, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ---------- groups (§2.2) ----------

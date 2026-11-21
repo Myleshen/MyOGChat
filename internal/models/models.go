@@ -28,6 +28,13 @@ type Model struct {
 	InputPerM     float64 `json:"input_per_m"`
 	OutputPerM    float64 `json:"output_per_m"`
 	CacheReadPerM float64 `json:"cache_read_per_m"`
+	// Provider is the slug of a user-added custom provider (§22); empty for
+	// registry models.
+	Provider string `json:"provider,omitempty"`
+	// CostTracked is false for custom-provider models, whose prices are unknown.
+	// It is set by the server when the model list is built; registry models are
+	// tracked.
+	CostTracked bool `json:"cost_tracked"`
 
 	// Tier pricing applies when prompt_tokens exceed TierThreshold.
 	TierThreshold  int64   `json:"-"`
@@ -129,9 +136,13 @@ func ByID(id string) (Model, bool) {
 }
 
 // Sorted returns the registry sorted by output_per_m ascending (contract §3).
+// Every entry is cost-tracked: its prices come from the live catalog.
 func Sorted() []Model {
 	out := make([]Model, len(Registry))
 	copy(out, Registry)
+	for i := range out {
+		out[i].CostTracked = true
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].OutputPerM < out[j].OutputPerM
 	})
@@ -164,6 +175,10 @@ func IsPeak(now time.Time) bool {
 //
 // where the per-token rates are price_per_m (USD per 1M tokens) — numerically
 // equal to micro-dollars per token. Tier/peak rate selection happens first.
+//
+// A custom-provider model (§22) carries no rates because its prices are unknown.
+// The arithmetic below then yields 0, which the payload marks as untracked
+// (cost_tracked false) rather than presenting a fabricated price.
 func CostMicros(m Model, prompt, completion, cached int64, now time.Time) int64 {
 	in, out, cache := m.InputPerM, m.OutputPerM, m.CacheReadPerM
 	switch {
