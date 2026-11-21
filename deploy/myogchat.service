@@ -9,7 +9,7 @@ Type=simple
 # Secrets live here (chmod 600): OPENCODE_API_KEY and the optional
 # search/speech/imagegen keys, plus optional Linkwarden fallback credentials.
 EnvironmentFile=%h/.config/myogchat/env
-ExecStart=%h/.local/bin/myogchat
+ExecStart=%h/softwares/MyOGChat/myogchat
 Restart=always
 RestartSec=3
 

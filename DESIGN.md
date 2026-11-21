@@ -60,7 +60,7 @@ than the retention window. Messages cascade-delete.
 ## Deployment
 
 Cross-compile on dev machine: `GOOS=linux GOARCH=arm64 go build`.
-Deploy to Pi via ssh: binary → `~/.local/bin/myogchat`, systemd unit
+Deploy to Pi via ssh: binary → `~/softwares/MyOGChat/myogchat`, systemd unit
 `deploy/myogchat.service`, secrets in `~/.config/myogchat/env` (chmod 600).
 Cloudflare Tunnel public hostname (added manually by owner in CF dashboard)
 points to `http://raspberrypi.local:8787`.
