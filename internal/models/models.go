@@ -13,6 +13,7 @@ const (
 	DialectChat      = "chat"
 	DialectResponses = "responses"
 	DialectAnthropic = "anthropic"
+	DialectGoogle    = "google"
 )
 
 // Model describes one upstream LLM. Tier thresholds and peak-pricing

@@ -46,6 +46,8 @@ func (c *Client) StreamAgent(ctx context.Context, p Params, exec ExecuteTool, op
 			err = c.agentResponses(ctx, p, exec, opts, send)
 		case "anthropic":
 			err = c.agentAnthropic(ctx, p, exec, opts, send)
+		case "google":
+			err = c.agentGoogle(ctx, p, exec, opts, send)
 		default:
 			err = c.agentChat(ctx, p, exec, opts, send)
 		}

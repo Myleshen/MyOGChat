@@ -1,5 +1,6 @@
-// Package upstream implements the three OpenCode Go API dialect adapters
-// (chat completions, responses and Anthropic messages) per contract §4. All
+// Package upstream implements the four OpenCode Go API dialect adapters
+// (chat completions, responses, Anthropic messages and Google
+// generate-content) per contract §4. All
 // emit a common channel of normalized events.
 package upstream
 
@@ -383,7 +384,7 @@ type Event struct {
 
 // Params describes one streaming upstream call.
 type Params struct {
-	Dialect   string // "chat" | "responses" | "anthropic"
+	Dialect   string // "chat" | "responses" | "anthropic" | "google"
 	Model     string
 	Effort    string // may be empty; responses dialect defaults to "medium"
 	SessionID string // conversation UUID, sent as x-opencode-session
@@ -412,6 +413,7 @@ type Client struct {
 	baseURL      string // defaults to BaseURL; overridable in tests
 	modelsURL    string // defaults to ModelsURL; overridable in tests
 	messagesBase string // defaults to AnthropicBaseURL; overridable in tests
+	googleURL    string // defaults to GoogleBaseURL; overridable in tests
 }
 
 // NewClient returns a Client. The HTTP client has no overall timeout; every
@@ -422,6 +424,7 @@ func NewClient() *Client {
 		baseURL:      BaseURL,
 		modelsURL:    ModelsURL,
 		messagesBase: AnthropicBaseURL,
+		googleURL:    GoogleBaseURL,
 	}
 }
 
@@ -487,6 +490,8 @@ func (c *Client) Stream(ctx context.Context, p Params) <-chan Event {
 			err = c.streamResponses(ctx, p, send)
 		case "anthropic":
 			err = c.streamAnthropic(ctx, p, send)
+		case "google":
+			err = c.streamGoogle(ctx, p, send)
 		default:
 			err = c.streamChat(ctx, p, send)
 		}
