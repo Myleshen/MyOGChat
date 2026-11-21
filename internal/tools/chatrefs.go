@@ -21,8 +21,8 @@ import (
 const (
 	chatListDefault = 20  // default list_chats limit
 	chatListMax     = 50  // hard cap on list_chats
-	chatReadDefault = 40  // default read_chat message count
-	chatReadMax     = 100 // hard cap on read_chat messages
+	chatReadDefault = 40  // default messages per read_chat page
+	chatPageMax     = 100 // hard page limit: one read_chat call never returns more messages
 
 	// chatMessageCap bounds one message's text (runes) so one huge turn cannot
 	// crowd out the rest of the transcript.
@@ -32,8 +32,8 @@ const (
 	chatReasoningCap = 2000
 	chatArgsCap      = 1000
 	chatOutputCap    = 2000
-	// chatBudget bounds the whole read_chat result (runes), header included.
-	chatBudget = 48000
+	// chatBudget bounds one read_chat page (runes), header and footer included.
+	chatBudget = 200000
 	// chatAmbiguousMax is how many candidates an ambiguous-title error lists.
 	chatAmbiguousMax = 5
 	// chatTitleCap bounds the title echoed in the read_chat header.
@@ -227,9 +227,10 @@ func (t *ReadChatTool) Description() string {
 		"or title, as it was stored: user and assistant text, the assistant's " +
 		"thinking, the tool calls it made (with arguments, output and errors) and " +
 		"the names of files involved. Use this whenever the user refers to another " +
-		"chat and you need what was actually said and done there. If the reference " +
-		"is vague, call list_chats first. Never invent or summarize a chat from " +
-		"its title: read it."
+		"chat and you need what was actually said and done there. Long chats are " +
+		"paged: the footer says which messages were shown and which offset reads on. " +
+		"If the reference is vague, call list_chats first. Never invent or summarize " +
+		"a chat from its title: read it."
 }
 
 func (t *ReadChatTool) Parameters() json.RawMessage {
@@ -244,9 +245,13 @@ func (t *ReadChatTool) Parameters() json.RawMessage {
 				"type":        "string",
 				"description": "Conversation title. An exact (case-insensitive) match is preferred, then a case-insensitive substring; several matches return an error listing the candidates.",
 			},
+			"offset": map[string]any{
+				"type":        "integer",
+				"description": "0-based message index to start reading from (default 0). Use the offset in the previous result's footer to read the next page.",
+			},
 			"limit": map[string]any{
 				"type":        "integer",
-				"description": "How many of the most recent messages to include (default 40, max 100). Older messages are omitted; the header says how many.",
+				"description": "Maximum messages in this page (default 40, max 100). The page may be shorter when the size budget runs out; the footer names the offset that continues.",
 			},
 		},
 	})
@@ -254,9 +259,10 @@ func (t *ReadChatTool) Parameters() json.RawMessage {
 
 func (t *ReadChatTool) Run(ctx context.Context, args json.RawMessage) (string, error) {
 	var in struct {
-		ID    string `json:"id"`
-		Title string `json:"title"`
-		Limit int    `json:"limit"`
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
 	}
 	if err := DecodeArgs(args, &in); err != nil {
 		return "", err
@@ -274,51 +280,92 @@ func (t *ReadChatTool) Run(ctx context.Context, args json.RawMessage) (string, e
 		return "", err
 	}
 	turns := chatTurns(msgs)
-	total := len(turns)
-	limit := clampChatLimit(in.Limit, chatReadDefault, chatReadMax)
-	if len(turns) > limit {
-		turns = turns[len(turns)-limit:]
+	offset := in.Offset
+	if offset < 0 {
+		offset = 0
 	}
-	return renderChat(c, total, turns), nil
+	limit := clampChatLimit(in.Limit, chatReadDefault, chatPageMax)
+	return renderChat(c, len(turns), turns, offset, limit), nil
 }
 
-// renderChat renders the header plus the newest turns that fit the budget,
-// dropping the oldest whole turns until the result is within chatBudget runes.
-func renderChat(c ChatInfo, total int, turns []chatTurn) string {
-	blocks := make([]string, len(turns))
-	for i, turn := range turns {
-		blocks[i] = turn.block()
+// renderChat renders one page: the fixed header, then whole turns from offset
+// while they fit in chatBudget, then a footer naming the range shown and the
+// offset that continues. A single turn bigger than the budget is cut at the
+// budget, marked, and reported in the footer.
+func renderChat(c ChatInfo, total int, turns []chatTurn, offset, limit int) string {
+	header := chatHeader(c, total)
+	if total == 0 {
+		return header
 	}
-	for {
-		shown := len(blocks)
-		toolCalls := 0
-		for _, t := range turns[len(turns)-shown:] {
-			toolCalls += len(t.tools)
+	if offset >= total {
+		return header + "\n\n" + fmt.Sprintf(
+			"Offset %d is past the end of this chat, which has %d messages. Call read_chat again with offset=0 to start from the beginning.",
+			offset, total)
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	used := len([]rune(header)) + 2 // header + blank line before the body
+	shown := 0
+	var body strings.Builder
+	for i := offset; i < end; i++ {
+		block := turns[i].block()
+		add := len([]rune(block))
+		if shown > 0 {
+			add += 2 // blank line between turns
 		}
-		header := chatHeader(c, total, shown, toolCalls)
-		if shown == 0 {
-			return header
-		}
-		out := header + "\n\n" + strings.Join(blocks, "\n\n")
-		over := len([]rune(out)) - chatBudget
-		if over <= 0 {
-			return out
-		}
-		if shown == 1 {
-			// One oversized turn: hard-cap it rather than blow the budget.
-			room := chatBudget - len([]rune(header)) - 2
-			if room < 1 {
-				return header
+		footer := chatFooter(offset, shown+1, total, false)
+		if used+add+2+len([]rune(footer)) > chatBudget {
+			if shown == 0 {
+				return oversizedPage(header, block, offset, total)
 			}
-			return header + "\n\n" + truncateRunes(blocks[0], room) + " …[truncated]"
+			break
 		}
-		blocks = blocks[1:]
+		if shown > 0 {
+			body.WriteString("\n\n")
+		}
+		body.WriteString(block)
+		used += add
+		shown++
 	}
+	return header + "\n\n" + body.String() + "\n\n" + chatFooter(offset, shown, total, false)
 }
 
-// chatHeader is the fixed preamble of a transcript: identity, timestamps, what
-// was omitted, and how faithful the body is.
-func chatHeader(c ChatInfo, total, shown, toolCalls int) string {
+// chatFooter states the message range shown and how to continue, or that the
+// chat ends here. Numbers are 1-based, so the last number shown is also the
+// 0-based offset of the next message.
+func chatFooter(offset, shown, total int, oversized bool) string {
+	first, last := offset+1, offset+shown
+	var s string
+	if last >= total {
+		s = fmt.Sprintf("Showing messages %d–%d of %d (end of chat).", first, total, total)
+	} else {
+		s = fmt.Sprintf("Showing messages %d–%d of %d. Call read_chat again with offset=%d to continue.", first, last, total, last)
+	}
+	if oversized {
+		s += fmt.Sprintf(" Message %d alone exceeds the page budget, so only its beginning is shown.", first)
+	}
+	return s
+}
+
+// oversizedPage renders the head of a single turn that cannot fit the budget.
+// The footer advances past it so paging still terminates.
+func oversizedPage(header, block string, offset, total int) string {
+	footer := chatFooter(offset, 1, total, true)
+	sep := len([]rune("\n\n"))
+	mark := " …[truncated]"
+	room := chatBudget - len([]rune(header)) - 2*sep - len([]rune(footer)) - len([]rune(mark))
+	if room < 1 {
+		return header + "\n\n" + footer
+	}
+	return header + "\n\n" + truncateRunes(block, room) + mark + "\n\n" + footer
+}
+
+// chatHeader is the fixed preamble of a transcript: identity, timestamps, how
+// many messages it has, and how faithful the body is. The footer, not the
+// header, reports the page range.
+func chatHeader(c ChatInfo, total int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Chat: %q (id %s)\n", truncateRunes(c.Title, chatTitleCap), c.ID)
 	if c.Project != "" {
@@ -327,14 +374,10 @@ func chatHeader(c ChatInfo, total, shown, toolCalls int) string {
 		b.WriteString("Project: unfiled\n")
 	}
 	fmt.Fprintf(&b, "Updated: %s; started %s\n", formatMillis(c.UpdatedAt), formatMillis(c.CreatedAt))
-	switch {
-	case total == 0:
+	if total == 0 {
 		b.WriteString("Transcript: no messages yet.\n")
-	case shown >= total:
-		fmt.Fprintf(&b, "Transcript: all %d messages (%d tool call(s)).\n", total, toolCalls)
-	default:
-		fmt.Fprintf(&b, "Transcript: the last %d of %d messages (%d earlier messages omitted, %d tool call(s) shown).\n",
-			shown, total, total-shown, toolCalls)
+	} else {
+		fmt.Fprintf(&b, "Transcript: %d messages.\n", total)
 	}
 	b.WriteString("Note: message text is verbatim from storage; tool lines are what the sandbox/API actually returned; " +
 		"thinking may be truncated; attachments/artifacts are file metadata only (no file contents).")

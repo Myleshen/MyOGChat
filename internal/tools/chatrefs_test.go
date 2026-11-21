@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -163,8 +164,9 @@ func TestReadChatIncludesEverything(t *testing.T) {
 		`Chat: "Launcher" (id c1)`,
 		"Project: Home",
 		"Updated: 1970-01-01T00:00:02Z; started 1970-01-01T00:00:01Z",
-		"Transcript: all 2 messages (2 tool call(s)).",
+		"Transcript: 2 messages.",
 		"message text is verbatim from storage",
+		"Showing messages 1–2 of 2 (end of chat).",
 		"User: build the launcher",
 		"Assistant: Built it.",
 		"  Thinking: I checked the logs first.",
@@ -223,42 +225,235 @@ func TestReadChatTruncationMarks(t *testing.T) {
 	}
 }
 
-// TestReadChatBudgetTrimsOldest checks the 48k budget drops whole old messages
-// and reports exactly how many were omitted.
-func TestReadChatBudgetTrimsOldest(t *testing.T) {
-	msgs := make([]ChatMessage, 0, 8)
-	for i := 0; i < 8; i++ {
-		msgs = append(msgs, ChatMessage{Role: "user", Content: fmt.Sprintf("m%d ", i) + strings.Repeat("汉", 8000)})
+// pageEnd reads a read_chat footer: -1 means the page ended the chat,
+// otherwise the 0-based offset that continues.
+func pageEnd(t *testing.T, out string) int {
+	t.Helper()
+	if strings.Contains(out, "(end of chat)") {
+		return -1
+	}
+	i := strings.LastIndex(out, "offset=")
+	if i < 0 {
+		t.Fatalf("footer has no offset:\n%.300s", out)
+	}
+	i += len("offset=")
+	j := i
+	for j < len(out) && out[j] >= '0' && out[j] <= '9' {
+		j++
+	}
+	n, err := strconv.Atoi(out[i:j])
+	if err != nil {
+		t.Fatalf("bad footer offset %q: %v", out[i:j], err)
+	}
+	return n
+}
+
+// TestReadChatBudgetPagesLargeMessages checks the 200k budget bounds every page,
+// large messages are paged rather than silently dropped, and every message is
+// still reachable.
+func TestReadChatBudgetPagesLargeMessages(t *testing.T) {
+	const total = 40
+	msgs := make([]ChatMessage, 0, total)
+	for i := 0; i < total; i++ {
+		msgs = append(msgs, ChatMessage{Role: "user", Content: fmt.Sprintf("m%02d ", i) + strings.Repeat("汉", 7990)})
 	}
 	src := &fakeChatSource{
 		chats: []ChatInfo{{ID: "c1", Title: "Big"}},
 		msgs:  map[string][]ChatMessage{"c1": msgs},
+	}
+	offset, pages := 0, 0
+	for {
+		pages++
+		if pages > total {
+			t.Fatalf("paging did not terminate after %d pages", pages)
+		}
+		out, err := runTool(t, NewReadChatTool(src), fmt.Sprintf(`{"id":"c1","offset":%d}`, offset))
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if n := len([]rune(out)); n > chatBudget {
+			t.Fatalf("page %d is %d runes, budget %d", pages, n, chatBudget)
+		}
+		if !utf8.ValidString(out) || strings.ContainsRune(out, '\uFFFD') {
+			t.Fatalf("page %d is not clean UTF-8", pages)
+		}
+		next := pageEnd(t, out)
+		if next < 0 {
+			if !strings.Contains(out, fmt.Sprintf("Showing messages %d–%d of %d (end of chat).", offset+1, total, total)) {
+				t.Errorf("last page footer wrong:\n%.300s", out)
+			}
+			break
+		}
+		if next <= offset {
+			t.Fatalf("page %d did not advance (offset %d → %d)", pages, offset, next)
+		}
+		offset = next
+	}
+	if pages < 2 {
+		t.Fatalf("40 large messages fit in %d page(s); expected several", pages)
+	}
+}
+
+// TestReadChatPagingCoversEveryMessage walks a 400-message chat with the offset
+// from each footer and checks the pages join up exactly: no gap, no repeat.
+func TestReadChatPagingCoversEveryMessage(t *testing.T) {
+	const total = 400
+	msgs := make([]ChatMessage, 0, total)
+	for i := 0; i < total; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs = append(msgs, ChatMessage{Role: role, Content: fmt.Sprintf("m%03d", i)})
+	}
+	src := &fakeChatSource{
+		chats: []ChatInfo{{ID: "c1", Title: "Long"}},
+		msgs:  map[string][]ChatMessage{"c1": msgs},
+	}
+	var got []string
+	offset, pages := 0, 0
+	for {
+		pages++
+		if pages > 20 {
+			t.Fatalf("paging did not terminate after %d pages", pages)
+		}
+		out, err := runTool(t, NewReadChatTool(src), fmt.Sprintf(`{"id":"c1","offset":%d}`, offset))
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if n := len([]rune(out)); n > chatBudget {
+			t.Fatalf("page %d is %d runes, budget %d", pages, n, chatBudget)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if s, ok := strings.CutPrefix(line, "User: "); ok {
+				got = append(got, s)
+			} else if s, ok := strings.CutPrefix(line, "Assistant: "); ok {
+				got = append(got, s)
+			}
+		}
+		if pages == 1 && !strings.Contains(out, fmt.Sprintf("Showing messages 1–%d of %d. Call read_chat again with offset=%d to continue.", chatReadDefault, total, chatReadDefault)) {
+			t.Errorf("first page footer wrong:\n%.300s", out)
+		}
+		next := pageEnd(t, out)
+		if next < 0 {
+			if !strings.Contains(out, fmt.Sprintf("Showing messages %d–%d of %d (end of chat).", total-chatReadDefault+1, total, total)) {
+				t.Errorf("last page footer wrong:\n%.300s", out)
+			}
+			break
+		}
+		if next <= offset {
+			t.Fatalf("page %d did not advance (offset %d → %d)", pages, offset, next)
+		}
+		offset = next
+	}
+	if len(got) != total {
+		t.Fatalf("read %d messages, want %d", len(got), total)
+	}
+	for i, s := range got {
+		if want := fmt.Sprintf("m%03d", i); s != want {
+			t.Fatalf("message %d = %q, want %q (gap or repeat)", i, s, want)
+		}
+	}
+}
+
+// TestReadChatOnePageEndFooter checks a short chat still marks the end.
+func TestReadChatOnePageEndFooter(t *testing.T) {
+	src := &fakeChatSource{
+		chats: []ChatInfo{{ID: "c1", Title: "Short"}},
+		msgs: map[string][]ChatMessage{"c1": {
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "hi"},
+		}},
+	}
+	out, err := runTool(t, NewReadChatTool(src), `{"id":"c1"}`)
+	if err != nil {
+		t.Fatalf("read_chat: %v", err)
+	}
+	if !strings.Contains(out, "Showing messages 1–2 of 2 (end of chat).") {
+		t.Errorf("missing end footer:\n%s", out)
+	}
+}
+
+// TestReadChatOversizedTurn checks one turn larger than the whole budget is cut
+// and marked, and the footer still advances past it.
+func TestReadChatOversizedTurn(t *testing.T) {
+	big := ChatMessage{Role: "assistant", Content: "BIG"}
+	for i := 0; i < 120; i++ {
+		big.Tools = append(big.Tools, ChatTool{Name: "run_bash", Status: "done", Output: strings.Repeat("x", chatOutputCap)})
+	}
+	src := &fakeChatSource{
+		chats: []ChatInfo{{ID: "c1", Title: "Huge"}},
+		msgs:  map[string][]ChatMessage{"c1": {big, {Role: "user", Content: "after the big one"}}},
 	}
 	out, err := runTool(t, NewReadChatTool(src), `{"id":"c1"}`)
 	if err != nil {
 		t.Fatalf("read_chat: %v", err)
 	}
 	if n := len([]rune(out)); n > chatBudget {
-		t.Fatalf("output is %d runes, budget %d", n, chatBudget)
+		t.Fatalf("oversized page is %d runes, budget %d", n, chatBudget)
 	}
-	if !utf8.ValidString(out) {
-		t.Fatal("output is not valid UTF-8")
+	if !strings.Contains(out, "…[truncated]") || !strings.Contains(out, "Message 1 alone exceeds the page budget, so only its beginning is shown.") {
+		t.Errorf("oversized turn not marked:\n%.400s", out)
 	}
-	if strings.ContainsRune(out, '\uFFFD') {
-		t.Error("output contains a replacement rune (mid-rune cut)")
+	if !strings.Contains(out, "Showing messages 1–1 of 2. Call read_chat again with offset=1 to continue.") {
+		t.Errorf("oversized footer wrong:\n%.400s", out)
 	}
-	if strings.Contains(out, "m0 ") {
-		t.Error("oldest message should have been trimmed")
+	if strings.Contains(out, "after the big one") {
+		t.Error("page should stop before the next turn")
 	}
-	// 8 messages at ~8000 runes each: 5 fit in 48k, so 3 are omitted.
-	if !strings.Contains(out, "3 earlier messages omitted") {
-		t.Errorf("header does not report the omitted count:\n%.300s", out)
+
+	out, err = runTool(t, NewReadChatTool(src), `{"id":"c1","offset":1}`)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
 	}
-	if !strings.Contains(out, "m7 ") {
-		t.Error("newest message missing")
+	if !strings.Contains(out, "after the big one") || !strings.Contains(out, "Showing messages 2–2 of 2 (end of chat).") {
+		t.Errorf("second page wrong:\n%s", out)
 	}
-	if strings.Count(out, "User: ") != 5 {
-		t.Errorf("kept %d messages, want 5", strings.Count(out, "User: "))
+}
+
+// TestReadChatOffsetEdges pins down past-the-end and negative offsets (clamped
+// to 0) and a non-numeric offset (a normal argument error).
+func TestReadChatOffsetEdges(t *testing.T) {
+	src := &fakeChatSource{
+		chats: []ChatInfo{{ID: "c1", Title: "Three"}},
+		msgs: map[string][]ChatMessage{"c1": {
+			{Role: "user", Content: "alpha"},
+			{Role: "assistant", Content: "beta"},
+			{Role: "user", Content: "gamma"},
+		}},
+	}
+	for _, arg := range []string{`{"id":"c1","offset":3}`, `{"id":"c1","offset":99}`} {
+		out, err := runTool(t, NewReadChatTool(src), arg)
+		if err != nil {
+			t.Fatalf("%s: %v", arg, err)
+		}
+		if !strings.Contains(out, "which has 3 messages") {
+			t.Errorf("%s: empty page does not name the total:\n%s", arg, out)
+		}
+		if strings.Contains(out, "alpha") || strings.Contains(out, "gamma") {
+			t.Errorf("%s: past-the-end page leaked messages", arg)
+		}
+	}
+
+	out, err := runTool(t, NewReadChatTool(src), `{"id":"c1","offset":-5}`)
+	if err != nil {
+		t.Fatalf("negative offset: %v", err)
+	}
+	if !strings.Contains(out, "Showing messages 1–3 of 3 (end of chat).") || !strings.Contains(out, "alpha") {
+		t.Errorf("negative offset not clamped to 0:\n%s", out)
+	}
+
+	out, err = runTool(t, NewReadChatTool(src), `{"id":"c1","offset":2}`)
+	if err != nil {
+		t.Fatalf("offset 2: %v", err)
+	}
+	if !strings.Contains(out, "Showing messages 3–3 of 3 (end of chat).") || !strings.Contains(out, "gamma") || strings.Contains(out, "alpha") {
+		t.Errorf("offset 2 page wrong:\n%s", out)
+	}
+
+	_, err = runTool(t, NewReadChatTool(src), `{"id":"c1","offset":"two"}`)
+	if err == nil || !strings.Contains(err.Error(), "invalid tool arguments") {
+		t.Errorf("non-numeric offset error = %v", err)
 	}
 }
 
@@ -337,7 +532,8 @@ func TestReadChatEmptyAndUnknown(t *testing.T) {
 	}
 }
 
-// TestReadChatLimitClamping checks the default and max message windows.
+// TestReadChatLimitClamping checks limit as a page size: default, max and
+// explicit values, with offset continuing where the page ended.
 func TestReadChatLimitClamping(t *testing.T) {
 	msgs := make([]ChatMessage, 0, 120)
 	for i := 0; i < 120; i++ {
@@ -349,26 +545,35 @@ func TestReadChatLimitClamping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default limit: %v", err)
 	}
-	if !strings.Contains(out, "the last 40 of 120 messages") {
-		t.Errorf("default window wrong:\n%.200s", out)
+	if !strings.Contains(out, "Transcript: 120 messages.") ||
+		!strings.Contains(out, "Showing messages 1–40 of 120. Call read_chat again with offset=40 to continue.") {
+		t.Errorf("default page wrong:\n%.300s", out)
 	}
-	if !strings.Contains(out, "m119") || strings.Contains(out, "m079") {
-		t.Error("default window should be the newest 40")
+	if !strings.Contains(out, "m000") || strings.Contains(out, "m040") {
+		t.Error("default page should start at the first message")
 	}
 
 	out, err = runTool(t, NewReadChatTool(src), `{"id":"c1","limit":9999}`)
 	if err != nil {
 		t.Fatalf("max limit: %v", err)
 	}
-	if !strings.Contains(out, "the last 100 of 120 messages") {
-		t.Errorf("clamped window wrong:\n%.200s", out)
+	if !strings.Contains(out, "Showing messages 1–100 of 120. Call read_chat again with offset=100 to continue.") {
+		t.Errorf("clamped page wrong:\n%.300s", out)
 	}
 
 	out, err = runTool(t, NewReadChatTool(src), `{"id":"c1","limit":2}`)
 	if err != nil {
 		t.Fatalf("limit 2: %v", err)
 	}
-	if !strings.Contains(out, "the last 2 of 120 messages") {
-		t.Errorf("explicit window wrong:\n%.200s", out)
+	if !strings.Contains(out, "Showing messages 1–2 of 120.") {
+		t.Errorf("explicit page wrong:\n%.300s", out)
+	}
+
+	out, err = runTool(t, NewReadChatTool(src), `{"id":"c1","offset":100,"limit":9999}`)
+	if err != nil {
+		t.Fatalf("last page: %v", err)
+	}
+	if !strings.Contains(out, "Showing messages 101–120 of 120 (end of chat).") || !strings.Contains(out, "m119") {
+		t.Errorf("last page wrong:\n%.300s", out)
 	}
 }
