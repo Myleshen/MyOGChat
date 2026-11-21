@@ -34,7 +34,9 @@ func mkConv(t *testing.T, st *store.Store, u store.User, id string) {
 // waitFor polls cond until it holds or a short deadline passes.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	// Generous: the CI runner is slower than a laptop and several polls can
+	// contend on the same SQLite file.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
