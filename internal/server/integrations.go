@@ -302,6 +302,11 @@ func (s *Server) toolRegistryWithWorkspace(ctx context.Context, u store.User, on
 		reg.Add(tools.NewWebSearchTool(providers, cfg.Options()))
 	}
 	reg.Add(tools.NewFetchURLTool())
+	// Chat references (6.3): the model can read the caller's other chats when
+	// the user mentions one. Always on with tools; every read is owner-scoped.
+	chats := chatSource{st: s.st, userID: u.ID}
+	reg.Add(tools.NewListChatsTool(chats))
+	reg.Add(tools.NewReadChatTool(chats))
 	// Maps (Phase 3.4): the keyless OSM stack is always available, so the four
 	// maps_* tools are registered whenever tools are enabled.
 	geo := s.geoConfig(ctx)
@@ -358,6 +363,93 @@ func (s *Server) toolRegistryWithWorkspace(ctx context.Context, u store.User, on
 		}
 	}
 	return reg
+}
+
+// chatSource adapts the store to tools.ChatSource for one caller (6.3). Every
+// read goes through owner-scoped store accessors, so another user's chat is
+// indistinguishable from a missing one.
+type chatSource struct {
+	st     *store.Store
+	userID string
+}
+
+// Chats lists the caller's conversations with their project names.
+func (c chatSource) Chats(ctx context.Context) ([]tools.ChatInfo, error) {
+	convs, err := c.st.ListConversations(ctx, c.userID)
+	if err != nil {
+		return nil, err
+	}
+	projects, err := c.st.ListProjects(ctx, c.userID)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]string, len(projects))
+	for _, p := range projects {
+		names[p.ID] = p.Name
+	}
+	out := make([]tools.ChatInfo, 0, len(convs))
+	for _, conv := range convs {
+		info := tools.ChatInfo{ID: conv.ID, Title: conv.Title, CreatedAt: conv.CreatedAt, UpdatedAt: conv.UpdatedAt}
+		if conv.ProjectID != nil {
+			info.Project = names[*conv.ProjectID]
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
+// SearchIDs reuses the server's conversation search (title or message content).
+func (c chatSource) SearchIDs(ctx context.Context, query string) ([]string, error) {
+	hits, err := c.st.SearchConversations(ctx, c.userID, query, searchResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(hits))
+	for _, h := range hits {
+		ids = append(ids, h.ConversationID)
+	}
+	return ids, nil
+}
+
+// Messages returns one caller-owned chat's messages, including persisted
+// thinking, tool activity and file metadata. The ownership check up front keeps
+// the un-scoped ListMessages behind the owner gate.
+func (c chatSource) Messages(ctx context.Context, id string) ([]tools.ChatMessage, error) {
+	if _, err := c.st.GetConversation(ctx, id, c.userID); err != nil {
+		return nil, err
+	}
+	msgs, err := c.st.ListMessages(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tools.ChatMessage, 0, len(msgs))
+	for _, m := range msgs {
+		cm := tools.ChatMessage{Role: m.Role, Content: m.Content}
+		if m.Reasoning != nil {
+			cm.Reasoning = *m.Reasoning
+		}
+		for _, tool := range m.Tools {
+			cm.Tools = append(cm.Tools, tools.ChatTool{
+				Name: tool.Name, Status: tool.Status, Args: tool.Args,
+				Output: tool.Output, Error: tool.Error, DurationMs: tool.DurationMs,
+			})
+		}
+		for _, f := range m.Attachments {
+			cm.Attachments = append(cm.Attachments, tools.ChatFile{Kind: "attached", Name: f.Name, Mime: f.Mime, Size: f.Size})
+		}
+		for _, img := range m.Images {
+			name := img.Prompt
+			if name == "" {
+				name = img.ID
+			}
+			cm.Attachments = append(cm.Attachments, tools.ChatFile{Kind: "image", Name: name, Mime: img.Mime, Size: img.Size})
+		}
+		for _, a := range m.Artifacts {
+			cm.Attachments = append(cm.Attachments, tools.ChatFile{Kind: "artifact", Name: a.Name, Mime: a.Mime, Size: a.Size})
+		}
+		out = append(out, cm)
+	}
+	return out, nil
 }
 
 // upstreamToolSpecs converts registry specs to the adapter's wire format.
