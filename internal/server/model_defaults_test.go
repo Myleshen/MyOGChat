@@ -19,9 +19,10 @@ func TestFeatureModelDefaultsAreRegistered(t *testing.T) {
 			t.Errorf("%s = %q is not a registered model", name, id)
 		}
 	}
-	// The title call must not reason: reasoning tokens are billed inside
-	// max_tokens, and a model that spends the budget thinking returns no title.
-	if m, _ := models.ByID(titleModel); m.Thinking {
-		t.Errorf("titleModel = %q reasons; use a non-reasoning model", titleModel)
+	// A title model may reason (reasoning is billed inside max_tokens, so it can
+	// return an empty answer) — that is why autoTitle retries once with a larger
+	// budget. What must hold is that the retry is actually larger.
+	if titleRetryTokens <= titleMaxTokens {
+		t.Errorf("titleRetryTokens = %d, want > titleMaxTokens = %d", titleRetryTokens, titleMaxTokens)
 	}
 }
