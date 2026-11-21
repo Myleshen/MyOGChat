@@ -4698,7 +4698,9 @@ async function streamAssistant(opts) {
     parser.feed(decoder.decode());
     parser.end();
   } catch (err) {
-    if (err.name === "AbortError") {
+    // Only a Stop the user asked for is a verdict. A frozen-and-restored page
+    // aborts the body too, and that reply is still running server-side.
+    if (err.name === "AbortError" && gen.stoppedByUser) {
       aborted = true;
       markStopped(ui);
     }
@@ -4780,6 +4782,7 @@ function endGeneration(convId) {
   state.gens.delete(convId);
   updateGenIndicators();
   syncComposerState();
+  applyShellUpdate();
 }
 
 /* Explicitly stop the reply generating in convId (server-side cancel + local
@@ -4794,6 +4797,9 @@ async function stopGeneration(convId) {
     /* 404 = already finished; fall through and clean up locally */
   }
   if (gen && gen.controller) {
+    // Marks the abort as the user's, so the read loop does not mistake a
+    // transport abort (page frozen) for a Stop.
+    gen.stoppedByUser = true;
     try {
       gen.controller.abort();
     } catch {
@@ -4876,6 +4882,14 @@ async function pollGeneration(convId) {
     snap = await api("/api/conversations/" + enc(convId) + "/generation");
   } catch (err) {
     if (err instanceof AuthError) return;
+    // A hidden page's probes fail without the server being down: a suspended
+    // page wakes with dead timers and a sleeping radio. Give up only while the
+    // page is visible (visibilitychange also resets the count on return).
+    if (document.hidden) {
+      gen.snapFails = 0;
+      schedulePoll(convId);
+      return;
+    }
     // Three snapshot requests in a row with no answer means the server is down
     // or restarting: stop polling and say so instead of spinning forever.
     gen.snapFails = (gen.snapFails || 0) + 1;
@@ -6377,14 +6391,81 @@ function wireEvents() {
 
 /* ============================== Service worker ============================== */
 
+/* A replacement worker (a deploy) took over. The page still runs the JS it was
+   loaded with, so reload once to pick up the fresh shell — but never while a
+   reply is generating: endGeneration() retries once the last one finishes. */
+let shellUpdateReady = false;
+/* One deploy check per foreground: an installed PWA is resumed, never reloaded,
+   so the resume is the only chance to notice a deploy. */
+let shellCheckDone = false;
+
+function applyShellUpdate() {
+  if (!shellUpdateReady || state.gens.size > 0) return;
+  shellUpdateReady = false;
+  try {
+    // One reload per tab, so a worker that keeps claiming cannot loop.
+    if (sessionStorage.getItem("myogchat.swReloaded")) return;
+    sessionStorage.setItem("myogchat.swReloaded", "1");
+  } catch {
+    return; // no storage: never reload rather than risk a loop
+  }
+  location.reload();
+}
+
+/* The server injects <meta name="app-version"> with the shell's content hash. */
+function shellVersion() {
+  const meta = document.querySelector('meta[name="app-version"]');
+  return meta ? meta.getAttribute("content") : "";
+}
+
+/* The shell hash a service worker URL was registered with ("" when there is
+   none, e.g. an uncontrolled first load). */
+function versionOf(worker) {
+  return worker ? new URL(worker.scriptURL).searchParams.get("v") || "" : "";
+}
+
+/* An installed PWA is resumed, never reloaded, so the foreground is the only
+   chance to notice a deploy. The worker URL carries the shell hash and only a
+   fresh index.html knows the new one — compare it and register that worker;
+   install, controllerchange and the one-shot reload do the rest. */
+async function checkForShellUpdate() {
+  try {
+    const res = await fetch("/", { cache: "no-store" });
+    if (!res.ok) return;
+    const m = /name="app-version" content="([^"]+)"/.exec(await res.text());
+    if (!m || m[1] === shellVersion()) return;
+    await navigator.serviceWorker.register("sw.js?v=" + encodeURIComponent(m[1]));
+  } catch {
+    /* offline: the next foreground tries again */
+  }
+}
+
 function registerSW() {
   if ("serviceWorker" in navigator && window.isSecureContext) {
     // The server injects <meta name="app-version">; registering sw.js?v=<hash>
     // makes the worker URL change on every deploy so it always updates (and the
     // inline registration in index.html covers the first load after a deploy).
-    const meta = document.querySelector('meta[name="app-version"]');
-    const version = meta ? meta.getAttribute("content") : "";
+    const version = shellVersion();
     const url = version ? "sw.js?v=" + encodeURIComponent(version) : "sw.js";
+    // This document is the build the worker in charge serves, so a later deploy
+    // may reload it again: re-arm the one-reload breaker.
+    const ctrlVersion = versionOf(navigator.serviceWorker.controller);
+    if (version && ctrlVersion === version) {
+      try {
+        sessionStorage.removeItem("myogchat.swReloaded");
+      } catch {
+        /* storage unavailable */
+      }
+    }
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      const v = versionOf(navigator.serviceWorker.controller);
+      // A worker serving a different shell hash than this document means the
+      // page's JS is stale (a deploy, or a first install this page predates).
+      if (v && v !== shellVersion()) {
+        shellUpdateReady = true;
+        applyShellUpdate();
+      }
+    });
     window.addEventListener("load", () => {
       navigator.serviceWorker.register(url).catch(() => {
         /* offline shell is a progressive enhancement */
@@ -6442,6 +6523,20 @@ configureMarked();
 wireEvents();
 wireViewport();
 registerSW();
+/* Returning to a visible page restarts the give-up count: the failed probes a
+   suspended page woke with are not evidence that the server is down. The same
+   moment is the only chance to notice a deploy, since an installed PWA is
+   resumed rather than reloaded — one check per foreground, never on a timer. */
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    shellCheckDone = false;
+    return;
+  }
+  for (const gen of state.gens.values()) gen.snapFails = 0;
+  if (shellCheckDone || !navigator.serviceWorker || !navigator.serviceWorker.controller) return;
+  shellCheckDone = true;
+  checkForShellUpdate();
+});
 /* Route changes from the URL bar or the browser/Android back button. */
 window.addEventListener("hashchange", () => {
   if (!isSettingsRoute()) settingsPushed = false;

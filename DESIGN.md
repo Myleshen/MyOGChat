@@ -28,9 +28,10 @@ browser (PWA) ──▶ Go binary :8787 ──▶ https://opencode.ai/inference/
 ```
 
 Title generation is the exception: it is a second, one-shot non-streaming call
-to the same Go base, using the cheapest non-reasoning model
-(`mimo-v2.6-flash`) on the caller's key and only the first 400 chars of the
-prompt, so a title costs a fraction of a cent.
+to the same Go base, using the cheapest model (`mimo-v2.6-flash`) on the
+caller's key, a 64-token budget (reasoning plus title) and only the first 400
+chars of the prompt, so a title costs a fraction of a cent. It starts with the
+reply and runs in parallel, so a slow title never delays `done`.
 
 - **Backend**: Go, stdlib `net/http` only. SQLite via `modernc.org/sqlite`
   (pure Go, no cgo → trivial `GOARCH=arm64` cross-compile). Frontend embedded
