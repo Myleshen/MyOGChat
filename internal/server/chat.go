@@ -21,11 +21,15 @@ import (
 const (
 	// maxContentBytes caps a single user message at 100 KB (contract §3).
 	maxContentBytes = 100 * 1024
-	// Title model for the one-shot auto-title call: the cheapest non-reasoning
-	// Go model, billed to the caller's own key (contract §3).
+	// Title model for the one-shot auto-title call: the cheapest Go model,
+	// billed to the caller's own key (contract §3).
 	titleModel = "mimo-v2.6-flash"
-	// titleTimeout bounds the title call so it can never outlive the reply job.
-	titleTimeout = 8 * time.Second
+	// titleMaxTokens covers the model's reasoning plus a short title. At 24 the
+	// reasoning tokens used the whole budget and the content came back empty.
+	titleMaxTokens = 64
+	// titleTimeout bounds the detached auto-title call. Nothing waits on it, so
+	// it only stops a stray call running on — it never caps the reply.
+	titleTimeout = 30 * time.Second
 
 	// Vision image input (Phase 5.1): the SPA sends up to a few inline image
 	// data URIs with a message when the conversation's model can see images.
@@ -425,6 +429,14 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 		j.finish(jobError, "", "failed to load history")
 		return
 	}
+	// Auto-title runs in parallel with the reply: start it as soon as the first
+	// user message is known, so a slow title can never delay `done`.
+	if conv.Title == "" {
+		if firstUser := firstUserMessage(history); firstUser != "" {
+			j.titleCh = make(chan string, 1)
+			go s.generateTitle(ctx, j.titleCh, conv.ID, apiKey, firstUser)
+		}
+	}
 	msgs := make([]upstream.Message, 0, len(history))
 	for _, hm := range history {
 		m := upstream.Message{ID: hm.ID, Role: hm.Role, Content: hm.Content}
@@ -652,25 +664,51 @@ stream:
 		s.log.Error("bump conversation updated_at", "error", err)
 	}
 
+	// Reap the title if it beat the reply. Otherwise `done` goes out now and the
+	// goroutine's SetTitle lands in the background; the next list refresh shows
+	// it. Either way nothing here waits on the title.
 	title := ""
-	if conv.Title == "" {
-		firstUser := ""
-		for _, hm := range history {
-			if hm.Role == "user" {
-				firstUser = hm.Content
-				break
-			}
-		}
-		title = s.autoTitle(ctx, conv.ID, apiKey, firstUser)
-		if title != "" {
-			if err := s.st.SetTitle(ctx, conv.ID, title); err != nil {
-				s.log.Error("persist auto-title", "error", err)
-				title = ""
-			}
+	if j.titleCh != nil {
+		select {
+		case title = <-j.titleCh:
+		default:
 		}
 	}
 
 	j.finish(jobDone, title, "")
+}
+
+// firstUserMessage returns a conversation's first user message, the seed for
+// the auto-title prompt.
+func firstUserMessage(history []store.Message) string {
+	for _, hm := range history {
+		if hm.Role == "user" {
+			return hm.Content
+		}
+	}
+	return ""
+}
+
+// generateTitle runs the one-shot auto-title call off the reply's critical path
+// and persists the result itself. The context is detached from the job so a
+// cancelled reply cannot lose a title already in flight, and the result channel
+// is buffered so the send succeeds even after the job is gone.
+func (s *Server) generateTitle(ctx context.Context, out chan<- string, convID, apiKey, firstUser string) {
+	ctx = context.WithoutCancel(ctx)
+	title := s.autoTitle(ctx, convID, apiKey, firstUser)
+	if title == "" {
+		return
+	}
+	wrote, err := s.st.SetTitleIfEmpty(ctx, convID, title)
+	if err != nil {
+		s.log.Error("persist auto-title", "error", err)
+		return
+	}
+	if !wrote {
+		// The user named the conversation while this call was running.
+		return
+	}
+	out <- title
 }
 
 // persistPartial stores what a stopped or failed agent reply produced so far:
@@ -857,8 +895,10 @@ func (s *Server) autoTitle(ctx context.Context, convID, apiKey, firstUser string
 	defer cancel()
 	prompt := "Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\n" +
 		"User: " + truncateRunes(firstUser, 400)
+	// The model reasons before it answers and those tokens share the budget:
+	// at 24 it spent all of them thinking and returned empty content.
 	t, err := s.chatOnceFn(ctx, apiKey, convID, titleModel,
-		[]upstream.Message{{Role: "user", Content: prompt}}, 24)
+		[]upstream.Message{{Role: "user", Content: prompt}}, titleMaxTokens)
 	if err != nil {
 		s.log.Warn("auto-title call failed, using fallback", "error", err)
 		return fallbackTitle(firstUser)

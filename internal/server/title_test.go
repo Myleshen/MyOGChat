@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"myogchat/internal/store"
 	"myogchat/internal/upstream"
@@ -34,14 +36,32 @@ func TestAutoTitleRequestShape(t *testing.T) {
 	if gotKey != "user-key" || gotSession != "conv-1" {
 		t.Fatalf("key/session = %q/%q, want the caller's", gotKey, gotSession)
 	}
-	if gotMax != 24 {
-		t.Fatalf("max_tokens = %d, want 24", gotMax)
+	if gotMax != titleMaxTokens {
+		t.Fatalf("max_tokens = %d, want %d", gotMax, titleMaxTokens)
 	}
 	if len(gotMsgs) != 1 || gotMsgs[0].Role != "user" {
 		t.Fatalf("messages = %+v, want one user message", gotMsgs)
 	}
 	if _, body, ok := strings.Cut(gotMsgs[0].Content, "User: "); !ok || body != strings.Repeat("a", 400) {
 		t.Fatalf("user text sent = %q..., want exactly 400 chars", truncateRunes(body, 12))
+	}
+}
+
+// TestAutoTitleBudgetSurvivesReasoning covers the empty-completion bug: the
+// title model reasons before it answers and those tokens share max_tokens, so a
+// budget that the reasoning exhausts leaves empty content. 32 reasoning tokens
+// is the top of the observed range on mimo-v2.6-flash.
+func TestAutoTitleBudgetSurvivesReasoning(t *testing.T) {
+	srv, _ := newJobTestServer(t)
+	const reasoningTokens = 32
+	srv.chatOnceFn = func(_ context.Context, _, _, _ string, _ []upstream.Message, maxTokens int) (string, error) {
+		if maxTokens <= reasoningTokens {
+			return "", errors.New("empty completion")
+		}
+		return "Van tyre rotation guide", nil
+	}
+	if got := srv.autoTitle(context.Background(), "c", "k", "how do I rotate the tyres on my van safely"); got != "Van tyre rotation guide" {
+		t.Fatalf("title = %q, want the model title, not the fallback", got)
 	}
 }
 
@@ -98,11 +118,189 @@ func TestTitleFailureKeepsReplyGreen(t *testing.T) {
 	if j == nil || j.snapshot().Status != jobDone {
 		t.Fatalf("job = %+v, want done", j.snapshot())
 	}
+	// The title lands on its own goroutine, so wait for it rather than assume it
+	// beat `done`.
+	want := "how do I rotate the tyres on my van safe"
+	waitFor(t, func() bool {
+		conv, err := st.GetConversation(context.Background(), "c1", u.ID)
+		return err == nil && conv.Title == want
+	})
+}
+
+// streamAfter emits text and usage only once ready reports true (or the job is
+// cancelled), so a test can pin what the reply does after the title has landed.
+func streamAfter(ready func() bool) func(context.Context, upstream.Params, upstream.ExecuteTool, upstream.AgentOptions) <-chan upstream.Event {
+	return func(c context.Context, _ upstream.Params, _ upstream.ExecuteTool, _ upstream.AgentOptions) <-chan upstream.Event {
+		out := make(chan upstream.Event, 2)
+		go func() {
+			defer close(out)
+			for !ready() {
+				select {
+				case <-time.After(2 * time.Millisecond):
+				case <-c.Done():
+					return
+				}
+			}
+			out <- upstream.Event{Kind: upstream.EventText, Delta: "hello"}
+			out <- upstream.Event{Kind: upstream.EventUsage, Usage: &upstream.Usage{PromptTokens: 3, CompletionTokens: 2}}
+		}()
+		return out
+	}
+}
+
+// seedEmptyTitleConv inserts an untitled conversation owned by u.
+func seedEmptyTitleConv(t *testing.T, st *store.Store, u store.User, id string) {
+	t.Helper()
+	if err := st.InsertConversation(context.Background(), &store.Conversation{
+		ID: id, UserID: &u.ID, Title: "", Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+}
+
+// TestAutoTitleRunsParallelWithReply runs a reply that only finishes after the
+// title has been stored: `done` must carry it, and the model is called once.
+func TestAutoTitleRunsParallelWithReply(t *testing.T) {
+	srv, st := newJobTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "key")
+	seedEmptyTitleConv(t, st, u, "c1")
+
+	var calls atomic.Int32
+	srv.chatOnceFn = func(context.Context, string, string, string, []upstream.Message, int) (string, error) {
+		calls.Add(1)
+		return "Van tyre rotation guide", nil
+	}
+	srv.streamAgentFn = streamAfter(func() bool {
+		j := srv.hub().get("c1")
+		return j != nil && len(j.titleCh) == 1
+	})
+
+	rec := postMessage(srv, u, "c1", "how do I rotate the tyres on my van safely")
+	if rec.Code != 200 {
+		t.Fatalf("send status = %d", rec.Code)
+	}
+	if got := srv.hub().get("c1").snapshot().Title; got != "Van tyre rotation guide" {
+		t.Fatalf("done title = %q, want the generated title", got)
+	}
 	conv, err := st.GetConversation(context.Background(), "c1", u.ID)
 	if err != nil {
 		t.Fatalf("GetConversation: %v", err)
 	}
-	if want := "how do I rotate the tyres on my van safe"; conv.Title != want {
-		t.Fatalf("title = %q, want fallback %q", conv.Title, want)
+	if conv.Title != "Van tyre rotation guide" {
+		t.Fatalf("stored title = %q, want the generated title", conv.Title)
 	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("title calls = %d, want exactly one", n)
+	}
+}
+
+// TestAutoTitleNeverDelaysDone blocks the title call for the whole reply: `done`
+// must still fire, with no title, and the title must be persisted afterwards.
+func TestAutoTitleNeverDelaysDone(t *testing.T) {
+	srv, st := newJobTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "key")
+	seedEmptyTitleConv(t, st, u, "c1")
+
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	srv.chatOnceFn = func(context.Context, string, string, string, []upstream.Message, int) (string, error) {
+		started <- struct{}{}
+		<-release
+		return "Warehouse shelving suppliers", nil
+	}
+	srv.streamAgentFn = fixedStream(
+		upstream.Event{Kind: upstream.EventText, Delta: "hello"},
+		upstream.Event{Kind: upstream.EventUsage, Usage: &upstream.Usage{PromptTokens: 3, CompletionTokens: 2}},
+	)
+
+	reply := postMessageAsync(srv, u, "c1", "compare two shelving suppliers")
+	select {
+	case rec := <-reply:
+		if rec.Code != 200 {
+			t.Fatalf("send status = %d", rec.Code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("done did not fire while the title call was still blocked")
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("title call never started")
+	}
+	if snap := srv.hub().get("c1").snapshot(); snap.Status != jobDone || snap.Title != "" {
+		t.Fatalf("job = %+v, want done without a title", snap)
+	}
+	if conv, err := st.GetConversation(context.Background(), "c1", u.ID); err != nil || conv.Title != "" {
+		t.Fatalf("stored title = %q (err %v), want none yet", conv.Title, err)
+	}
+
+	close(release)
+	waitFor(t, func() bool {
+		conv, err := st.GetConversation(context.Background(), "c1", u.ID)
+		return err == nil && conv.Title == "Warehouse shelving suppliers"
+	})
+}
+
+// TestAutoTitleLateErrorFallsBack keeps the safety net: a title call that fails
+// after `done` still leaves the truncated prompt, and nothing re-writes it.
+func TestAutoTitleLateErrorFallsBack(t *testing.T) {
+	srv, st := newJobTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "key")
+	seedEmptyTitleConv(t, st, u, "c1")
+
+	srv.chatOnceFn = func(context.Context, string, string, string, []upstream.Message, int) (string, error) {
+		return "", errors.New("context deadline exceeded")
+	}
+	srv.streamAgentFn = streamAfter(func() bool {
+		j := srv.hub().get("c1")
+		return j != nil && len(j.titleCh) == 1
+	})
+
+	rec := postMessage(srv, u, "c1", "how do I rotate the tyres on my van safely")
+	if rec.Code != 200 {
+		t.Fatalf("send status = %d", rec.Code)
+	}
+	want := "how do I rotate the tyres on my van safe"
+	if got := srv.hub().get("c1").snapshot().Title; got != want {
+		t.Fatalf("done title = %q, want fallback %q", got, want)
+	}
+	if conv, err := st.GetConversation(context.Background(), "c1", u.ID); err != nil || conv.Title != want {
+		t.Fatalf("stored title = %q (err %v), want fallback %q", conv.Title, err, want)
+	}
+}
+
+// TestAutoTitleNeverOverwritesARename: a title that resolves after the user
+// renamed the conversation is dropped, and `done` carries no title for it.
+func TestAutoTitleNeverOverwritesARename(t *testing.T) {
+	srv, st := newJobTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "key")
+	seedEmptyTitleConv(t, st, u, "c1")
+
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	srv.chatOnceFn = func(context.Context, string, string, string, []upstream.Message, int) (string, error) {
+		started <- struct{}{}
+		<-release
+		return "Warehouse shelving suppliers", nil
+	}
+	srv.streamAgentFn = fixedStream(
+		upstream.Event{Kind: upstream.EventText, Delta: "hello"},
+		upstream.Event{Kind: upstream.EventUsage, Usage: &upstream.Usage{PromptTokens: 3, CompletionTokens: 2}},
+	)
+
+	reply := postMessageAsync(srv, u, "c1", "compare two shelving suppliers")
+	select {
+	case <-reply:
+	case <-time.After(2 * time.Second):
+		t.Fatal("done did not fire while the title call was still blocked")
+	}
+	<-started
+	if err := st.SetTitle(context.Background(), "c1", "My title"); err != nil {
+		t.Fatalf("SetTitle: %v", err)
+	}
+	close(release)
+	waitFor(t, func() bool {
+		conv, err := st.GetConversation(context.Background(), "c1", u.ID)
+		return err == nil && conv.Title == "My title"
+	})
 }

@@ -136,6 +136,9 @@ type genJob struct {
 	status    string
 	messageID string
 	title     string
+	// titleCh receives a title generated in parallel with the reply; nil when
+	// the conversation already had one. Buffered so the writer never blocks.
+	titleCh   chan string
 	errMsg    string
 	content   strings.Builder
 	reasoning strings.Builder

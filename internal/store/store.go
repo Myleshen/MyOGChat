@@ -1054,6 +1054,19 @@ func (s *Store) SetTitle(ctx context.Context, id, title string) error {
 	return err
 }
 
+// SetTitleIfEmpty sets a title only while the conversation still has none, so a
+// title landing in the background never overwrites a rename. It reports whether
+// it actually wrote.
+func (s *Store) SetTitleIfEmpty(ctx context.Context, id, title string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE conversations SET title = ? WHERE id = ? AND title = ''`, title, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // TouchConversation bumps updated_at (last activity).
 func (s *Store) TouchConversation(ctx context.Context, id string, updatedAt int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, updatedAt, id)
