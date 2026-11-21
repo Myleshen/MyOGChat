@@ -467,6 +467,15 @@ merges sequentially and resolves the small additive conflicts in shared files
 
 ## Phase 6 — proactive agents
 
+### 6.2 Rolling project memory — ✅ shipped ([`docs/6.2-project-memory.md`](6.2-project-memory.md))
+- Projects gain a durable `memory` that is learned from successful replies in
+  any of their chats and injected into every later chat as a `## Project memory`
+  block. One extra cheap non-streaming call per turn (mimo-v2.6-flash, 4000
+  tokens) off the reply's critical path, with a compare-and-set write so a user
+  edit is never clobbered; per-project `memory_auto` toggle, 32000-character cap
+  (a context/attention trade-off: ~8k tokens of extra input per turn in that
+  project, ~$0.0012/turn uncached and cached after the first turn).
+
 ### 6.0 Calendar triggers — 📝 design only, not implemented ([`docs/6.0-calendar-triggers.md`](6.0-calendar-triggers.md))
 - Let a connected calendar start conversations on its own: one per event
   instance (30 min before, default) or one morning digest, run as an **agent

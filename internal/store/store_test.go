@@ -66,6 +66,15 @@ CREATE TABLE messages (
   cost_micros       INTEGER,
   created_at        INTEGER NOT NULL
 );
+CREATE TABLE projects (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  instructions  TEXT NOT NULL DEFAULT '',
+  default_model TEXT,
+  sort_order    INTEGER NOT NULL DEFAULT 0,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
 CREATE TABLE calendar_accounts (
   id          TEXT PRIMARY KEY,
   user_id     TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
@@ -81,7 +90,9 @@ CREATE TABLE calendar_accounts (
 INSERT INTO conversations (id, title, model, created_at, updated_at)
 VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);
 INSERT INTO calendar_accounts (id, user_id, kind, provider, calendar_id, username, credential, endpoint, created_at, updated_at)
-VALUES ('cal-legacy', 'u-legacy', 'caldav', 'apple', '/old/cal/', 'old@example.com', 'OLD-CIPHERTEXT', 'https://caldav.example.com', 111, 222);`
+VALUES ('cal-legacy', 'u-legacy', 'caldav', 'apple', '/old/cal/', 'old@example.com', 'OLD-CIPHERTEXT', 'https://caldav.example.com', 111, 222);
+INSERT INTO projects (id, name, instructions, sort_order, created_at, updated_at)
+VALUES ('proj-legacy', 'Old Project', 'be terse', 0, 111, 222);`
 	if _, err := db.Exec(legacy); err != nil {
 		t.Fatalf("seed legacy schema: %v", err)
 	}
@@ -133,6 +144,16 @@ VALUES ('cal-legacy', 'u-legacy', 'caldav', 'apple', '/old/cal/', 'old@example.c
 		t.Error("migration did not add users.linkwarden_token_enc")
 	}
 
+	projCols, err := s.columns("projects")
+	if err != nil {
+		t.Fatalf("columns(projects): %v", err)
+	}
+	for _, col := range []string{"memory", "memory_auto", "user_id"} {
+		if !projCols[col] {
+			t.Errorf("migration did not add projects.%s", col)
+		}
+	}
+
 	// The first admin claims the ownerless legacy rows.
 	u := seedUser(t, s, "u1", "admin", true)
 	if err := s.ClaimLegacyData(context.Background(), u.ID); err != nil {
@@ -148,6 +169,18 @@ VALUES ('cal-legacy', 'u-legacy', 'caldav', 'apple', '/old/cal/', 'old@example.c
 	// Existing chats are normal chats: the new flag defaults to off.
 	if c.AgentMode {
 		t.Error("legacy row must default to agent_mode = 0")
+	}
+
+	// The legacy project gains empty memory with auto-updates on.
+	p, err := s.GetProject(context.Background(), "proj-legacy", u.ID)
+	if err != nil {
+		t.Fatalf("legacy project not claimed: %v", err)
+	}
+	if p.Name != "Old Project" || p.Instructions != "be terse" {
+		t.Errorf("legacy project corrupted: %+v", p)
+	}
+	if p.Memory != "" || !p.MemoryAuto {
+		t.Errorf("legacy project memory = %q auto = %v, want empty and on", p.Memory, p.MemoryAuto)
 	}
 
 	// A pre-home-set calendar account gains the column and keeps its data.
