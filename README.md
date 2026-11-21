@@ -2,6 +2,8 @@
 
 <https://github.com/Myleshen/MyOGChat>
 
+[![release](https://github.com/Myleshen/MyOGChat/actions/workflows/release.yml/badge.svg)](https://github.com/Myleshen/MyOGChat/actions/workflows/release.yml)
+
 A personal, self-hosted ChatGPT-style web app (installable PWA) backed by an
 [OpenCode Go](https://opencode.ai/docs/go/) subscription. One static Go binary
 with no runtime dependencies, SQLite storage, ~24 MB RSS at idle — comfortable on
