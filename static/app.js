@@ -3620,6 +3620,9 @@ function buildUserMessage(m) {
   }
   const footer = el("div", "msg-footer");
   const actions = el("span", "msg-actions");
+  // Copy sits before Edit, mirroring the assistant row (Copy before Retry).
+  // Nothing to copy for a media-only message, so the action is not offered.
+  if (typeof m.content === "string" && m.content.trim() !== "") actions.appendChild(copyButton(m));
   actions.appendChild(actionButton("Edit", () => startEditUserMessage(m, text, bubble, footer)));
   footer.appendChild(actions);
   bubble.appendChild(footer);
@@ -3731,11 +3734,31 @@ function actionButton(label, onClick) {
 
 async function copyMessage(m, btn) {
   const raw = typeof m.content === "string" ? m.content : "";
-  await copyText(raw);
+  if (!raw.trim()) {
+    toast("Nothing to copy");
+    return;
+  }
+  try {
+    await copyText(raw);
+  } catch {
+    toast("Copy failed");
+    return;
+  }
+  toast("Copied");
   btn.textContent = "Copied!";
   setTimeout(() => {
     btn.textContent = "Copy";
   }, 1500);
+}
+
+/* Copy action shared by user and assistant footers, so both look and behave
+   the same. Only the message text is copied — never the footer labels or the
+   attachment chips. */
+function copyButton(m) {
+  const btn = actionButton("Copy", () => copyMessage(m, btn));
+  btn.title = "Copy message text";
+  btn.setAttribute("aria-label", "Copy message text");
+  return btn;
 }
 
 function buildAssistantFooter(m, isLast) {
@@ -3756,7 +3779,7 @@ function buildAssistantFooter(m, isLast) {
       actionButton(currentSpeakId === speakId ? "Stop" : "Speak", (btn) => speakMessage(m, btn))
     );
   }
-  actions.appendChild(actionButton("Copy", (btn) => copyMessage(m, btn)));
+  actions.appendChild(copyButton(m));
   if (isLast) actions.appendChild(actionButton("Retry", () => regenerate()));
   footer.appendChild(actions);
   return footer;

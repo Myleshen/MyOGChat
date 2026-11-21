@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -86,6 +87,10 @@ type Server struct {
 	// streamAgentFn runs the upstream agent loop for a reply. It is a field so
 	// tests can inject a deterministic stream; production uses up.StreamAgent.
 	streamAgentFn func(ctx context.Context, p upstream.Params, exec upstream.ExecuteTool, opts upstream.AgentOptions) <-chan upstream.Event
+
+	// chatOnceFn makes the one-shot auto-title call. A field for the same
+	// reason; production uses up.ChatOnce.
+	chatOnceFn func(ctx context.Context, apiKey, sessionID, model string, msgs []upstream.Message, maxTokens int) (string, error)
 }
 
 // hub returns the reply-job hub, creating it on first use.
@@ -113,6 +118,7 @@ func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log
 	s := &Server{
 		st: st, up: up, auth: a, static: staticFS, log: log,
 		streamAgentFn: up.StreamAgent,
+		chatOnceFn:    up.ChatOnce,
 		encKey:        encKey, serverKey: serverKey, search: search, geo: geo, sbx: sbx,
 		ocrEngine: ocrEngine, ocrEngineName: ocrEngineName, ocrVisionAvailable: ocrVisionAvailable,
 		speechCfg:       speechDefaults,
@@ -600,7 +606,8 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	n, err := s.st.DeleteConversation(r.Context(), r.PathValue("id"), u.ID)
+	convID := r.PathValue("id")
+	n, err := s.st.DeleteConversation(r.Context(), convID, u.ID)
 	if err != nil {
 		s.log.Error("delete conversation", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to delete conversation")
@@ -611,7 +618,16 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// Drop a waiting agent send for the deleted chat so it can never resurface.
-	s.hub().removeQueued(r.PathValue("id"))
+	s.hub().removeQueued(convID)
+	// Best-effort: once the row is gone the workspace is unreachable (the
+	// workspace endpoint needs the conversation), so it would linger until the
+	// idle sweep. Failures are logged, not surfaced, so the delete still
+	// succeeds.
+	if dir := s.agentWorkspaceDir(u.ID, convID); dir != "" {
+		if err := os.RemoveAll(dir); err != nil {
+			s.log.Warn("delete agent workspace with conversation", "conversation", convID, "error", err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

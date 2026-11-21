@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -69,6 +70,9 @@ func testConfig(t *testing.T) Config {
 	c.Timeout = 5 * time.Second
 	c.MaxOutput = DefaultMaxOutput
 	c.WorkDir = t.TempDir()
+	// A fixed container user keeps the argv tests deterministic; the default
+	// (the host user) is exercised by TestDefaultRunAsUser.
+	c.RunAsUser = "1000:1000"
 	return c
 }
 
@@ -83,7 +87,7 @@ func TestRunArgsBash(t *testing.T) {
 		"--network", "myogchat-sbx",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--user", "65534:65534",
+		"--user", "1000:1000",
 		"--read-only",
 		"-v", "/host/work:/work:rw",
 		"--tmpfs", "/tmp:rw,size=16m",
@@ -116,6 +120,42 @@ func TestRunArgsPython(t *testing.T) {
 	}
 	if got[len(got)-3] != "python:3.14-slim" {
 		t.Fatalf("image = %q", got[len(got)-3])
+	}
+}
+
+// TestRunArgsUsesConfiguredUser asserts --user is the configured host user (not
+// a hardcoded nobody), so the service can delete what the container writes.
+func TestRunArgsUsesConfiguredUser(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.RunAsUser = "4242:4343"
+	r := NewRunner(cfg)
+	got := r.runArgs("bash:5.3", []string{"bash", "-s"}, "myogchat-sbx-abc", "/host/work", DefaultFileSizeLimit)
+	if u := argValue(got, "--user"); u != "4242:4343" {
+		t.Errorf("--user = %q, want 4242:4343", u)
+	}
+}
+
+// TestDefaultRunAsUser covers the root fallback: the service's own xid is used
+// unless the service is root, in which case the container runs as nobody.
+func TestDefaultRunAsUser(t *testing.T) {
+	if got := defaultRunAsUser(0, 0); got != containerUser {
+		t.Errorf("defaultRunAsUser(0,0) = %q, want %q", got, containerUser)
+	}
+	if got := defaultRunAsUser(1000, 1000); got != "1000:1000" {
+		t.Errorf("defaultRunAsUser(1000,1000) = %q, want 1000:1000", got)
+	}
+}
+
+// TestInvalidRunAsUserCorrected asserts an empty, malformed, or root --user is
+// replaced by the safe default instead of reaching docker.
+func TestInvalidRunAsUserCorrected(t *testing.T) {
+	want := defaultRunAsUser(os.Geteuid(), os.Getegid())
+	for _, v := range []string{"", "nobody", "0:0", "0:1000", "1000"} {
+		cfg := testConfig(t)
+		cfg.RunAsUser = v
+		if got := NewRunner(cfg).Config().RunAsUser; got != want {
+			t.Errorf("RunAsUser %q corrected to %q, want %q", v, got, want)
+		}
 	}
 }
 

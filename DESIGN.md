@@ -27,9 +27,10 @@ browser (PWA) ──▶ Go binary :8787 ──▶ https://opencode.ai/inference/
                    └─ hourly retention janitor
 ```
 
-Title generation is the exception: it calls the **free Zen catalog**
-(`https://opencode.ai/zen/v1`) on a quota separate from Go, so titles cost
-nothing.
+Title generation is the exception: it is a second, one-shot non-streaming call
+to the same Go base, using the cheapest non-reasoning model
+(`mimo-v2.6-flash`) on the caller's key and only the first 400 chars of the
+prompt, so a title costs a fraction of a cent.
 
 - **Backend**: Go, stdlib `net/http` only. SQLite via `modernc.org/sqlite`
   (pure Go, no cgo → trivial `GOARCH=arm64` cross-compile). Frontend embedded
@@ -100,10 +101,11 @@ points to `http://raspberrypi.local:8787`.
   `response.output_text.delta` events, `response.completed` carries `usage`
   (`input_tokens`, `output_tokens`, `input_tokens_details.cached_tokens`).
 - **Free models live on Zen** (`https://opencode.ai/zen/v1`), a quota separate
-  from Go; anonymous use is limited (`429 FreeUsageLimitError`), a valid key is
-  required. Current free IDs include `mimo-v2.6-flash-free`,
-  `deepseek-v4.1-flash-free`, `glm-5.3-flash-free`, `beam-free`. Auto-titles use
-  `mimo-v2.6-flash-free`.
+  from Go. Current free IDs include `mimo-v2.6-flash-free`,
+  `deepseek-v4.1-flash-free`, `glm-5.3-flash-free`, `beam-free`. That quota is
+  also exhaustible (`429 FreeUsageLimitError`) even with a key, so the app no
+  longer calls Zen: auto-titles use the cheap Go model `mimo-v2.6-flash` on the
+  caller's own key and fall back to the prompt text if that fails.
 - **Keys are per console generation.** Keys issued by the old console were
   invalidated in the migration; an affected key fails every Go and Zen endpoint
   with `401 Invalid credential`. The fix is a new personal key, not a code

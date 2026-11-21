@@ -26,7 +26,14 @@ const (
 	foldTruncationMarker = "\n\n[... attachment truncated to fit the context budget ...]"
 	// attachmentIntro leads the folded context block.
 	attachmentIntro = "The user attached the following file(s). Treat their contents as context for the request.\n\n"
+	// statusClientClosedRequest (499, nginx) answers a request whose client has
+	// already gone. net/http has no constant for it.
+	statusClientClosedRequest = 499
 )
+
+// clientGone reports a request abandoned by the client (closed tab mid-upload).
+// It is not a server error: nobody is left to read the response.
+func clientGone(err error) bool { return errors.Is(err, context.Canceled) }
 
 // handleUploadAttachment accepts a multipart/form-data upload (field "file"),
 // extracts its text, and stores it for the caller (2.3).
@@ -90,6 +97,11 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 			Size: int64(len(data)), Status: "pending", CreatedAt: time.Now().UnixMilli(),
 		}
 		if err := s.st.InsertAttachment(r.Context(), &att); err != nil {
+			if clientGone(err) {
+				s.log.Debug("attachment upload abandoned by client", "error", err)
+				writeError(w, statusClientClosedRequest, "client closed request")
+				return
+			}
 			s.log.Error("insert pending attachment", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to store attachment")
 			return
@@ -131,6 +143,11 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	if err := s.st.InsertAttachment(r.Context(), &att); err != nil {
+		if clientGone(err) {
+			s.log.Debug("attachment upload abandoned by client", "error", err)
+			writeError(w, statusClientClosedRequest, "client closed request")
+			return
+		}
 		s.log.Error("insert attachment", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to store attachment")
 		return

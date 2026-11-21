@@ -19,9 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,10 +60,12 @@ const (
 	DefaultFileSizeLimit = "10485760:10485760" // docker --ulimit fsize soft:hard
 	DefaultWorkDirName   = "myogchat/sandbox"  // under ~/.local/share
 
-	// Agent mode uses a persistent workspace, so its per-file cap is much
-	// larger than an ephemeral run's, and the whole user tree is quota'd.
-	DefaultAgentFileSizeLimit = "2g:2g"
-	DefaultAgentQuotaBytes    = 5 << 30 // 5 GiB
+	// Agent mode uses a persistent workspace, so its per-file cap is 2 GiB
+	// rather than an ephemeral run's 10 MiB, and the whole user tree is
+	// quota'd. Docker's --ulimit parser takes plain bytes only — no unit
+	// suffixes like "2g" (it fails the whole `docker run` with exit 125).
+	DefaultAgentFileSizeLimit = "2147483648:2147483648" // soft:hard, 2 GiB
+	DefaultAgentQuotaBytes    = 5 << 30                 // 5 GiB
 
 	// AgentWorkspaceDirName is the subdirectory of WorkDir that holds
 	// persistent agent workspaces (<WorkDir>/agent/<userID>/<convID>).
@@ -84,7 +88,8 @@ const (
 	LabelKey   = "myogchat-sandbox"
 	LabelValue = "1"
 
-	// containerUser is nobody:nogroup — the container never runs as root.
+	// containerUser is nobody:nogroup — the container never runs as root. It is
+	// the fallback only when the service itself runs as root.
 	containerUser = "65534:65534"
 
 	// probeTTL bounds how often the Docker reachability probe runs.
@@ -128,6 +133,7 @@ type Config struct {
 	CPUs        string        // docker --cpus value
 	PidsLimit   int           // docker --pids-limit value
 	NoFile      string        // docker --ulimit nofile= value (soft:hard)
+	RunAsUser   string        // docker --user uid:gid (host user, so writes stay deletable)
 	TmpSize     string        // size of the /tmp tmpfs
 	MaxOutput   int           // max characters of stdout+stderr returned
 	// Workspace + artifact harvest (5.8).
@@ -153,6 +159,7 @@ func DefaultConfig() Config {
 		CPUs:        DefaultCPUs,
 		PidsLimit:   DefaultPidsLimit,
 		NoFile:      DefaultNoFile,
+		RunAsUser:   defaultRunAsUser(os.Geteuid(), os.Getegid()),
 		TmpSize:     DefaultTmpSize,
 		MaxOutput:   DefaultMaxOutput,
 
@@ -165,6 +172,17 @@ func DefaultConfig() Config {
 		AgentFileSizeLimit: DefaultAgentFileSizeLimit,
 		AgentQuotaBytes:    DefaultAgentQuotaBytes,
 	}
+}
+
+// defaultRunAsUser is the uid:gid the sandbox container runs as: the service's
+// own user, so everything it writes can be removed by the service later (a
+// nobody-owned 0755 directory is not removable by uid 1000). A root service
+// falls back to nobody — the container must never run as uid 0.
+func defaultRunAsUser(euid, egid int) string {
+	if euid <= 0 {
+		return containerUser
+	}
+	return fmt.Sprintf("%d:%d", euid, egid)
 }
 
 // ConfigFromEnv overlays environment variables on DefaultConfig:
@@ -333,12 +351,53 @@ type quotaEntry struct {
 
 // NewRunner returns a Runner using the real os/exec executor.
 func NewRunner(cfg Config) *Runner {
-	return &Runner{cfg: cfg, exec: osExec(captureLimit(cfg.MaxOutput))}
+	return NewRunnerWithExec(cfg, osExec(captureLimit(cfg.MaxOutput)))
 }
 
 // NewRunnerWithExec returns a Runner using a custom executor (tests).
 func NewRunnerWithExec(cfg Config, exec ExecFunc) *Runner {
-	return &Runner{cfg: cfg, exec: exec}
+	return &Runner{cfg: sanitizeRunAsUser(sanitizeFileSizeLimits(cfg)), exec: exec}
+}
+
+// fileSizeLimitPattern is a docker-parseable --ulimit fsize value: plain byte
+// counts as soft:hard. Docker's ulimit parser accepts integers only, so "2g:2g"
+// fails every `docker run` with exit 125.
+var fileSizeLimitPattern = regexp.MustCompile(`^\d+:\d+$`)
+
+// sanitizeFileSizeLimits replaces an unusable fsize limit with its default and
+// warns, so a bad value degrades to a working sandbox instead of breaking every
+// sandboxed call.
+func sanitizeFileSizeLimits(cfg Config) Config {
+	if !fileSizeLimitPattern.MatchString(cfg.FileSizeLimit) {
+		slog.Default().Warn("sandbox: invalid fsize limit, using default",
+			"value", cfg.FileSizeLimit, "default", DefaultFileSizeLimit)
+		cfg.FileSizeLimit = DefaultFileSizeLimit
+	}
+	if !fileSizeLimitPattern.MatchString(cfg.AgentFileSizeLimit) {
+		slog.Default().Warn("sandbox: invalid agent fsize limit, using default",
+			"value", cfg.AgentFileSizeLimit, "default", DefaultAgentFileSizeLimit)
+		cfg.AgentFileSizeLimit = DefaultAgentFileSizeLimit
+	}
+	return cfg
+}
+
+// userPattern is a docker --user value: numeric uid:gid, never a name (the
+// image may not have an /etc/passwd entry for the host user).
+var userPattern = regexp.MustCompile(`^\d+:\d+$`)
+
+// sanitizeRunAsUser replaces an unusable --user value (empty, malformed, or a
+// root uid) with the safe default, so a misconfiguration cannot run the
+// container as root or as a uid the service cannot clean up after.
+func sanitizeRunAsUser(cfg Config) Config {
+	uid, _, _ := strings.Cut(cfg.RunAsUser, ":")
+	n, err := strconv.Atoi(uid)
+	if err != nil || n <= 0 || !userPattern.MatchString(cfg.RunAsUser) {
+		safe := defaultRunAsUser(os.Geteuid(), os.Getegid())
+		slog.Default().Warn("sandbox: invalid run-as user, using default",
+			"value", cfg.RunAsUser, "default", safe)
+		cfg.RunAsUser = safe
+	}
+	return cfg
 }
 
 // Config returns the runner's configuration.
@@ -538,8 +597,8 @@ func (r *Runner) imageAndCommand(spec Spec) (string, []string, error) {
 // prepareWorkspace creates a fresh per-run host directory that is bind-mounted
 // rw into the container as /work. The parent root is 0700 (only the service
 // user can traverse it); the per-run dir is made group/other-writable so the
-// unprivileged container user 65534 can write into it. The returned cleanup
-// removes the dir; callers defer it.
+// container user (host uid by default, nobody when the service is root) can
+// write into it. The returned cleanup removes the dir; callers defer it.
 func (r *Runner) prepareWorkspace(name string) (string, func(), error) {
 	root := r.cfg.WorkDir
 	if root == "" {
@@ -553,7 +612,8 @@ func (r *Runner) prepareWorkspace(name string) (string, func(), error) {
 		return "", func() {}, fmt.Errorf("create sandbox workspace: %w", err)
 	}
 	// Mkdir is filtered by umask, so make the mode explicit: the container user
-	// (65534) is no relation of the service user and must be able to write.
+	// (host uid by default) is not necessarily the service user and must be
+	// able to write.
 	if err := os.Chmod(runDir, 0o777); err != nil {
 		_ = os.RemoveAll(runDir)
 		return "", func() {}, fmt.Errorf("chmod sandbox workspace: %w", err)
@@ -576,7 +636,8 @@ func preparePersistentWorkspace(dir string) error {
 		return fmt.Errorf("create agent workspace: %w", err)
 	}
 	// Mkdir is filtered by umask, so make the mode explicit: the container user
-	// (65534) is no relation of the service user and must be able to write.
+	// (host uid by default) is not necessarily the service user and must be
+	// able to write.
 	if err := os.Chmod(dir, 0o777); err != nil {
 		return fmt.Errorf("chmod agent workspace: %w", err)
 	}
@@ -749,7 +810,7 @@ func (r *Runner) runArgs(image string, command []string, name, workDir, fileSize
 		"--network", r.cfg.Network,
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--user", containerUser,
+		"--user", r.cfg.RunAsUser,
 		"--read-only",
 		// /work is a host bind mount so produced files survive the container and
 		// can be harvested; /tmp stays an ephemeral tmpfs.

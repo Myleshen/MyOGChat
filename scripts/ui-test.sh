@@ -50,6 +50,25 @@ login() {
   ab click "#login-form button[type=submit]" >/dev/null 2>&1
   wait_for "!document.getElementById('app').hidden" 10
 }
+# jsval <js-expr> — evaluate and strip agent-browser's JSON quoting.
+jsval() { ab eval "String($1)" | tail -1 | tr -d '\r' | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//'; }
+# new_scratch_chat — start a fresh chat through the real New-chat control.
+# The app reopens the last conversation on load, so a pass that skipped this
+# would append to (and edit) whatever chat the profile had open last run.
+# A broken precondition fails the run without inflating the assert count.
+new_scratch_chat() {
+  ab click "#menu-btn" >/dev/null 2>&1; sleep 1
+  ab click "#new-chat-btn" >/dev/null 2>&1; sleep 1
+  ab click "#backdrop" >/dev/null 2>&1 || true; sleep 1
+  local n="" i=0
+  while [ "$i" -lt 16 ]; do
+    n=$(jsval "document.querySelectorAll('.messages .msg').length")
+    [ "$n" = "0" ] && return 0
+    sleep 0.5; i=$((i+1))
+  done
+  echo "  FAIL  scratch chat empty  (got: ${n:-<empty>} messages)"
+  FAILS=$((FAILS+1))
+}
 # Best-effort cleanup helpers (fire-and-forget DELETE by name).
 cleanup() { ab eval "(function(){fetch('$1').then(function(r){return r.json();}).then(function(xs){var x=xs.filter(function(o){return o.name==='$2';})[0];if(x)fetch('$1/'+x.id,{method:'DELETE'});});return 'ok';})()" >/dev/null 2>&1; }
 
@@ -64,6 +83,7 @@ echo "-- boot --"
 assert "login screen shown" "!document.getElementById('login-view').hidden && !document.getElementById('login-form').hidden"
 shot 01-boot.png
 login "$TEST_USER" "$TEST_PASS"
+new_scratch_chat
 
 echo "-- app shell --"
 assert "app shell visible" "!document.getElementById('app').hidden"
@@ -156,11 +176,19 @@ shot 09-sent.png
 
 echo "-- phase 5: search + pins --"
 assert "chat search input present" "!!document.getElementById('search-input')"
-assert "conversation row has pin toggle" "!!document.querySelector('.convo-item .convo-pin')"
-ab eval "(function(){var b=document.querySelector('.convo-item .convo-pin');if(b){b.click();return 'ok';}return 'none';})()" >/dev/null 2>&1
+assert "conversation row has pin toggle" "!!document.querySelector('.convo-item.active .convo-pin')"
+ab eval "(function(){var b=document.querySelector('.convo-item.active .convo-pin');if(b){b.click();return 'ok';}return 'none';})()" >/dev/null 2>&1
 sleep 1
-assert "pin toggles pressed state" "!!document.querySelector('.convo-item .convo-pin[aria-pressed=\"true\"]')"
+assert "pin toggles pressed state" "!!document.querySelector('.convo-item.active .convo-pin[aria-pressed=\"true\"]')"
 shot 10-phase5-pin.png
+# Unpin the scratch chat: a pinned leftover sorts first and is therefore the
+# chat the app reopens on the next boot (which is how the last run leaked into
+# a real conversation).
+ab eval "(function(){var b=document.querySelector('.convo-item.active .convo-pin');if(b&&b.getAttribute('aria-pressed')==='true'){b.click();return 'ok';}return 'none';})()" >/dev/null 2>&1
+sleep 1
+if [ "$(jsval "!!document.querySelector('.convo-item.active .convo-pin[aria-pressed=\"true\"]')")" = "true" ]; then
+  echo "  FAIL  scratch chat unpinned  (still pinned)"; FAILS=$((FAILS+1))
+fi
 
 echo "-- phase 5: export menu (a11y) --"
 ab click "#export-btn" >/dev/null 2>&1; sleep 1
@@ -215,6 +243,7 @@ ab click "#logout-btn" >/dev/null 2>&1; sleep 1
 ab reload >/dev/null 2>&1; sleep 1   # clean login screen (dismiss any leftover drawer/backdrop)
 assert "logged out" "!document.getElementById('login-view').hidden && !document.getElementById('login-form').hidden"
 login "$ADMIN_USER" "$ADMIN_PASS"
+new_scratch_chat
 assert "admin signed in" "!document.getElementById('app').hidden"
 assert "admin badge shown" "!document.getElementById('user-admin-badge').hidden"
 ab press Escape >/dev/null 2>&1; sleep 1

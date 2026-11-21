@@ -62,8 +62,9 @@ in two independent ways.
    models; 8 retired IDs stay resolvable (`models.legacy`) so old conversations
    still load. Vision default is now `deepseek-v4.1-flash` (the old
    `deepseek-v4-flash-vision-exp` was retired).
-5. **Auto-titles stay free** on the separate Zen quota with
-   `mimo-v2.6-flash-free` (`ZenChatOnce`), never spending Go usage.
+5. **Auto-titles** run on the caller's own key with the cheap Go model
+   `mimo-v2.6-flash` (the free Zen quota kept returning `429 FreeUsageLimitError`
+   with a key). Any failure keeps the truncated prompt as the title.
 
 A key is needed in **Settings → API key** (per-user, overrides the env key); the
 env `OPENCODE_API_KEY` remains the shared server key fallback.
@@ -309,7 +310,8 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
   retired model cannot break key saving (the old check used
   `longcat-2.5-preview-free`, which was retired, making every save return 400).
 - **Free models are on Zen** (`https://opencode.ai/zen/v1`), a quota separate
-  from Go. Auto-titles use `mimo-v2.6-flash-free` there via `ZenChatOnce`.
+  from Go — but that quota also runs out (`429 FreeUsageLimitError`), so the app
+  never calls it. Auto-titles use `mimo-v2.6-flash` on the caller's Go key.
 - **Split-horizon DNS**: on the owner's LAN, `chat.example.com` resolves to
   `raspberrypi.local` (the Pi), not Cloudflare. Off-LAN it goes through the tunnel.
 - The **`rpi`** shell alias (`ssh pi@raspberrypi.local`) exists on the owner's

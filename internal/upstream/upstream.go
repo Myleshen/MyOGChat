@@ -26,10 +26,6 @@ const BaseURL = "https://opencode.ai/inference/go/openai/v1"
 // without a key it is public, with an unknown key it answers 401.
 const ModelsURL = "https://opencode.ai/inference/go/v1/models"
 
-// ZenBaseURL serves the free model catalog, which draws on a quota separate
-// from Go. Used for cheap helper calls such as auto-titles.
-const ZenBaseURL = "https://opencode.ai/zen/v1"
-
 // userAgent is required by the upstream ToS on every request.
 const userAgent = "myogchat/1.0"
 
@@ -410,13 +406,12 @@ type Client struct {
 	hc        *http.Client
 	baseURL   string // defaults to BaseURL; overridable in tests
 	modelsURL string // defaults to ModelsURL; overridable in tests
-	zenURL    string // defaults to ZenBaseURL; overridable in tests
 }
 
 // NewClient returns a Client. The HTTP client has no overall timeout; every
 // call is bounded by its context.
 func NewClient() *Client {
-	return &Client{hc: &http.Client{}, baseURL: BaseURL, modelsURL: ModelsURL, zenURL: ZenBaseURL}
+	return &Client{hc: &http.Client{}, baseURL: BaseURL, modelsURL: ModelsURL}
 }
 
 // ValidateKey checks an API key against the model catalog, which answers 401
@@ -489,23 +484,9 @@ func (c *Client) Stream(ctx context.Context, p Params) <-chan Event {
 }
 
 // ChatOnce performs one non-streaming chat-completions call on the Go endpoint
-// and returns the assistant message content (used for image-prompt enhancement).
+// and returns the assistant message content (used for image-prompt enhancement
+// and auto-titles).
 func (c *Client) ChatOnce(ctx context.Context, apiKey, sessionID, model string, msgs []Message, maxTokens int) (string, error) {
-	return c.chatOnceAt(ctx, c.baseURL, apiKey, sessionID, model, msgs, maxTokens)
-}
-
-// ZenChatOnce is ChatOnce against the free Zen catalog. Free models bill a
-// separate quota from Go, so short helper calls (auto-titles) cost nothing.
-func (c *Client) ZenChatOnce(ctx context.Context, apiKey, sessionID, model string, msgs []Message, maxTokens int) (string, error) {
-	base := c.zenURL
-	if base == "" {
-		base = ZenBaseURL
-	}
-	return c.chatOnceAt(ctx, base, apiKey, sessionID, model, msgs, maxTokens)
-}
-
-// chatOnceAt performs one non-streaming chat-completions call against base.
-func (c *Client) chatOnceAt(ctx context.Context, base, apiKey, sessionID, model string, msgs []Message, maxTokens int) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	payload := map[string]any{
@@ -514,7 +495,7 @@ func (c *Client) chatOnceAt(ctx context.Context, base, apiKey, sessionID, model 
 		"max_tokens": maxTokens,
 		"stream":     false,
 	}
-	resp, err := c.doAt(ctx, base, "/chat/completions", sessionID, apiKey, payload)
+	resp, err := c.do(ctx, "/chat/completions", sessionID, apiKey, payload)
 	if err != nil {
 		return "", err
 	}
@@ -543,16 +524,11 @@ func (c *Client) chatOnceAt(ctx context.Context, base, apiKey, sessionID, model 
 // the response if its status is 2xx. Non-2xx yields an error with status +
 // body snippet.
 func (c *Client) do(ctx context.Context, path, sessionID, apiKey string, payload any) (*http.Response, error) {
-	return c.doAt(ctx, c.baseURL, path, sessionID, apiKey, payload)
-}
-
-// doAt is do against an explicit base URL (the free Zen catalog differs).
-func (c *Client) doAt(ctx context.Context, base, path, sessionID, apiKey string, payload any) (*http.Response, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
