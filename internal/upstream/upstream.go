@@ -111,16 +111,22 @@ type ToolActivity struct {
 	Output     string `json:"output,omitempty"`
 	Error      string `json:"error,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
+	// ThoughtSignature is Google-only provider metadata, carried through the
+	// activity so the server can persist it. It is never sent to the client.
+	ThoughtSignature string `json:"-"`
 }
 
 // ToolCall is one function call requested by the model. ID is the tool-call id
 // for the chat dialect and the call_id for the responses dialect; ItemID is the
-// responses output-item id (empty for chat).
+// responses output-item id (empty for chat). ThoughtSignature is Google-only
+// provider metadata (the opaque thoughtSignature emitted with the call), which
+// every other dialect ignores.
 type ToolCall struct {
-	ID        string
-	ItemID    string
-	Name      string
-	Arguments string
+	ID               string
+	ItemID           string
+	Name             string
+	Arguments        string
+	ThoughtSignature string
 }
 
 // ExecuteTool runs one requested tool call. It returns the textual result fed
@@ -156,6 +162,9 @@ type ToolResult struct {
 	Output    string
 	Error     string
 	Status    string // done | error | running
+	// ThoughtSignature is the Google-only signature stored with the call so a
+	// reloaded conversation can echo it back; other dialects ignore it.
+	ThoughtSignature string
 }
 
 // visionDetail is the image-resolution hint sent with vision parts (Phase 5.1),
@@ -231,6 +240,7 @@ const (
 // replayedCall is one stored tool call rendered as a history round-trip.
 type replayedCall struct {
 	id, name, arguments, output string
+	thoughtSignature            string
 }
 
 // chatMessages renders one history message for the chat dialect. An assistant
@@ -303,10 +313,11 @@ func replayCalls(m Message) []replayedCall {
 			args = "{}"
 		}
 		out = append(out, replayedCall{
-			id:        fmt.Sprintf("call_%s_%d", id, i),
-			name:      t.Name,
-			arguments: args,
-			output:    toolReplayText(t),
+			id:               fmt.Sprintf("call_%s_%d", id, i),
+			name:             t.Name,
+			arguments:        args,
+			output:           toolReplayText(t),
+			thoughtSignature: t.ThoughtSignature,
 		})
 	}
 	return out

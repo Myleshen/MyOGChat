@@ -32,6 +32,22 @@ func TestMergeToolEventCarriesArgsOutput(t *testing.T) {
 	}
 }
 
+// TestMergeToolEventCarriesThoughtSignature verifies the Google signature
+// captured when the call starts survives the terminal event, so a reloaded
+// conversation can replay it.
+func TestMergeToolEventCarriesThoughtSignature(t *testing.T) {
+	var list []store.ToolActivity
+	list = mergeToolEvent(list, &upstream.ToolActivity{
+		Name: "web_search", Status: upstream.ToolRunning, ThoughtSignature: "sig-x",
+	})
+	list = mergeToolEvent(list, &upstream.ToolActivity{
+		Name: "web_search", Status: upstream.ToolDone, Output: "OUT",
+	})
+	if len(list) != 1 || list[0].ThoughtSignature != "sig-x" {
+		t.Errorf("signature not carried: %+v", list)
+	}
+}
+
 // TestCappedToolTruncates verifies oversized inputs/outputs are cut on the caps.
 func TestCappedToolTruncates(t *testing.T) {
 	entry := cappedTool(&upstream.ToolActivity{

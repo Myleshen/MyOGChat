@@ -251,6 +251,10 @@ type ToolActivity struct {
 	Error      string `json:"error,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
 	Truncated  bool   `json:"truncated,omitempty"`
+	// ThoughtSignature is Google-only provider metadata (the opaque signature
+	// Gemini emitted with the call). It rides the JSON blob so a reloaded
+	// conversation replays it; every other dialect ignores it.
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 // AttachedFile is the display metadata of a file attached to a user message.
