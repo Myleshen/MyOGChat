@@ -14,6 +14,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -32,6 +34,13 @@ const userAgent = "myogchat/1.0"
 
 // streamTimeout bounds one streaming upstream call (contract §4).
 const streamTimeout = 5 * time.Minute
+
+// firstByteTimeout is how long a custom provider may take to send the first
+// streamed byte. Some providers list models they do not serve and then accept
+// the connection without ever answering; without this the call would sit until
+// streamTimeout. A package var, not a Params field: tests shorten it and no
+// caller can drift from the default.
+var firstByteTimeout = 60 * time.Second
 
 // Event kinds emitted on the stream channel.
 const (
@@ -603,6 +612,99 @@ func (c *Client) do(ctx context.Context, baseURL, path, sessionID, apiKey string
 	return resp, nil
 }
 
+// silentProviderError reports a custom provider that accepted the request and
+// then sent nothing within firstByteTimeout. It is a distinct type so the agent
+// tool loop does not retry it (the no-tools retry would double the wait).
+type silentProviderError struct {
+	model   string
+	timeout time.Duration
+}
+
+func (e silentProviderError) Error() string {
+	d := fmt.Sprintf("%ds", int64(e.timeout/time.Second))
+	if e.timeout < time.Second {
+		d = e.timeout.String()
+	}
+	return fmt.Sprintf("provider did not respond within %s (model %q); the model may not be available — try another model", d, e.model)
+}
+
+// isSilentProvider reports a first-byte timeout, which must not be retried.
+func isSilentProvider(err error) bool {
+	var silent silentProviderError
+	return errors.As(err, &silent)
+}
+
+// openChatStream posts one chat-completions request. For a custom provider
+// (BaseURL set) it also bounds the wait for the first response byte: the timer
+// is stopped by the first byte, so the rest of the stream is unbounded and long
+// replies are never truncated (a whole-request Timeout would cut them). OpenCode
+// turns take exactly the old path.
+//
+// shortcut: only the first byte is bounded, so a provider that sends headers or
+// keepalives and then stalls still waits for streamTimeout; add an idle-read
+// deadline if that ever shows up.
+func (c *Client) openChatStream(ctx context.Context, p Params, payload any) (*http.Response, error) {
+	if p.BaseURL == "" {
+		return c.do(ctx, "", "/chat/completions", p.SessionID, p.APIKey, payload)
+	}
+	parent := ctx
+	ctx, cancel := context.WithCancel(parent)
+	var fired atomic.Bool
+	timer := time.AfterFunc(firstByteTimeout, func() {
+		fired.Store(true)
+		cancel()
+	})
+	resp, err := c.do(ctx, p.BaseURL, "/chat/completions", p.SessionID, p.APIKey, payload)
+	if err != nil {
+		watchdogFired := !timer.Stop() && fired.Load() && parent.Err() == nil
+		cancel()
+		if watchdogFired {
+			return nil, silentProviderError{model: p.Model, timeout: firstByteTimeout}
+		}
+		return nil, err
+	}
+	resp.Body = &firstByteBody{
+		ReadCloser: resp.Body,
+		timer:      timer,
+		cancel:     cancel,
+		parent:     parent,
+		fired:      &fired,
+		err:        silentProviderError{model: p.Model, timeout: firstByteTimeout},
+	}
+	return resp, nil
+}
+
+// firstByteBody stops the first-byte watchdog as soon as a byte arrives and
+// reports the timeout error if the watchdog cancelled a silent body. Close
+// releases the derived context.
+type firstByteBody struct {
+	io.ReadCloser
+	timer  *time.Timer
+	cancel context.CancelFunc
+	parent context.Context
+	fired  *atomic.Bool
+	err    error
+	once   sync.Once
+}
+
+func (b *firstByteBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		// First byte arrived: the rest of the stream must be allowed to run.
+		b.once.Do(func() { b.timer.Stop() })
+	}
+	if err != nil && b.fired.Load() && b.parent.Err() == nil {
+		return n, b.err
+	}
+	return n, err
+}
+
+func (b *firstByteBody) Close() error {
+	b.once.Do(func() { b.timer.Stop() })
+	b.cancel()
+	return b.ReadCloser.Close()
+}
+
 // chatChunk is a chat.completion.chunk (contract §4).
 type chatChunk struct {
 	Choices []struct {
@@ -653,7 +755,7 @@ func (c *Client) streamChat(ctx context.Context, p Params, send func(Event) bool
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
 	}
-	resp, err := c.do(ctx, p.BaseURL, "/chat/completions", p.SessionID, p.APIKey, payload)
+	resp, err := c.openChatStream(ctx, p, payload)
 	if err != nil {
 		return err
 	}
