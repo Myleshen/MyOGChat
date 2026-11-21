@@ -12,21 +12,21 @@ import (
 	"myogchat/internal/store"
 )
 
-// calendarBackend builds the caller's calendar backend from their stored
+// calendarAccountConfig builds the caller's calendar config from their stored
 // account, decrypting the credential. ok is false when nothing is connected or
 // the credential cannot be read.
-func (s *Server) calendarBackend(ctx context.Context, userID string) (calendar.Backend, bool) {
+func (s *Server) calendarAccountConfig(ctx context.Context, userID string) (calendar.Config, store.CalendarAccount, bool) {
 	acc, err := s.st.GetCalendarAccount(ctx, userID)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, false
+		return calendar.Config{}, store.CalendarAccount{}, false
 	}
 	if err != nil || acc.CredentialEnc == "" {
-		return nil, false
+		return calendar.Config{}, store.CalendarAccount{}, false
 	}
 	raw, err := secret.Decrypt(s.encKey, acc.CredentialEnc)
 	if err != nil {
 		s.log.Warn("calendar credential could not be decrypted", "error", err)
-		return nil, false
+		return calendar.Config{}, store.CalendarAccount{}, false
 	}
 	cfg := calendar.Config{
 		Kind:       calendar.Kind(acc.Kind),
@@ -36,10 +36,24 @@ func (s *Server) calendarBackend(ctx context.Context, userID string) (calendar.B
 	}
 	switch cfg.Kind {
 	case calendar.KindCalDAV:
+		// The stored calendar_id is the default collection, and the cached home
+		// set means routine tool calls need no discovery at all.
+		cfg.CalendarPath = acc.CalendarID
+		cfg.HomeSet = acc.HomeSet
 		cfg.Password = string(raw)
 	case calendar.KindICS:
 		cfg.URL = string(raw)
 	default:
+		return calendar.Config{}, store.CalendarAccount{}, false
+	}
+	return cfg, acc, true
+}
+
+// calendarBackend builds the caller's calendar backend from their stored
+// account. ok is false when nothing is connected or it cannot be read.
+func (s *Server) calendarBackend(ctx context.Context, userID string) (calendar.Backend, bool) {
+	cfg, _, ok := s.calendarAccountConfig(ctx, userID)
+	if !ok {
 		return nil, false
 	}
 	b, err := calendar.New(cfg)
@@ -139,15 +153,20 @@ func (s *Server) handlePutCalendar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate by connecting: this proves the credential works and (for CalDAV)
-	// resolves the endpoint + default calendar so later calls skip discovery.
+	// resolves the endpoint, home set and default calendar so later calls skip
+	// discovery.
 	disc, err := calendar.Discover(r.Context(), cfg)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not connect to the calendar: "+err.Error())
 		return
 	}
-	if cfg.CalendarID == "" {
-		cfg.CalendarID = disc.CalendarID
+	// A requested collection must be one the server actually exposes.
+	if kind == calendar.KindCalDAV && cfg.CalendarID != "" && !calendar.CalendarExists(disc.Calendars, cfg.CalendarID) {
+		writeError(w, http.StatusBadRequest, "unknown calendar")
+		return
 	}
+	// disc.CalendarID is the canonical default collection (or ICS label).
+	cfg.CalendarID = disc.CalendarID
 	enc, err := secret.Encrypt(s.encKey, []byte(credential))
 	if err != nil {
 		s.log.Error("encrypt calendar credential", "error", err)
@@ -164,6 +183,7 @@ func (s *Server) handlePutCalendar(w http.ResponseWriter, r *http.Request) {
 		Username:      cfg.Username,
 		CredentialEnc: enc,
 		Endpoint:      disc.Endpoint,
+		HomeSet:       disc.HomeSet,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -179,6 +199,91 @@ func (s *Server) handlePutCalendar(w http.ResponseWriter, r *http.Request) {
 	out := calendarStatusJSON(acc)
 	out["calendars"] = disc.Calendars
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleListCalendars lists the account's calendars so the client can pick a
+// default one (3.3). Cheap on CalDAV once the home set is cached.
+func (s *Server) handleListCalendars(w http.ResponseWriter, r *http.Request) {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	cfg, acc, ok := s.calendarAccountConfig(r.Context(), u.ID)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"connected": false})
+		return
+	}
+	b, err := calendar.New(cfg)
+	if err != nil {
+		s.log.Error("calendar backend unavailable", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load calendar")
+		return
+	}
+	cals, err := b.Calendars(r.Context())
+	if err != nil {
+		s.log.Warn("list calendars", "error", err)
+		writeError(w, http.StatusBadGateway, "could not list calendars: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"connected": true,
+		"default":   acc.CalendarID,
+		"calendars": cals,
+	})
+}
+
+// handlePatchCalendar changes the default collection without re-entering the
+// credential (3.3). ICS feeds expose exactly one calendar, so they have nothing
+// to switch to.
+func (s *Server) handlePatchCalendar(w http.ResponseWriter, r *http.Request) {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	cfg, acc, ok := s.calendarAccountConfig(r.Context(), u.ID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no calendar connected")
+		return
+	}
+	var req struct {
+		CalendarID string `json:"calendar_id"`
+	}
+	if err := decodeJSON(w, r, &req, 4*1024); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if cfg.Kind == calendar.KindICS {
+		writeError(w, http.StatusBadRequest, "ICS feeds expose a single calendar")
+		return
+	}
+	id := strings.TrimSpace(req.CalendarID)
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "calendar_id is required")
+		return
+	}
+	// Discovery doubles as validation: it lists the account's calendars and
+	// refreshes the cached endpoint/home set if the account predates the cache.
+	cfg.CalendarPath = id
+	disc, err := calendar.Discover(r.Context(), cfg)
+	if err != nil {
+		s.log.Warn("calendar discovery", "error", err)
+		writeError(w, http.StatusBadGateway, "could not reach the calendar: "+err.Error())
+		return
+	}
+	if !calendar.CalendarExists(disc.Calendars, id) {
+		writeError(w, http.StatusBadRequest, "unknown calendar")
+		return
+	}
+	acc.CalendarID = disc.CalendarID
+	acc.Endpoint = disc.Endpoint
+	acc.HomeSet = disc.HomeSet
+	acc.UpdatedAt = time.Now().UnixMilli()
+	if err := s.st.UpsertCalendarAccount(r.Context(), &acc); err != nil {
+		s.log.Error("store calendar account", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store calendar")
+		return
+	}
+	writeJSON(w, http.StatusOK, calendarStatusJSON(acc))
 }
 
 // handleDeleteCalendar disconnects the caller's calendar (3.3).

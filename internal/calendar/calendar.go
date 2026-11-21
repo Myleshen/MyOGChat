@@ -69,6 +69,22 @@ type Calendar struct {
 	Writable    bool   `json:"writable"`
 }
 
+// CalendarExists reports whether id names one of cals, tolerating a missing
+// trailing slash on collection paths (clients often omit it).
+func CalendarExists(cals []Calendar, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	want := normalizeCollectionPath(id)
+	for _, c := range cals {
+		if c.ID == id || normalizeCollectionPath(c.ID) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // ListQuery bounds a list operation. From/To are inclusive/exclusive; Query is
 // an optional case-insensitive text filter over title/description/location.
 type ListQuery struct {

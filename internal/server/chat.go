@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +14,7 @@ import (
 	"myogchat/internal/models"
 	"myogchat/internal/sandbox"
 	"myogchat/internal/store"
+	"myogchat/internal/tools"
 	"myogchat/internal/upstream"
 )
 
@@ -89,14 +91,83 @@ type replySpec struct {
 	userAtts    []store.Attachment // post: attachment metadata + folded text
 	images      []string           // post: inline vision image data URIs
 	regenerate  bool               // regenerate instead of appending a user message
+	// userSaved marks a message already persisted by the caller (agent sends
+	// insert before queueing, so a queued message is visible immediately).
+	userSaved bool
 }
 
+// agentWorkspaceMinFree is the free-disk headroom required to start an agent job.
+const agentWorkspaceMinFree = 1 << 30 // 1 GiB
+
 // streamAgent runs the upstream agent loop, allowing tests to inject a stream.
-func (s *Server) streamAgent(ctx context.Context, p upstream.Params, exec upstream.ExecuteTool) <-chan upstream.Event {
+func (s *Server) streamAgent(ctx context.Context, p upstream.Params, exec upstream.ExecuteTool, opts upstream.AgentOptions) <-chan upstream.Event {
 	if s.streamAgentFn != nil {
-		return s.streamAgentFn(ctx, p, exec)
+		return s.streamAgentFn(ctx, p, exec, opts)
 	}
-	return s.up.StreamAgent(ctx, p, exec)
+	return s.up.StreamAgent(ctx, p, exec, opts)
+}
+
+// agentMode reports whether a conversation's sends run as agent jobs: the
+// per-conversation flag plus the admin kill switches. An agent loop exists to
+// run tools, so tools off disables it too. When either switch is off the chat
+// keeps working as an ordinary chat (nothing is refused or lost).
+func (s *Server) agentMode(ctx context.Context, conv store.Conversation) bool {
+	return conv.AgentMode && s.agentEnabled(ctx) && s.toolsEnabled(ctx)
+}
+
+// agentDiskOK reports whether the sandbox filesystem has room for an agent
+// workspace. It fails open: an unreadable path never blocks a send.
+func (s *Server) agentDiskOK() bool {
+	if s.sbx == nil {
+		return true
+	}
+	free := s.freeBytes
+	if free == nil {
+		free = sandbox.FreeBytes
+	}
+	n, err := free(s.sbx.Config().WorkDir)
+	if err != nil {
+		s.log.Warn("agent disk check failed, allowing", "error", err)
+		return true
+	}
+	return n >= agentWorkspaceMinFree
+}
+
+// agentWorkspace binds a conversation to its persistent sandbox workspace.
+// A nil result means "use the ephemeral tools".
+func (s *Server) agentWorkspace(userID, convID string) *tools.Workspace {
+	if s.sbx == nil || !safePathComponent(userID) || !safePathComponent(convID) {
+		return nil
+	}
+	cfg := s.sbx.Config()
+	root := filepath.Join(cfg.WorkDir, sandbox.AgentWorkspaceDirName)
+	return &tools.Workspace{
+		Path:       filepath.Join(root, userID, convID),
+		QuotaDir:   filepath.Join(root, userID),
+		QuotaBytes: cfg.AgentQuotaBytes,
+		Timeout:    agentToolTimeout,
+	}
+}
+
+// safePathComponent rejects anything that could escape a parent directory when
+// used as a single path element.
+func safePathComponent(s string) bool {
+	return s != "" && s != "." && s != ".." && filepath.Base(s) == s &&
+		!strings.ContainsAny(s, `/\`)
+}
+
+// insertUserMessage persists the just-sent user message (with attachment
+// metadata). Agent sends insert before the job runs so a queued message is
+// visible immediately; normal replies insert inside runReply.
+func (s *Server) insertUserMessage(ctx context.Context, spec *replySpec) error {
+	return s.st.InsertMessage(ctx, &store.Message{
+		ID:             newUUID(),
+		ConversationID: spec.conv.ID,
+		Role:           "user",
+		Content:        spec.userContent,
+		Attachments:    attachmentMeta(spec.userAtts),
+		CreatedAt:      time.Now().UnixMilli(),
+	})
 }
 
 // startReply reserves a job, launches the detached agent loop, and relays the
@@ -108,7 +179,7 @@ func (s *Server) startReply(w http.ResponseWriter, r *http.Request, spec replySp
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
-	j, err := s.hub().start(spec.conv.ID, spec.user.ID, spec.conv.Model)
+	j, err := s.hub().start(spec.conv.ID, spec.user.ID, spec.conv.Model, s.agentMode(r.Context(), spec.conv))
 	if err != nil {
 		status := http.StatusTooManyRequests
 		if errors.Is(err, errJobRunning) {
@@ -118,6 +189,51 @@ func (s *Server) startReply(w http.ResponseWriter, r *http.Request, spec replySp
 		return
 	}
 	// Subscribe before launching the job so no early frame (e.g. meta) is lost.
+	sub := j.subscribe()
+	go s.runReply(j, spec)
+	relayJob(w, r, flusher, j, sub)
+}
+
+// startAgentReply starts an agent-mode reply, or queues it when the user already
+// has an agent job running and answers 202 with the queue position. The user
+// message is persisted here (before the job runs) so a queued send is visible.
+func (s *Server) startAgentReply(w http.ResponseWriter, r *http.Request, spec replySpec) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	if !s.agentDiskOK() {
+		writeError(w, http.StatusInsufficientStorage, "not enough disk space on the server to start an agent workspace")
+		return
+	}
+	// The job (or its queue entry) carries no API key: it is resolved when the
+	// job actually starts, so a queued send never holds a key for an hour.
+	spec.userSaved = true
+	spec.apiKey = ""
+	j, pos, err := s.hub().startAgent(spec.conv.ID, spec.user.ID, spec.conv.Model, spec)
+	if err != nil {
+		status := http.StatusTooManyRequests
+		if errors.Is(err, errJobRunning) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	if err := s.insertUserMessage(r.Context(), &spec); err != nil {
+		if j != nil {
+			j.cancel()
+			s.hub().complete(j)
+		}
+		s.hub().removeQueued(spec.conv.ID)
+		s.log.Error("insert user message", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save message")
+		return
+	}
+	if j == nil {
+		writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "position": pos})
+		return
+	}
 	sub := j.subscribe()
 	go s.runReply(j, spec)
 	relayJob(w, r, flusher, j, sub)
@@ -195,14 +311,19 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	s.startReply(w, r, replySpec{
+	spec := replySpec{
 		conv:        conv,
 		user:        u,
 		apiKey:      apiKey,
 		userContent: req.Content,
 		userAtts:    atts,
 		images:      images,
-	})
+	}
+	if s.agentMode(r.Context(), conv) {
+		s.startAgentReply(w, r, spec)
+		return
+	}
+	s.startReply(w, r, spec)
 }
 
 // handleRegenerate replaces the trailing assistant reply (§8.5).
@@ -245,11 +366,26 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 // a client disconnect, reload, or tab close cannot interrupt it. Progress is
 // published on the job (live SSE + the generation snapshot).
 func (s *Server) runReply(j *genJob, spec replySpec) {
-	defer s.hub().complete(j)
+	defer func() {
+		if next, nextSpec, ok := s.hub().complete(j); ok {
+			go s.runReply(next, nextSpec)
+		}
+	}()
 	ctx := j.ctx
 	conv := spec.conv
 	u := spec.user
+	agent := j.agent
 	apiKey := spec.apiKey
+	if apiKey == "" {
+		// A queued agent send resolves the key when it actually starts, never
+		// when it was enqueued.
+		k, err := s.resolveKey(ctx, u)
+		if err != nil {
+			j.finish(jobError, "", err.Error())
+			return
+		}
+		apiKey = k
+	}
 
 	m, ok := models.ByID(conv.Model)
 	if !ok {
@@ -258,23 +394,16 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	}
 
 	atts := spec.userAtts
-	if spec.regenerate {
+	switch {
+	case spec.regenerate:
 		if _, err := s.st.DeleteAssistantAfterLastUser(ctx, conv.ID); err != nil {
 			s.log.Error("delete trailing assistant reply", "error", err)
 			j.finish(jobError, "", "failed to prepare regenerate")
 			return
 		}
 		atts = s.attachmentsFromLastUser(ctx, u.ID, conv.ID)
-	} else {
-		userMsg := store.Message{
-			ID:             newUUID(),
-			ConversationID: conv.ID,
-			Role:           "user",
-			Content:        spec.userContent,
-			Attachments:    attachmentMeta(atts),
-			CreatedAt:      time.Now().UnixMilli(),
-		}
-		if err := s.st.InsertMessage(ctx, &userMsg); err != nil {
+	case !spec.userSaved:
+		if err := s.insertUserMessage(ctx, &spec); err != nil {
 			s.log.Error("insert user message", "error", err)
 			j.finish(jobError, "", "failed to save message")
 			return
@@ -289,7 +418,17 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	}
 	msgs := make([]upstream.Message, 0, len(history))
 	for _, hm := range history {
-		msgs = append(msgs, upstream.Message{Role: hm.Role, Content: hm.Content})
+		m := upstream.Message{ID: hm.ID, Role: hm.Role, Content: hm.Content}
+		for _, t := range hm.Tools {
+			m.Tools = append(m.Tools, upstream.ToolResult{
+				Name:      t.Name,
+				Arguments: t.Args,
+				Output:    t.Output,
+				Error:     t.Error,
+				Status:    t.Status,
+			})
+		}
+		msgs = append(msgs, m)
 	}
 	// Vision input (Phase 5.1): when the model can see images, attach the inline
 	// data URIs to the just-sent user message and drop the redundant OCR text of
@@ -306,10 +445,15 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	// registered email_digest appends the fixed summarization standard (5.9) to
 	// the system prompt (the project prompt stays first, so it wins). Images
 	// generated by generate_image (4.3b) and files produced by the code sandbox
-	// (5.8) are collected here and attached to the assistant message below.
+	// (5.8) are collected here and attached to the assistant message below. An
+	// agent-mode chat gets the persistent-workspace sandbox tools instead.
 	var generatedImages []store.GeneratedImage
 	var generatedArtifacts []store.ArtifactRef
-	reg := s.toolRegistryWith(ctx, u, func(img store.GeneratedImage) {
+	var ws *tools.Workspace
+	if agent {
+		ws = s.agentWorkspace(u.ID, conv.ID)
+	}
+	reg := s.toolRegistryWithWorkspace(ctx, u, func(img store.GeneratedImage) {
 		generatedImages = append(generatedImages, img)
 	}, func(a sandbox.Artifact) {
 		ref, err := s.storeArtifact(ctx, u.ID, conv.ID, a)
@@ -318,7 +462,7 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 			return
 		}
 		generatedArtifacts = append(generatedArtifacts, ref)
-	})
+	}, ws)
 	if _, ok := reg.Get("email_digest"); ok {
 		instructions = joinSystem(instructions, emailDigestStandardWithDate(time.Now(), time.Local))
 	}
@@ -329,6 +473,18 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	effort := ""
 	if conv.Effort != nil {
 		effort = *conv.Effort
+	}
+	// Agent mode gets a much larger loop and per-call budget, plus step
+	// progress for the generation snapshot.
+	opts := upstream.AgentOptions{}
+	toolTimeout := time.Duration(0)
+	if agent {
+		opts = upstream.AgentOptions{
+			MaxIterations: agentMaxSteps,
+			CallTimeout:   agentCallTimeout,
+			OnStep:        j.setStep,
+		}
+		toolTimeout = agentToolTimeout
 	}
 	// Tool calling runs the same agentic code path even when the registry is
 	// empty. The generated images/artifacts were collected above.
@@ -342,7 +498,7 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 		Instructions: instructions,
 		Context:      context,
 		Tools:        upstreamToolSpecs(reg.Specs()),
-	}, s.toolExecutor(reg))
+	}, s.toolExecutor(reg, toolTimeout), opts)
 
 	var content, reasoning strings.Builder
 	var tools []store.ToolActivity
@@ -352,17 +508,27 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	var firstTokenAt time.Time
 	startedAt := time.Now()
 
+	// stop ends the job. Agent mode persists what it produced so far (a long run
+	// is expensive and the partial answer is still useful); normal chats keep
+	// today's discard-on-stop behaviour.
+	stop := func() {
+		if agent {
+			s.persistPartial(ctx, conv, asstID, content.String(), reasoning.String(),
+				tools, generatedImages, generatedArtifacts, startedAt)
+		}
+		j.finish(jobStopped, "", "")
+	}
+
 stream:
 	for {
 		select {
 		case <-ctx.Done():
-			// Stopped (explicit stop or shutdown); no partial reply is persisted.
-			j.finish(jobStopped, "", "")
+			stop()
 			return
 		case ev, open := <-events:
 			if !open {
 				if ctx.Err() != nil {
-					j.finish(jobStopped, "", "")
+					stop()
 					return
 				}
 				j.finish(jobError, "", "upstream stream ended unexpectedly")
@@ -433,7 +599,7 @@ stream:
 		ID:               asstID,
 		ConversationID:   conv.ID,
 		Role:             "assistant",
-		Content:          content.String(),
+		Content:          upstream.SanitizeDSML(content.String()),
 		Model:            &model,
 		PromptTokens:     &usage.PromptTokens,
 		CompletionTokens: &usage.CompletionTokens,
@@ -477,6 +643,45 @@ stream:
 	}
 
 	j.finish(jobDone, title, "")
+}
+
+// persistPartial stores what an interrupted agent reply produced so far: the
+// partial content/reasoning/tools plus any collected images and artifacts. No
+// usage is recorded because the stream never reported it. An empty reply is
+// never stored, and the write uses a context detached from the cancelled job.
+func (s *Server) persistPartial(ctx context.Context, conv store.Conversation, id, content, reasoning string,
+	tools []store.ToolActivity, images []store.GeneratedImage, artifacts []store.ArtifactRef, startedAt time.Time) {
+	content = upstream.SanitizeDSML(content)
+	if strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" {
+		return
+	}
+	now := time.Now()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	model := conv.Model
+	durationMs := now.Sub(startedAt).Milliseconds()
+	msg := store.Message{
+		ID:             id,
+		ConversationID: conv.ID,
+		Role:           "assistant",
+		Content:        content,
+		Model:          &model,
+		DurationMs:     &durationMs,
+		Tools:          tools,
+		Images:         images,
+		Artifacts:      artifacts,
+		CreatedAt:      now.UnixMilli(),
+	}
+	if reasoning != "" {
+		msg.Reasoning = &reasoning
+	}
+	if err := s.st.InsertMessage(ctx, &msg); err != nil {
+		s.log.Error("insert partial assistant message", "error", err)
+		return
+	}
+	if err := s.st.TouchConversation(ctx, conv.ID, msg.CreatedAt); err != nil {
+		s.log.Error("bump conversation updated_at", "error", err)
+	}
 }
 
 // attachmentsFromLastUser reloads the attachment texts referenced by the most

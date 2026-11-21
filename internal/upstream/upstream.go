@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // BaseURL is the OpenCode Go inference base for the OpenAI-style protocols
@@ -52,9 +53,41 @@ const (
 	ToolError   = "error"
 )
 
-// maxToolIterations bounds the agentic tool-calling loop so a misbehaving model
-// cannot loop forever.
+// maxToolIterations is the default bound on the agentic tool-calling loop so a
+// misbehaving model cannot loop forever (AgentOptions.MaxIterations overrides).
 const maxToolIterations = 4
+
+// AgentOptions tunes one StreamAgent call. The zero value keeps the historical
+// behaviour: maxToolIterations rounds and a streamTimeout-bounded call.
+//
+// The overall budget is the caller's context: StreamAgent no longer wraps the
+// whole loop in one timeout, so a long agent job is bounded by its job context
+// while each upstream call and each tool call gets its own limit.
+type AgentOptions struct {
+	// MaxIterations bounds the tool loop; 0 = maxToolIterations.
+	MaxIterations int
+	// CallTimeout bounds one upstream HTTP call; 0 = streamTimeout.
+	CallTimeout time.Duration
+	// OnStep is called before each round with the 1-based step number and the
+	// iteration bound (agent-mode progress reporting). May be nil.
+	OnStep func(step, max int)
+}
+
+// iterations is the effective loop bound.
+func (o AgentOptions) iterations() int {
+	if o.MaxIterations > 0 {
+		return o.MaxIterations
+	}
+	return maxToolIterations
+}
+
+// callTimeout is the effective per-upstream-call limit.
+func (o AgentOptions) callTimeout() time.Duration {
+	if o.CallTimeout > 0 {
+		return o.CallTimeout
+	}
+	return streamTimeout
+}
 
 // ToolSpec is one function exposed to the model. Function is nested to match
 // the chat-completions wire format; the responses dialect flattens it.
@@ -99,17 +132,33 @@ type ToolCall struct {
 // to the model so it can recover.
 type ExecuteTool func(ctx context.Context, call ToolCall) (result, summary string, err error)
 
-// Message is a single history entry sent upstream (role + content only).
+// Message is a single history entry sent upstream.
 //
 // Images carries optional inline image data URIs ("data:image/png;base64,…")
 // attached to this message (vision input, Phase 5.1). A message with images is
 // rendered dialect-specifically into multimodal content parts when a request
 // payload is built (see chatMessageObj / responsesInputObj); the struct's own
 // JSON tags are not used for it.
+//
+// Tools carries the stored tool calls of an assistant message so a later turn
+// can see that the tools ran and what they returned. ID is the message id used
+// to build stable synthetic tool-call ids.
 type Message struct {
-	Role    string   `json:"role"`
-	Content string   `json:"content"`
-	Images  []string `json:"-"`
+	ID      string       `json:"-"`
+	Role    string       `json:"role"`
+	Content string       `json:"content"`
+	Images  []string     `json:"-"`
+	Tools   []ToolResult `json:"-"`
+}
+
+// ToolResult is one stored tool call replayed as conversation history, taken
+// from messages.tools (2.10/4.1).
+type ToolResult struct {
+	Name      string
+	Arguments string // JSON-encoded call arguments
+	Output    string
+	Error     string
+	Status    string // done | error | running
 }
 
 // visionDetail is the image-resolution hint sent with vision parts (Phase 5.1),
@@ -120,6 +169,10 @@ const visionDetail = "high"
 // object. A message carrying Images becomes a multimodal content array
 // ({type:"text"} + {type:"image_url"}), the same shape VisionOnce uses.
 func chatMessageObj(m Message) map[string]any {
+	if m.Role == "assistant" {
+		// Old turns may still hold leaked DeepSeek markup in the DB.
+		m.Content = SanitizeDSML(m.Content)
+	}
 	if len(m.Images) == 0 {
 		return map[string]any{"role": m.Role, "content": m.Content}
 	}
@@ -139,6 +192,10 @@ func chatMessageObj(m Message) map[string]any {
 // responsesInputObj is the responses-dialect counterpart: a message with Images
 // becomes [{type:"input_text"}…, {type:"input_image", image_url, detail}].
 func responsesInputObj(m Message) map[string]any {
+	if m.Role == "assistant" {
+		// Old turns may still hold leaked DeepSeek markup in the DB.
+		m.Content = SanitizeDSML(m.Content)
+	}
 	if len(m.Images) == 0 {
 		return map[string]any{"role": m.Role, "content": m.Content}
 	}
@@ -162,9 +219,153 @@ func responsesInput(p Params) []any {
 		input = append(input, map[string]any{"role": "system", "content": p.Context})
 	}
 	for _, m := range p.Messages {
-		input = append(input, responsesInputObj(m))
+		input = append(input, responsesMessages(m)...)
 	}
 	return input
+}
+
+// Replay budgets for stored tool calls sent back as history. Outputs are capped
+// per call and per request, newest calls first.
+const (
+	replayToolOutputBytes = 8 << 10
+	replayToolTotalBytes  = 32 << 10
+)
+
+// replayedCall is one stored tool call rendered as a history round-trip.
+type replayedCall struct {
+	id, name, arguments, output string
+}
+
+// chatMessages renders one history message for the chat dialect. An assistant
+// turn that ran tools becomes its tool_calls request followed by one tool
+// result message per call, so the model can see the round-trip on later turns.
+func chatMessages(m Message) []any {
+	calls := replayCalls(m)
+	if len(calls) == 0 {
+		return []any{chatMessageObj(m)}
+	}
+	obj := chatMessageObj(m)
+	if strings.TrimSpace(SanitizeDSML(m.Content)) == "" && len(m.Images) == 0 {
+		delete(obj, "content")
+	}
+	specs := make([]any, 0, len(calls))
+	out := make([]any, 0, len(calls)+1)
+	out = append(out, obj)
+	for _, c := range calls {
+		specs = append(specs, map[string]any{
+			"id":   c.id,
+			"type": "function",
+			"function": map[string]any{
+				"name":      c.name,
+				"arguments": c.arguments,
+			},
+		})
+		out = append(out, map[string]any{
+			"role":         "tool",
+			"tool_call_id": c.id,
+			"content":      c.output,
+		})
+	}
+	obj["tool_calls"] = specs
+	return out
+}
+
+// responsesMessages is the responses-dialect counterpart: the assistant text
+// item (when there is text) plus a function_call/function_call_output pair per
+// stored call.
+func responsesMessages(m Message) []any {
+	calls := replayCalls(m)
+	if len(calls) == 0 {
+		return []any{responsesInputObj(m)}
+	}
+	out := make([]any, 0, len(calls)*2+1)
+	if strings.TrimSpace(SanitizeDSML(m.Content)) != "" || len(m.Images) > 0 {
+		out = append(out, responsesInputObj(m))
+	}
+	for _, c := range calls {
+		out = append(out, responsesFunctionCallItem(ToolCall{ID: c.id, Name: c.name, Arguments: c.arguments}))
+		out = append(out, responsesFunctionCallOutput(ToolCall{ID: c.id}, c.output))
+	}
+	return out
+}
+
+// replayCalls maps stored tools to calls the dialects can replay. Running calls
+// and calls with no result are skipped rather than invented.
+func replayCalls(m Message) []replayedCall {
+	id := m.ID
+	if id == "" {
+		id = "hist"
+	}
+	out := make([]replayedCall, 0, len(m.Tools))
+	for i, t := range m.Tools {
+		if t.Status == ToolRunning || t.Name == "" || toolReplayText(t) == "" {
+			continue
+		}
+		args := t.Arguments
+		if strings.TrimSpace(args) == "" {
+			args = "{}"
+		}
+		out = append(out, replayedCall{
+			id:        fmt.Sprintf("call_%s_%d", id, i),
+			name:      t.Name,
+			arguments: args,
+			output:    toolReplayText(t),
+		})
+	}
+	return out
+}
+
+// toolReplayText is what the model sees for a stored tool: a failed tool
+// replays its error text.
+func toolReplayText(t ToolResult) string {
+	if t.Error != "" {
+		return "Tool error: " + t.Error
+	}
+	return t.Output
+}
+
+// budgetToolReplay caps each replayed output and the total replayed bytes per
+// request. Messages are visited newest first so recent results survive.
+func budgetToolReplay(msgs []Message) []Message {
+	remaining := replayToolTotalBytes
+	out := make([]Message, len(msgs))
+	copy(out, msgs)
+	for i := len(out) - 1; i >= 0; i-- {
+		if len(out[i].Tools) == 0 {
+			continue
+		}
+		kept := make([]ToolResult, 0, len(out[i].Tools))
+		for _, t := range out[i].Tools {
+			text := toolReplayText(t)
+			if t.Status == ToolRunning || text == "" {
+				continue
+			}
+			if len(text) > replayToolOutputBytes {
+				text = capBytes(text, replayToolOutputBytes)
+			}
+			if len(text) > remaining {
+				continue
+			}
+			remaining -= len(text)
+			t.Output = text
+			t.Error = ""
+			kept = append(kept, t)
+		}
+		out[i].Tools = kept
+	}
+	return out
+}
+
+// capBytes cuts s to at most max bytes on a UTF-8 boundary and marks the cut.
+func capBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n… [truncated]"
 }
 
 // Usage carries token counts from the final upstream event.
@@ -265,6 +466,7 @@ func (c *Client) Stream(ctx context.Context, p Params) <-chan Event {
 		defer close(out)
 		ctx, cancel := context.WithTimeout(ctx, streamTimeout)
 		defer cancel()
+		p.Messages = budgetToolReplay(p.Messages)
 		send := func(ev Event) bool {
 			select {
 			case out <- ev:
@@ -413,7 +615,7 @@ func (c *Client) streamChat(ctx context.Context, p Params, send func(Event) bool
 		msgs = append(msgs, map[string]any{"role": "system", "content": p.Instructions})
 	}
 	for _, m := range p.Messages {
-		msgs = append(msgs, chatMessageObj(m))
+		msgs = append(msgs, chatMessages(m)...)
 	}
 	payload := map[string]any{
 		"model":          p.Model,

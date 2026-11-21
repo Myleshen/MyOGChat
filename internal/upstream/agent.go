@@ -11,17 +11,27 @@ import (
 // StreamAgent performs an agentic streaming call (Phase 2.4). It streams the
 // assistant reply, executes any tool calls the model requests via exec, appends
 // the results to the conversation, and repeats until the model produces a final
-// answer or maxToolIterations is reached.
+// answer or the iteration bound is reached.
 //
 // It emits the same normalized events as Stream, plus EventTool activity as
 // tools run, and a single aggregated EventUsage (summed across rounds) at the
 // end so cost accounting reflects the whole turn.
-func (c *Client) StreamAgent(ctx context.Context, p Params, exec ExecuteTool) <-chan Event {
+//
+// opts tunes the loop and the per-upstream-call timeout; the overall budget is
+// ctx (the detached job context for an agent-mode chat).
+func (c *Client) StreamAgent(ctx context.Context, p Params, exec ExecuteTool, opts AgentOptions) <-chan Event {
 	out := make(chan Event, 16)
 	go func() {
 		defer close(out)
-		ctx, cancel := context.WithTimeout(ctx, streamTimeout)
-		defer cancel()
+		// Zero-value options keep the historical whole-loop deadline. A caller
+		// that sets CallTimeout (agent mode) owns the total budget via ctx and
+		// only each upstream call is bounded here.
+		if opts.CallTimeout <= 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, streamTimeout)
+			defer cancel()
+		}
+		p.Messages = budgetToolReplay(p.Messages)
 		send := func(ev Event) bool {
 			select {
 			case out <- ev:
@@ -32,9 +42,9 @@ func (c *Client) StreamAgent(ctx context.Context, p Params, exec ExecuteTool) <-
 		}
 		var err error
 		if p.Dialect == "responses" {
-			err = c.agentResponses(ctx, p, exec, send)
+			err = c.agentResponses(ctx, p, exec, opts, send)
 		} else {
-			err = c.agentChat(ctx, p, exec, send)
+			err = c.agentChat(ctx, p, exec, opts, send)
 		}
 		if err != nil && ctx.Err() == nil {
 			send(Event{Kind: EventError, Err: err})
@@ -44,7 +54,7 @@ func (c *Client) StreamAgent(ctx context.Context, p Params, exec ExecuteTool) <-
 }
 
 // agentChat runs the agentic loop for the chat-completions dialect.
-func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, send func(Event) bool) error {
+func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, opts AgentOptions, send func(Event) bool) error {
 	msgs := make([]any, 0, len(p.Messages)+2)
 	if p.Context != "" {
 		// Attachment text (2.3) is leading context, exactly as in streamChat.
@@ -54,13 +64,18 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, send
 		msgs = append(msgs, map[string]any{"role": "system", "content": p.Instructions})
 	}
 	for _, m := range p.Messages {
-		msgs = append(msgs, chatMessageObj(m))
+		msgs = append(msgs, chatMessages(m)...)
 	}
 
+	maxIter := opts.iterations()
 	var total Usage
-	for iter := 0; iter < maxToolIterations; iter++ {
+	var streamed strings.Builder // text emitted this turn, across rounds
+	for iter := 0; iter < maxIter; iter++ {
+		if opts.OnStep != nil {
+			opts.OnStep(iter+1, maxIter)
+		}
 		// The last iteration runs without tools so the model must answer.
-		useTools := len(p.Tools) > 0 && iter < maxToolIterations-1
+		useTools := len(p.Tools) > 0 && iter < maxIter-1
 		payload := map[string]any{
 			"model":          p.Model,
 			"messages":       msgs,
@@ -72,20 +87,24 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, send
 			payload["tool_choice"] = "auto"
 		}
 
-		resp, err := c.do(ctx, "/chat/completions", p.SessionID, p.APIKey, payload)
+		roundCtx, cancelRound := context.WithTimeout(ctx, opts.callTimeout())
+		resp, err := c.do(roundCtx, "/chat/completions", p.SessionID, p.APIKey, payload)
 		if err != nil && useTools && iter == 0 {
 			// A model that rejects tool calling must not break the chat: retry
 			// once without tools and answer normally.
 			delete(payload, "tools")
 			delete(payload, "tool_choice")
-			resp, err = c.do(ctx, "/chat/completions", p.SessionID, p.APIKey, payload)
+			resp, err = c.do(roundCtx, "/chat/completions", p.SessionID, p.APIKey, payload)
 		}
 		if err != nil {
+			cancelRound()
 			return err
 		}
 
 		var text strings.Builder
 		var acc chatToolAccumulator
+		dsml := &DSMLFilter{}
+		roundText := false
 		var round Usage
 		var hasRound bool
 		err = scanSSE(resp.Body, func(_, data string) (bool, error) {
@@ -105,9 +124,18 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, send
 					}
 				}
 				if delta.Content != "" {
-					text.WriteString(delta.Content)
-					if !send(Event{Kind: EventText, Delta: delta.Content}) {
-						return true, nil
+					// DeepSeek sometimes emits native tool markup as text;
+					// strip it from the stream and parse it below.
+					if safe := dsml.Write(delta.Content); safe != "" {
+						if !roundText {
+							safe = roundSeparator(streamed.String()) + safe
+							roundText = true
+						}
+						text.WriteString(safe)
+						streamed.WriteString(safe)
+						if !send(Event{Kind: EventText, Delta: safe}) {
+							return true, nil
+						}
 					}
 				}
 				for _, tc := range delta.ToolCalls {
@@ -134,14 +162,21 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, send
 			return false, nil
 		})
 		resp.Body.Close()
+		cancelRound()
 		if err != nil {
 			return err
 		}
+		dsml.Close()
 		if hasRound {
 			total.add(&round)
 		}
 
 		calls := acc.result()
+		if len(calls) == 0 {
+			// The provider leaked its native markup instead of structured
+			// tool_calls; treat the parsed invokes as real calls.
+			calls = parseDSMLCalls(dsml.Block())
+		}
 		if len(calls) == 0 || exec == nil {
 			send(Event{Kind: EventUsage, Usage: &total})
 			return nil
@@ -163,14 +198,14 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, send
 }
 
 // agentResponses runs the agentic loop for the responses dialect.
-func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool, send func(Event) bool) error {
+func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool, opts AgentOptions, send func(Event) bool) error {
 	input := make([]any, 0, len(p.Messages)+2)
 	if p.Context != "" {
 		// Attachment text (2.3) is leading context, exactly as in streamResponses.
 		input = append(input, map[string]any{"role": "system", "content": p.Context})
 	}
 	for _, m := range p.Messages {
-		input = append(input, responsesInputObj(m))
+		input = append(input, responsesMessages(m)...)
 	}
 
 	effort := p.Effort
@@ -179,9 +214,13 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 	}
 
 	var total Usage
-	for iter := 0; iter < maxToolIterations; iter++ {
+	maxIter := opts.iterations()
+	for iter := 0; iter < maxIter; iter++ {
+		if opts.OnStep != nil {
+			opts.OnStep(iter+1, maxIter)
+		}
 		// The last iteration runs without tools so the model must answer.
-		useTools := len(p.Tools) > 0 && iter < maxToolIterations-1
+		useTools := len(p.Tools) > 0 && iter < maxIter-1
 		payload := map[string]any{
 			"model":             p.Model,
 			"input":             input,
@@ -197,12 +236,14 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 			payload["tools"] = responsesToolSpecs(p.Tools)
 		}
 
-		resp, err := c.do(ctx, "/responses", p.SessionID, p.APIKey, payload)
+		roundCtx, cancelRound := context.WithTimeout(ctx, opts.callTimeout())
+		resp, err := c.do(roundCtx, "/responses", p.SessionID, p.APIKey, payload)
 		if err != nil && useTools && iter == 0 {
 			delete(payload, "tools")
-			resp, err = c.do(ctx, "/responses", p.SessionID, p.APIKey, payload)
+			resp, err = c.do(roundCtx, "/responses", p.SessionID, p.APIKey, payload)
 		}
 		if err != nil {
+			cancelRound()
 			return err
 		}
 
@@ -314,6 +355,7 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 			return false, nil
 		})
 		resp.Body.Close()
+		cancelRound()
 		if err != nil {
 			return err
 		}
@@ -377,6 +419,15 @@ func (u *Usage) add(o *Usage) {
 	u.CompletionTokens += o.CompletionTokens
 	u.CachedTokens += o.CachedTokens
 	u.ReasoningTokens += o.ReasoningTokens
+}
+
+// roundSeparator keeps a tool round's preamble from gluing onto the text that
+// follows it. Existing text is never reflowed or trimmed.
+func roundSeparator(prev string) string {
+	if prev == "" || strings.HasSuffix(prev, "\n") {
+		return ""
+	}
+	return "\n\n"
 }
 
 // chatAssistantToolMessage renders an assistant turn that requested tools.

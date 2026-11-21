@@ -84,7 +84,8 @@ with messages ascending by `created_at` (full message rows as in §2, snake_case
 ### `PATCH /api/conversations/{id}`
 Body may contain `title` (string, ≤200 chars), `model` (valid registry id),
 `effort` (valid for the conversation's dialect), `project_id` (string to move,
-`""`/`null` to unfile), and `pinned` (bool — feature B, see §18). Updates
+`""`/`null` to unfile), `pinned` (bool — feature B, see §18), and `agent_mode`
+(bool — §3.8). Updates
 `updated_at`. Returns updated conversation (without messages).
 
 ### `DELETE /api/conversations/{id}` → `204`.
@@ -145,17 +146,104 @@ period so a reload can observe its result.
             "reasoning_tokens":0,"cost_micros":0,"duration_ms":0}}
   ```
   `status` is `running` | `done` | `error` | `stopped`, or `none` when the
-  conversation has no (recent) job (`active:false`). `content`/`reasoning` are the
-  accumulated text so far; a client re-attaches after a reload by polling this
-  endpoint and re-rendering the live bubble from the snapshot. `usage` is absent
-  until the final upstream usage.
+  conversation has no (recent) job (`active:false`). An **agent** job additionally
+  reports `status:"queued"` and carries the `agent` block — see §3.8.
+  `content`/`reasoning` are the accumulated text so far; a client re-attaches
+  after a reload by polling this endpoint and re-rendering the live bubble from
+  the snapshot. `usage` is absent until the final upstream usage.
 - `POST /api/conversations/{id}/generation/stop` → `204` cancels the running
   reply (like a client Stop); `404` when nothing is generating. Nothing is
-  persisted for a stopped reply.
+  persisted for a stopped reply — except an agent job, which persists its partial
+  reply (§3.8).
 
 The SPA keeps a per-conversation map of active generations: navigation never
 aborts a reply, a sidebar spinner/“N generating” chip marks background jobs, and
 a background completion raises a one-line toast.
+
+### 3.8 Agent mode (5.12)
+
+Opt-in **per conversation** (`agent_mode`); ordinary chats are unchanged. An
+agent conversation gets a 60-minute job, 60 tool rounds, a persistent sandbox
+workspace and a per-user queue. Design: `docs/5.12-agent-mode.md`.
+
+Conversation JSON gains `agent_mode` (bool, default `false`):
+
+```json
+{"id":"…","title":"…","model":"…","effort":null,"project_id":null,
+ "pinned":false,"agent_mode":false,"created_at":0,"updated_at":0}
+```
+
+- `PATCH /api/conversations/{id}` `{"agent_mode": true|false}` → `200`
+  Conversation; `404` when the conversation is not the caller's.
+- `POST /api/conversations` `{"agent_mode": true}` also accepts the flag.
+
+`POST /api/conversations/{id}/messages` in an agent conversation:
+
+| state | response |
+|---|---|
+| idle | `200 text/event-stream` — unchanged SSE (§3) |
+| the caller already has an agent job running | `202 {"queued":true,"position":1}` — 1-based FIFO position; the user message is stored immediately |
+| this conversation is running **or** queued | `409 {"error":"a reply is already generating in this conversation"}` |
+| under 1 GiB free on the sandbox filesystem | `507 {"error":"not enough disk space on the server to start an agent workspace"}` |
+
+Budgets: 60 min per job (wall clock, tools included), 60 steps (tool rounds),
+10 min per upstream call, 10 min per tool call. **One agent job per user at a
+time for sends**, across all of that user's conversations; further sends wait in
+a server-side FIFO queue. The process-wide/per-user detached-reply caps still
+apply (`429`). Regenerate in an agent conversation runs as an agent job but is
+not queued.
+
+Generation snapshot — `GET /api/conversations/{id}/generation`:
+
+```jsonc
+// queued send (no job yet; synthesised from the queue)
+{"conversation_id":"…","active":true,"status":"queued","model":"…",
+ "agent":{"enabled":true,"step":0,"max_steps":60,"queued":true,"queue_position":1}}
+// running agent job
+{"conversation_id":"…","active":true,"status":"running","message_id":"…","model":"…","content":"partial…",
+ "agent":{"enabled":true,"step":3,"max_steps":60,"queued":false,"queue_position":0}}
+```
+
+`status` ∈ `none` | `queued` | `running` | `done` | `error` | `stopped`. The
+`agent` block is present **only** for agent jobs: `step` is the current 1-based
+tool round, `max_steps` is 60, and `queued`/`queue_position` describe a waiting
+send.
+
+`POST /api/conversations/{id}/generation/stop` → `204`: a running agent job is
+cancelled and its **partial reply is persisted** (content, reasoning, tool
+activity, images, artifacts; no usage); a queued send is removed from the queue.
+`404` when there is neither.
+
+Workspace endpoints (owner-scoped; works even when `agent_enabled` is off):
+
+- `GET /api/me/agent/workspaces` →
+  `[{"conversation_id","title","bytes","updated_at"}]` — the caller's agent
+  conversations whose directory exists on disk, via `ListAgentConversations`
+  (`updated_at` DESC). `bytes` is the walked tree size; `updated_at` is the
+  directory mtime in unix milliseconds.
+- `DELETE /api/conversations/{id}/workspace` → `204`, idempotent (a conversation
+  with no directory still answers `204`); `404` when the conversation is not the
+  caller's.
+
+Workspace on the host:
+`~/.local/share/myogchat/sandbox/agent/<userID>/<convID>`, bind-mounted rw at
+`/work` and kept between calls. Default quota **5 GiB per user** over the whole
+`agent/<userID>` tree (`MYOGCHAT_AGENT_QUOTA_BYTES`, `0` disables); over quota a
+tool call is refused before running with an `ErrQuotaExceeded` message. The
+quota measurement is cached for 60 s. A conversation workspace idle for 7 days
+is removed by the hourly janitor. Artifact caps are unchanged (10 MB per file,
+25 MB total, 20 files per call); only files produced by each call are harvested
+and byte-identical content in the same conversation reuses the existing
+artifact (SHA-256).
+
+Settings:
+
+- `GET`/`PATCH /api/settings` (admin) gain `"agent_enabled": true` — the global
+  kill switch, default on. When off, agent conversations reply as ordinary
+  chats (nothing is refused or lost).
+- `GET /api/auth/me` also returns `agent_enabled` (alongside `tools_enabled`);
+  the canonical field list is §9.3. Every user's SPA uses it to show why the
+  per-conversation toggle has no effect.
 
 ## 4. Upstream adapters (internal, `internal/upstream`)
 
@@ -627,7 +715,8 @@ Public (no session required): `status`, `setup`, `register`, `login`.
   `403` when the account `status` is `pending` (message: "account pending
   approval") or `disabled`.
 - `POST /api/auth/logout` → `204`, clears the cookie.
-- `GET /api/auth/me` → `200 {"id","username","email","is_admin"}` or `401`.
+- `GET /api/auth/me` → `200 {"id","username","email","is_admin","tools_enabled","agent_enabled"}` or `401`
+  (`tools_enabled` / `agent_enabled` are the server-wide switches, readable by every user).
 
 Session cookie: name `myogchat`, value = `base64url(userID|expiryUnix|hex(hmacSHA256(secret, userID|expiry)))`,
 `HttpOnly`, `SameSite=Lax`, `Path=/`, 30-day expiry, `Secure` when the request
@@ -656,6 +745,7 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "search_active": "tavily"|"brave"|"serper"|"ddg",
    "brave_mode": "web"|"context",
    "sandbox_enabled": bool, "sandbox_available": bool,
+   "agent_enabled": bool,
    "ocr_enabled": bool, "ocr_available": bool,
    "ocr_engine": "tesseract"|"vision"|"auto"|"none", "ocr_vision_available": bool,
    "daily_token_limit": int, "monthly_cost_limit": int,
@@ -666,13 +756,14 @@ Validation: username 3–32 chars of `[A-Za-z0-9_.-]`; email must contain `@` an
    "imagegen_url": string, "imagegen_configured": bool,
    "imagegen_available": bool, "imagegen_token_hint": string}`
   (`share_server_key` §2.1; tools §2.4; search §8.9; sandbox §10;
-   OCR §8.10; quotas §11; maps §12; calendar §13; speech §14; email §15;
-   image generation §16. Linkwarden is **per-user** — see §17)
+   agent §3.8; OCR §8.10; quotas §11; maps §12; calendar §13; speech §14;
+   email §15; image generation §16. Linkwarden is **per-user** — see §17)
 - `PATCH /api/settings` accepts any subset of
   `{"allow_registration"?: bool, "share_server_key"?: bool,
    "tools_enabled"?: bool,
    "search_provider"?: "auto"|"tavily"|"brave"|"serper"|"ddg", "brave_key"?: string,
    "brave_mode"?: "web"|"context", "sandbox_enabled"?: bool, "ocr_enabled"?: bool,
+   "agent_enabled"?: bool,
    "daily_token_limit"?: int, "monthly_cost_limit"?: int,
    "maps_provider"?: "osm"|"auto", "maps_region"?: string,
    "maps_units"?: "metric"|"imperial",
@@ -752,7 +843,9 @@ container and return stdout/stderr. Full design: `docs/2.6-2.7-sandbox.md`.
 
 - Each call is a fresh `docker run --rm` container; **nothing persists** between
   calls. The writable `/work` is a per-run host bind mount (5.8) whose produced
-  files are harvested into download chips; `/tmp` stays a tmpfs.
+  files are harvested into download chips; `/tmp` stays a tmpfs. Agent mode
+  (§3.8) is the exception: it binds a persistent, quota'd `/work` per
+  conversation.
 - The code is piped to the interpreter over **stdin** (`bash -s` / `python -`);
   it is never interpolated into the command line.
 - Hardening: dedicated user-defined bridge network (no published ports → no
@@ -896,13 +989,17 @@ CREATE TABLE IF NOT EXISTS calendar_accounts (
   username     TEXT,               -- CalDAV username (not secret)
   credential   TEXT,               -- AES-256-GCM: CalDAV password / ICS URL
   endpoint     TEXT,               -- resolved CalDAV server URL
+  home_set     TEXT,               -- cached CalDAV calendar-home-set
   created_at   INTEGER NOT NULL,
   updated_at   INTEGER NOT NULL
 );
 ```
 
 One account per user. `credential` is encrypted with `internal/secret` and never
-returned to the client.
+returned to the client. `calendar_id` is the **default collection** (a CalDAV
+collection path, or an ICS display label): every tool call without an explicit
+`calendar_id` operates on it, and because `home_set` + `endpoint` are cached a
+routine CalDAV call performs no discovery.
 
 ### 13.2 Endpoints (session required, per-user)
 
@@ -913,8 +1010,24 @@ returned to the client.
   - CalDAV: `{"kind":"caldav","provider"?,"endpoint","username","password","calendar_id"?}`
   - ICS: `{"kind":"ics","provider"?:"google","url","calendar_id"?}`
   Validates by connecting to the provider; on failure `400` with the provider
-  error. On success stores the (encrypted) credential and returns the status
-  object (CalDAV responses also include `"calendars":[{id,name,writable}]`).
+  error. A CalDAV `calendar_id` must be one of the server's collections, else
+  `400 {"error":"unknown calendar"}`; when omitted the first collection is used.
+  On success stores the (encrypted) credential, the resolved endpoint, the
+  `home_set` and the collection, and returns the status object (CalDAV responses
+  also include `"calendars":[{id,name,description,writable}]`).
+- `GET /api/me/calendar/calendars` → `200 {"connected":false}` when nothing is
+  connected, else
+  `{"connected":true,"default":"<collection path>","calendars":[{"id":string,
+   "name":string,"description":string,"writable":bool}]}`. CalDAV: one PROPFIND
+  to the cached home set. ICS: a single synthetic entry whose `id` is the stored
+  `calendar_id` label.
+- `PATCH /api/me/calendar` with `{"calendar_id":"<collection path>"}` switches the
+  default collection without re-entering the credential; returns `200` with the
+  same status object as `GET /api/me/calendar`. `400 {"error":"calendar_id is
+  required"}` when the field is empty, `400 {"error":"unknown calendar"}`
+  when the collection is not on the server, `400 {"error":"ICS feeds expose a
+  single calendar"}` for ICS accounts, `404 {"error":"no calendar connected"}`
+  when nothing is connected.
 - `DELETE /api/me/calendar` → `204` (disconnect).
 
 ### 13.3 Tools (registered per request only when the user has a connected calendar)
@@ -1399,7 +1512,14 @@ janitor purges artifacts older than the retention window.
 
 ### 21.5 Deploy
 
-`deploy/sandbox-setup.sh` pulls `bash:5.3` and **builds**
-`myogchat-sandbox-python` from `deploy/sandbox/Dockerfile` (reportlab, openpyxl,
-python-docx, Pillow, matplotlib) — CSV/TXT/JSON/Markdown need no libraries.
-`MYOGCHAT_SANDBOX_IMAGE_PYTHON` defaults to that image.
+`deploy/sandbox-setup.sh` pulls the base images and **builds** both sandbox
+images on every run (idempotent, layer-cached): `myogchat-sandbox-bash` from
+`deploy/sandbox/Dockerfile.bash` (base `bash:5.3`, also tagged with the server's
+bash image name) and `myogchat-sandbox-python` from
+`deploy/sandbox/Dockerfile` (reportlab, openpyxl, python-docx, Pillow,
+matplotlib) — CSV/TXT/JSON/Markdown need no libraries. Both install the shared
+toolbelt in `deploy/sandbox/tools.list` (git, ca-certificates, curl, wget,
+openssl, ripgrep, jq, tree, file, less, bc, zip, unzip, xz-utils, bzip2, zstd,
+poppler-utils, sqlite3, imagemagick, make); adding a tool is a one-line edit
+there plus a re-run of the script. `MYOGCHAT_SANDBOX_IMAGE_BASH` /
+`MYOGCHAT_SANDBOX_IMAGE_PYTHON` override the image names.

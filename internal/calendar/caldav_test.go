@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -22,8 +23,13 @@ type memBackend struct {
 	principal string
 	home      string
 	calendar  string
+	others    []string // calendars listed before calendar (for fallback tests)
 	objects   map[string]*caldav.CalendarObject
 	etagSeq   int
+
+	// Discovery counters: a PROPFIND for the principal or the home set.
+	principalCalls int
+	homeSetCalls   int
 }
 
 func newMemBackend() *memBackend {
@@ -35,13 +41,34 @@ func newMemBackend() *memBackend {
 	}
 }
 
-func (m *memBackend) CurrentUserPrincipal(context.Context) (string, error) { return m.principal, nil }
-func (m *memBackend) CalendarHomeSetPath(context.Context) (string, error)  { return m.home, nil }
+func (m *memBackend) CurrentUserPrincipal(context.Context) (string, error) {
+	m.mu.Lock()
+	m.principalCalls++
+	m.mu.Unlock()
+	return m.principal, nil
+}
+
+func (m *memBackend) CalendarHomeSetPath(context.Context) (string, error) {
+	m.mu.Lock()
+	m.homeSetCalls++
+	m.mu.Unlock()
+	return m.home, nil
+}
+
+func (m *memBackend) discoveryCalls() (principal, homeSet int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.principalCalls, m.homeSetCalls
+}
 func (m *memBackend) CreateCalendar(context.Context, *caldav.Calendar) error {
 	return nil
 }
 func (m *memBackend) ListCalendars(context.Context) ([]caldav.Calendar, error) {
-	return []caldav.Calendar{{Path: m.calendar, Name: "Calendar"}}, nil
+	out := make([]caldav.Calendar, 0, len(m.others)+1)
+	for _, p := range m.others {
+		out = append(out, caldav.Calendar{Path: p, Name: p})
+	}
+	return append(out, caldav.Calendar{Path: m.calendar, Name: "Calendar"}), nil
 }
 func (m *memBackend) GetCalendar(_ context.Context, path string) (*caldav.Calendar, error) {
 	if path == m.calendar {
@@ -143,6 +170,62 @@ func newTestServer(t *testing.T) (*caldavBackend, *memBackend) {
 		t.Fatalf("newCalDAV: %v", err)
 	}
 	return b, mb
+}
+
+// requestLog records "METHOD /path" for every request a fake server sees.
+type requestLog struct {
+	mu   sync.Mutex
+	reqs []string
+}
+
+func (l *requestLog) add(r *http.Request) {
+	l.mu.Lock()
+	l.reqs = append(l.reqs, r.Method+" "+r.URL.Path)
+	l.mu.Unlock()
+}
+
+func (l *requestLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.reqs...)
+}
+
+func (l *requestLog) first() string {
+	if all := l.all(); len(all) > 0 {
+		return all[0]
+	}
+	return ""
+}
+
+// newLoggingServer serves the memBackend and records request paths. GETs are
+// 404s (no well-known redirect) unless redirect is set, in which case
+// GET /.well-known/caldav redirects there.
+func newLoggingServer(t *testing.T, mb *memBackend, redirect string) (*httptest.Server, *requestLog) {
+	t.Helper()
+	h := &caldav.Handler{Backend: mb}
+	log := &requestLog{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.add(r)
+		if r.Method == http.MethodGet {
+			if redirect != "" && r.URL.Path == "/.well-known/caldav" {
+				http.Redirect(w, r, redirect, http.StatusMovedPermanently)
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, log
+}
+
+// newDiscoveryServer serves the memBackend without a /.well-known/caldav
+// redirect, so discovery exercises the principal/home-set PROPFINDs directly.
+func newDiscoveryServer(t *testing.T, mb *memBackend) *httptest.Server {
+	t.Helper()
+	srv, _ := newLoggingServer(t, mb, "")
+	return srv
 }
 
 func TestCalDAVRoundTrip(t *testing.T) {
@@ -260,5 +343,182 @@ func TestCalDAVAllDay(t *testing.T) {
 func TestCalDAVRejectsUnknownKind(t *testing.T) {
 	if _, err := New(Config{Kind: "bogus"}); err == nil {
 		t.Fatal("expected error for unknown kind")
+	}
+}
+
+// TestCalDAVCachedHomeSetSkipsDiscovery proves that a backend built from the
+// stored collection + home set performs no discovery requests at all and reads
+// that collection.
+func TestCalDAVCachedHomeSetSkipsDiscovery(t *testing.T) {
+	mb := newMemBackend()
+	srv := newDiscoveryServer(t, mb)
+	b, err := newCalDAV(Config{
+		Kind: KindCalDAV, Endpoint: srv.URL, Username: "me@example.com", Password: "app-password",
+		CalendarPath: mb.calendar, HomeSet: mb.home,
+	})
+	if err != nil {
+		t.Fatalf("newCalDAV: %v", err)
+	}
+	ctx := context.Background()
+	start := time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC)
+
+	created, err := b.Create(ctx, Event{Title: "Cached", Start: start, End: start.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !strings.HasPrefix(created.ResourcePath, mb.calendar) {
+		t.Fatalf("event stored at %q, want collection %q", created.ResourcePath, mb.calendar)
+	}
+	events, err := b.List(ctx, ListQuery{From: start.Add(-time.Hour), To: start.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(events) != 1 || events[0].Title != "Cached" {
+		t.Fatalf("List = %+v, want 1 Cached", events)
+	}
+	if principal, homeSet := mb.discoveryCalls(); principal != 0 || homeSet != 0 {
+		t.Fatalf("cached backend rediscovered: principal=%d home-set=%d", principal, homeSet)
+	}
+}
+
+// TestCalDAVCalendarIDIsCollectionPath proves the shared CalendarID field is
+// used as the CalDAV collection, not whichever calendar the server lists first.
+func TestCalDAVCalendarIDIsCollectionPath(t *testing.T) {
+	mb := newMemBackend()
+	mb.others = []string{"/user/calendars/other/"}
+	srv := newDiscoveryServer(t, mb)
+	b, err := newCalDAV(Config{
+		Kind: KindCalDAV, Endpoint: srv.URL, Username: "me@example.com",
+		Password: "app-password", CalendarID: mb.calendar,
+	})
+	if err != nil {
+		t.Fatalf("newCalDAV: %v", err)
+	}
+	if b.calendarPath != mb.calendar {
+		t.Fatalf("calendarPath = %q, want %q", b.calendarPath, mb.calendar)
+	}
+
+	ctx := context.Background()
+	start := time.Date(2026, 4, 2, 9, 0, 0, 0, time.UTC)
+	created, err := b.Create(ctx, Event{Title: "Default target", Start: start, End: start.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !strings.HasPrefix(created.ResourcePath, mb.calendar) {
+		t.Fatalf("event stored at %q, want collection %q", created.ResourcePath, mb.calendar)
+	}
+	// Event operations need no discovery, but listing calendars does: that
+	// discovery must not fall back to the first listed calendar.
+	cals, err := b.Calendars(ctx)
+	if err != nil {
+		t.Fatalf("Calendars: %v", err)
+	}
+	if len(cals) != 2 {
+		t.Fatalf("Calendars = %+v, want 2", cals)
+	}
+	if _, homeSet := mb.discoveryCalls(); homeSet == 0 {
+		t.Error("expected discovery when the home set is not cached")
+	}
+	if b.calendarPath != mb.calendar {
+		t.Errorf("discovery fell back to %q, want %q", b.calendarPath, mb.calendar)
+	}
+}
+
+// TestCalDAVWellKnownRedirectToPathKeepsSlash proves that a RFC 6764 redirect
+// onto a collection path (https://host/user/) keeps the trailing slash, so the
+// resolved endpoint addresses the collection and discovery returns calendars.
+func TestCalDAVWellKnownRedirectToPathKeepsSlash(t *testing.T) {
+	mb := newMemBackend()
+	srv, reqs := newLoggingServer(t, mb, "/user/")
+
+	disc, err := Discover(context.Background(), Config{
+		Kind: KindCalDAV, Endpoint: srv.URL, Username: "me@example.com", Password: "app-password",
+	})
+	if err != nil {
+		t.Fatalf("Discover: %v (requests: %v)", err, reqs.all())
+	}
+	if len(disc.Calendars) == 0 {
+		t.Fatalf("no calendars discovered after redirect to /user/ (requests: %v)", reqs.all())
+	}
+	if want := srv.URL + "/user/"; disc.Endpoint != want {
+		t.Errorf("discovered endpoint = %q, want %q", disc.Endpoint, want)
+	}
+	if !slices.Contains(reqs.all(), "PROPFIND /user/") {
+		t.Errorf("requests = %v, want a follow-up PROPFIND on /user/", reqs.all())
+	}
+}
+
+// TestCalDAVEndpointPathTrailingSlash proves an endpoint that already carries a
+// collection path (with or without its trailing slash) is used as the client
+// base, with the collection slash kept either way.
+func TestCalDAVEndpointPathTrailingSlash(t *testing.T) {
+	for _, tc := range []struct{ name, endpoint string }{
+		{"with slash", "/user/"},
+		{"without slash", "/user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mb := newMemBackend()
+			srv, reqs := newLoggingServer(t, mb, "")
+			b, err := newCalDAV(Config{
+				Kind: KindCalDAV, Endpoint: srv.URL + tc.endpoint, Username: "me@example.com",
+				Password: "app-password", CalendarPath: mb.calendar, HomeSet: mb.home,
+			})
+			if err != nil {
+				t.Fatalf("newCalDAV: %v", err)
+			}
+			if want := srv.URL + "/user/"; b.endpoint != want {
+				t.Errorf("endpoint = %q, want %q", b.endpoint, want)
+			}
+			if b.base.Path != "/user/" {
+				t.Errorf("base path = %q, want /user/", b.base.Path)
+			}
+
+			start := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+			created, err := b.Create(context.Background(), Event{Title: "Located", Start: start, End: start.Add(time.Hour)})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if want := "PUT /user/calendars/cal/" + created.UID + ".ics"; reqs.first() != want {
+				t.Errorf("first request = %q, want %q", reqs.first(), want)
+			}
+		})
+	}
+}
+
+// TestCalDAVWellKnownRedirectToHostRoot is the iCloud shape: a redirect to the
+// server root must still discover calendars.
+func TestCalDAVWellKnownRedirectToHostRoot(t *testing.T) {
+	mb := newMemBackend()
+	srv, reqs := newLoggingServer(t, mb, "/")
+
+	disc, err := Discover(context.Background(), Config{
+		Kind: KindCalDAV, Endpoint: srv.URL, Username: "me@example.com", Password: "app-password",
+	})
+	if err != nil {
+		t.Fatalf("Discover: %v (requests: %v)", err, reqs.all())
+	}
+	if len(disc.Calendars) == 0 {
+		t.Fatalf("no calendars discovered after root redirect (requests: %v)", reqs.all())
+	}
+	if want := srv.URL + "/"; disc.Endpoint != want {
+		t.Errorf("discovered endpoint = %q, want %q", disc.Endpoint, want)
+	}
+}
+
+func TestCalendarExists(t *testing.T) {
+	cals := []Calendar{{ID: "/user/calendars/work/"}, {ID: "feed-label"}}
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{
+		{"/user/calendars/work/", true},
+		{"/user/calendars/work", true}, // trailing slash optional
+		{" feed-label ", true},
+		{"/user/calendars/other/", false},
+		{"", false},
+	} {
+		if got := CalendarExists(cals, tc.id); got != tc.want {
+			t.Errorf("CalendarExists(%q) = %v, want %v", tc.id, got, tc.want)
+		}
 	}
 }

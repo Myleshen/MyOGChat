@@ -215,7 +215,7 @@ func (a *Auth) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.setCookie(w, r, u.ID, time.Now().Add(cookieAge))
-	writeJSON(w, http.StatusCreated, publicUser(u))
+	writeJSON(w, http.StatusCreated, PublicUser(u))
 }
 
 // Register creates a non-admin user when self-registration is open.
@@ -301,16 +301,6 @@ func (a *Auth) Logout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode, MaxAge: -1, Secure: isSecure(r),
 	})
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// Me returns the authenticated user.
-func (a *Auth) Me(w http.ResponseWriter, r *http.Request) {
-	u, ok := UserFrom(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	writeJSON(w, http.StatusOK, publicUser(u))
 }
 
 // Middleware protects every /api/* route except the public auth endpoints and
@@ -401,7 +391,8 @@ func (a *Auth) registrationOpen(ctx context.Context) (bool, error) {
 
 // ---------- helpers ----------
 
-func publicUser(u store.User) map[string]any {
+// PublicUser is the session-safe view of a user (no password hash or secrets).
+func PublicUser(u store.User) map[string]any {
 	return map[string]any{
 		"id": u.ID, "username": u.Username, "email": u.Email,
 		"is_admin": u.IsAdmin, "status": u.Status,

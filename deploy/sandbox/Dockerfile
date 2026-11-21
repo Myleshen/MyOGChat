@@ -16,6 +16,14 @@
 # match the server's Python version expectation (3.14).
 FROM python:3.14-slim
 
+# The shared CLI toolbelt (git, curl, ripgrep, jq, sqlite3, poppler, ImageMagick,
+# make, archives…). tools.list is the single source of truth for both sandbox
+# images — Dockerfile.bash installs the same list.
+COPY tools.list /tmp/tools.list
+RUN apt-get update \
+ && xargs -r -a /tmp/tools.list apt-get install -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* /tmp/tools.list
+
 # --no-cache-dir keeps the image lean; the wheels are cached per layer only.
 RUN pip install --no-cache-dir \
       reportlab \

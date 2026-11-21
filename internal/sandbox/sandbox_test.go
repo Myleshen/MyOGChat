@@ -74,7 +74,7 @@ func testConfig(t *testing.T) Config {
 
 func TestRunArgsBash(t *testing.T) {
 	r := NewRunner(testConfig(t))
-	got := r.runArgs("bash:5.3", []string{"bash", "-s"}, "myogchat-sbx-abc", "/host/work")
+	got := r.runArgs("bash:5.3", []string{"bash", "-s"}, "myogchat-sbx-abc", "/host/work", DefaultFileSizeLimit)
 	want := []string{
 		"run",
 		"--rm",
@@ -109,7 +109,7 @@ func TestRunArgsBash(t *testing.T) {
 
 func TestRunArgsPython(t *testing.T) {
 	r := NewRunner(testConfig(t))
-	got := r.runArgs("python:3.14-slim", []string{"python", "-"}, "myogchat-sbx-xyz", "/host/work")
+	got := r.runArgs("python:3.14-slim", []string{"python", "-"}, "myogchat-sbx-xyz", "/host/work", DefaultFileSizeLimit)
 	// The command must read from stdin, never carry the code itself.
 	if got[len(got)-2] != "python" || got[len(got)-1] != "-" {
 		t.Fatalf("python command = %q, want [python -]", got[len(got)-2:])

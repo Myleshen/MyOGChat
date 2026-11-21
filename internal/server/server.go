@@ -74,13 +74,18 @@ type Server struct {
 	// mediaSem bounds concurrent background media-transcription workers (4.5b).
 	mediaSem chan struct{}
 
+	// freeBytes reports free disk space for the agent-mode pre-flight check. It
+	// is a field so tests can force the low-disk path; production uses
+	// sandbox.FreeBytes.
+	freeBytes func(path string) (uint64, error)
+
 	// jobs owns detached reply generations (Phase 5.7). It is created lazily so
 	// test servers built with a struct literal still work.
 	jobs     *jobHub
 	jobsOnce sync.Once
 	// streamAgentFn runs the upstream agent loop for a reply. It is a field so
 	// tests can inject a deterministic stream; production uses up.StreamAgent.
-	streamAgentFn func(ctx context.Context, p upstream.Params, exec upstream.ExecuteTool) <-chan upstream.Event
+	streamAgentFn func(ctx context.Context, p upstream.Params, exec upstream.ExecuteTool, opts upstream.AgentOptions) <-chan upstream.Event
 }
 
 // hub returns the reply-job hub, creating it on first use.
@@ -116,6 +121,7 @@ func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log
 		linkwardenURL:   linkwardenURL,
 		linkwardenToken: linkwardenToken,
 		mediaSem:        make(chan struct{}, 2),
+		freeBytes:       sandbox.FreeBytes,
 	}
 	// Build engines per request so DB URL/voice overrides take effect live.
 	s.newSTT = func(cfg speech.STTConfig) speech.Transcriber { return speech.NewOpenAISTT(cfg) }
@@ -182,7 +188,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/register", s.auth.Register)
 	mux.HandleFunc("POST /api/auth/login", s.auth.Login)
 	mux.HandleFunc("POST /api/auth/logout", s.auth.Logout)
-	mux.HandleFunc("GET /api/auth/me", s.auth.Me)
+	mux.HandleFunc("GET /api/auth/me", s.handleMe)
 
 	// Chat data (per-user).
 	mux.HandleFunc("GET /api/models", s.handleModels)
@@ -191,6 +197,9 @@ func (s *Server) Handler() http.Handler {
 	// Usage & quotas (2.11).
 	mux.HandleFunc("GET /api/me/usage", s.handleMyUsage)
 	mux.HandleFunc("GET /api/users/usage", s.handleUsersUsage)
+	// Agent-mode workspaces (per-user): list sizes and free one workspace.
+	mux.HandleFunc("GET /api/me/agent/workspaces", s.handleListAgentWorkspaces)
+	mux.HandleFunc("DELETE /api/conversations/{id}/workspace", s.handleDeleteAgentWorkspace)
 	// Per-user Serper search key (2.12).
 	mux.HandleFunc("GET /api/me/serper", s.handleGetMySerper)
 	mux.HandleFunc("PUT /api/me/serper", s.handlePutMySerper)
@@ -201,6 +210,8 @@ func (s *Server) Handler() http.Handler {
 	// Calendar (per-user, 3.3).
 	mux.HandleFunc("GET /api/me/calendar", s.handleGetCalendar)
 	mux.HandleFunc("PUT /api/me/calendar", s.handlePutCalendar)
+	mux.HandleFunc("PATCH /api/me/calendar", s.handlePatchCalendar)
+	mux.HandleFunc("GET /api/me/calendar/calendars", s.handleListCalendars)
 	mux.HandleFunc("DELETE /api/me/calendar", s.handleDeleteCalendar)
 	// Groups & shared keys (§2.2).
 	mux.HandleFunc("GET /api/groups", s.handleListGroups)
@@ -364,6 +375,7 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 		Effort     string  `json:"effort"`
 		ProjectID  *string `json:"project_id"`
 		ReuseEmpty bool    `json:"reuse_empty"`
+		AgentMode  bool    `json:"agent_mode"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -449,6 +461,7 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 		Model:     m.ID,
 		Effort:    effort,
 		ProjectID: req.ProjectID,
+		AgentMode: req.AgentMode,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -499,6 +512,7 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 		Effort    *string `json:"effort"`
 		ProjectID *string `json:"project_id"`
 		Pinned    *bool   `json:"pinned"`
+		AgentMode *bool   `json:"agent_mode"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -569,6 +583,9 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 		}
 		conv.Pinned = *req.Pinned
 	}
+	if req.AgentMode != nil {
+		conv.AgentMode = *req.AgentMode
+	}
 	conv.UpdatedAt = time.Now().UnixMilli()
 	if err := s.st.UpdateConversation(r.Context(), &conv); err != nil {
 		s.log.Error("update conversation", "error", err)
@@ -593,6 +610,8 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "conversation not found")
 		return
 	}
+	// Drop a waiting agent send for the deleted chat so it can never resurface.
+	s.hub().removeQueued(r.PathValue("id"))
 	w.WriteHeader(http.StatusNoContent)
 }
 

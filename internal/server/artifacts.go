@@ -60,15 +60,26 @@ const (
 // storeArtifact persists one file produced by a sandbox run for userID and
 // returns the reference the assistant message stores (5.8). The conversation id
 // scopes retention/cascade; it may be empty when there is no conversation.
+//
+// An agent loop re-produces the same file on every call, so a byte-identical
+// file already stored for this conversation is reused instead of stored again.
 func (s *Server) storeArtifact(ctx context.Context, userID, convID string, a sandbox.Artifact) (store.ArtifactRef, error) {
 	sum := sha256.Sum256(a.Data)
+	sha := hex.EncodeToString(sum[:])
+	if convID != "" {
+		if ref, ok, err := s.st.ArtifactRefBySHA(ctx, convID, sha); err != nil {
+			return store.ArtifactRef{}, err
+		} else if ok {
+			return ref, nil
+		}
+	}
 	art := store.Artifact{
 		ID:        newUUID(),
 		UserID:    userID,
 		Name:      a.Name,
 		Mime:      a.MIME,
 		Size:      int64(len(a.Data)),
-		SHA256:    hex.EncodeToString(sum[:]),
+		SHA256:    sha,
 		Data:      a.Data,
 		CreatedAt: time.Now().UnixMilli(),
 	}

@@ -66,8 +66,22 @@ CREATE TABLE messages (
   cost_micros       INTEGER,
   created_at        INTEGER NOT NULL
 );
+CREATE TABLE calendar_accounts (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,
+  provider    TEXT,
+  calendar_id TEXT,
+  username    TEXT,
+  credential  TEXT,
+  endpoint    TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
 INSERT INTO conversations (id, title, model, created_at, updated_at)
-VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
+VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);
+INSERT INTO calendar_accounts (id, user_id, kind, provider, calendar_id, username, credential, endpoint, created_at, updated_at)
+VALUES ('cal-legacy', 'u-legacy', 'caldav', 'apple', '/old/cal/', 'old@example.com', 'OLD-CIPHERTEXT', 'https://caldav.example.com', 111, 222);`
 	if _, err := db.Exec(legacy); err != nil {
 		t.Fatalf("seed legacy schema: %v", err)
 	}
@@ -83,7 +97,7 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	if err != nil {
 		t.Fatalf("columns(conversations): %v", err)
 	}
-	for _, col := range []string{"project_id", "user_id"} {
+	for _, col := range []string{"project_id", "user_id", "agent_mode"} {
 		if !convCols[col] {
 			t.Errorf("migration did not add conversations.%s", col)
 		}
@@ -130,6 +144,35 @@ VALUES ('legacy', 'Old Chat', 'glm-5.3-flash', 111, 222);`
 	}
 	if c.Title != "Old Chat" || c.Model != "glm-5.3-flash" {
 		t.Errorf("legacy row corrupted: %+v", c)
+	}
+	// Existing chats are normal chats: the new flag defaults to off.
+	if c.AgentMode {
+		t.Error("legacy row must default to agent_mode = 0")
+	}
+
+	// A pre-home-set calendar account gains the column and keeps its data.
+	calCols, err := s.columns("calendar_accounts")
+	if err != nil {
+		t.Fatalf("columns(calendar_accounts): %v", err)
+	}
+	if !calCols["home_set"] {
+		t.Fatal("migration did not add calendar_accounts.home_set")
+	}
+	legacyOwner := seedUser(t, s, "u-legacy", "legacy-cal", false)
+	acc, err := s.GetCalendarAccount(context.Background(), legacyOwner.ID)
+	if err != nil {
+		t.Fatalf("legacy calendar account lost: %v", err)
+	}
+	if acc.CalendarID != "/old/cal/" || acc.Endpoint != "https://caldav.example.com" ||
+		acc.CredentialEnc != "OLD-CIPHERTEXT" || acc.HomeSet != "" {
+		t.Errorf("legacy calendar row corrupted: %+v", acc)
+	}
+	acc.HomeSet = "/old/"
+	if err := s.UpsertCalendarAccount(context.Background(), &acc); err != nil {
+		t.Fatalf("UpsertCalendarAccount: %v", err)
+	}
+	if got, err := s.GetCalendarAccount(context.Background(), legacyOwner.ID); err != nil || got.HomeSet != "/old/" {
+		t.Errorf("home_set round-trip = %q, %v", got.HomeSet, err)
 	}
 }
 
@@ -615,6 +658,92 @@ func TestImagesRoundTripAndScoping(t *testing.T) {
 	}
 	if n, err := s.DeleteImage(ctx, "img-1", alice.ID); err != nil || n != 1 {
 		t.Errorf("owner delete = %d, %v; want 1, nil", n, err)
+	}
+}
+
+// TestConversationAgentModeRoundTrip covers the per-conversation agent flag:
+// it round-trips, updates, lists, and stays owner-scoped.
+func TestConversationAgentModeRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-am-alice", "alice", false)
+	bob := seedUser(t, s, "u-am-bob", "bob", false)
+
+	conv := &Conversation{
+		ID: "c1", UserID: &alice.ID, Title: "t", Model: "glm-5.3-flash",
+		AgentMode: true, CreatedAt: 1, UpdatedAt: 1,
+	}
+	if err := s.InsertConversation(ctx, conv); err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+	got, err := s.GetConversation(ctx, "c1", alice.ID)
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+	if !got.AgentMode {
+		t.Fatal("agent_mode did not round-trip on insert")
+	}
+
+	// A plain update persists the flag.
+	got.AgentMode = false
+	got.UpdatedAt = 2
+	if err := s.UpdateConversation(ctx, &got); err != nil {
+		t.Fatalf("UpdateConversation: %v", err)
+	}
+	if again, _ := s.GetConversation(ctx, "c1", alice.ID); again.AgentMode {
+		t.Error("agent_mode did not persist on update")
+	}
+	got.AgentMode = true
+	if err := s.UpdateConversation(ctx, &got); err != nil {
+		t.Fatalf("UpdateConversation: %v", err)
+	}
+
+	list, err := s.ListAgentConversations(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("ListAgentConversations: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "c1" {
+		t.Errorf("agent conversations = %+v, want c1 only", list)
+	}
+	if other, _ := s.ListAgentConversations(ctx, bob.ID); len(other) != 0 {
+		t.Errorf("bob's agent conversations = %+v, want none", other)
+	}
+	if _, err := s.GetConversation(ctx, "c1", bob.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("cross-user GetConversation = %v, want ErrNotFound", err)
+	}
+}
+
+// TestArtifactRefBySHAScopesToConversation covers the agent-mode artifact
+// de-duplication query: same bytes in one conversation match, the same bytes in
+// another conversation do not.
+func TestArtifactRefBySHAScopesToConversation(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	alice := seedUser(t, s, "u-sha", "alice", false)
+	c1, c2 := "c1", "c2"
+	for _, id := range []string{c1, c2} {
+		conv := &Conversation{ID: id, UserID: &alice.ID, Title: id, Model: "glm-5.3-flash", CreatedAt: 1, UpdatedAt: 1}
+		if err := s.InsertConversation(ctx, conv); err != nil {
+			t.Fatalf("InsertConversation(%s): %v", id, err)
+		}
+	}
+	insertArtifact := func(id, conv string) {
+		t.Helper()
+		a := &Artifact{ID: id, UserID: alice.ID, ConversationID: &conv, Name: id + ".csv",
+			Mime: "text/csv", Size: 4, SHA256: "abc", Data: []byte("a,b\n"), CreatedAt: 1}
+		if err := s.InsertArtifact(ctx, a); err != nil {
+			t.Fatalf("InsertArtifact(%s): %v", id, err)
+		}
+	}
+	insertArtifact("a1", c1)
+	insertArtifact("a2", c2)
+
+	ref, ok, err := s.ArtifactRefBySHA(ctx, c1, "abc")
+	if err != nil || !ok || ref.ID != "a1" {
+		t.Fatalf("ArtifactRefBySHA(c1) = %+v, %v, %v; want a1", ref, ok, err)
+	}
+	if _, ok, err := s.ArtifactRefBySHA(ctx, "c3", "abc"); err != nil || ok {
+		t.Errorf("ArtifactRefBySHA(c3) = ok %v, err %v; want no match", ok, err)
 	}
 }
 

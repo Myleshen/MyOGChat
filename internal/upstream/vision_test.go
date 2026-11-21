@@ -263,7 +263,7 @@ func TestStreamAgentChatSendsVisionParts(t *testing.T) {
 		Context:  "ATTACHMENT-TEXT",
 		Messages: []Message{{Role: "user", Content: "what is this?", Images: []string{"data:image/png;base64,AAAA"}}},
 		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "x"}}},
-	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }))
+	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }, AgentOptions{}))
 
 	mu.Lock()
 	got := string(body)
@@ -304,7 +304,7 @@ func TestStreamAgentResponsesSendsVisionParts(t *testing.T) {
 		APIKey:   "k",
 		Messages: []Message{{Role: "user", Content: "see", Images: []string{"data:image/jpeg;base64,BBBB"}}},
 		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "x"}}},
-	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }))
+	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }, AgentOptions{}))
 
 	mu.Lock()
 	got := string(body)

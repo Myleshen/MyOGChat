@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -155,7 +156,7 @@ func TestStreamAgentChatLoop(t *testing.T) {
 		APIKey:   "k",
 		Messages: []Message{{Role: "user", Content: "hi"}},
 		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "web_search"}}},
-	}, exec))
+	}, exec, AgentOptions{}))
 
 	if gotCall.Name != "web_search" || gotCall.Arguments != `{"query":"golang"}` {
 		t.Errorf("exec got %+v", gotCall)
@@ -246,7 +247,7 @@ func TestStreamAgentResponsesLoop(t *testing.T) {
 		APIKey:   "k",
 		Messages: []Message{{Role: "user", Content: "summarize"}},
 		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "fetch_url"}}},
-	}, exec))
+	}, exec, AgentOptions{}))
 
 	var sawText bool
 	var usage *Usage
@@ -309,7 +310,7 @@ func TestStreamAgentBoundsIterations(t *testing.T) {
 		APIKey:   "k",
 		Messages: []Message{{Role: "user", Content: "hi"}},
 		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "fetch_url"}}},
-	}, exec))
+	}, exec, AgentOptions{}))
 
 	if got := atomic.LoadInt32(&calls); got != maxToolIterations {
 		t.Errorf("upstream calls = %d, want %d", got, maxToolIterations)
@@ -325,6 +326,50 @@ func TestStreamAgentBoundsIterations(t *testing.T) {
 	}
 	if !sawFinal {
 		t.Error("loop bound did not produce a final answer")
+	}
+}
+
+// TestStreamAgentStepCallback proves the loop reports each round and the
+// iteration bound, which is what agent-mode progress is built on.
+func TestStreamAgentStepCallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if strings.Contains(string(body), `"tools"`) {
+			writeSSE(w,
+				"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\",\"type\":\"function\",\"function\":{\"name\":\"fetch_url\",\"arguments\":\"{}\"}}]}}]}\n\n",
+				"data: [DONE]\n\n",
+			)
+			return
+		}
+		writeSSE(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"final\"}}]}\n\n",
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+			"data: [DONE]\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	c := &Client{hc: srv.Client(), baseURL: srv.URL}
+	var steps []int
+	var bound int
+	collectEvents(t, c.StreamAgent(context.Background(), Params{
+		Dialect:  "chat",
+		Model:    "test",
+		APIKey:   "k",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "fetch_url"}}},
+	}, func(context.Context, ToolCall) (string, string, error) { return "r", "", nil },
+		AgentOptions{MaxIterations: 3, OnStep: func(step, max int) {
+			steps = append(steps, step)
+			bound = max
+		}}))
+
+	if bound != 3 {
+		t.Errorf("reported bound = %d, want 3", bound)
+	}
+	if len(steps) != 3 || steps[0] != 1 || steps[1] != 2 || steps[2] != 3 {
+		t.Errorf("steps = %v, want [1 2 3]", steps)
 	}
 }
 
@@ -354,7 +399,7 @@ func TestStreamAgentRetriesWithoutTools(t *testing.T) {
 		APIKey:   "k",
 		Messages: []Message{{Role: "user", Content: "hi"}},
 		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "x"}}},
-	}, nil))
+	}, nil, AgentOptions{}))
 
 	if atomic.LoadInt32(&calls) != 2 {
 		t.Fatalf("expected a retry, got %d calls", calls)
@@ -414,7 +459,7 @@ func TestStreamAgentChatIncludesContext(t *testing.T) {
 		Context:  "ATTACHMENT-CONTEXT-BLOCK",
 		Messages: []Message{{Role: "user", Content: "hi"}},
 		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "x"}}},
-	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }))
+	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }, AgentOptions{}))
 
 	mu.Lock()
 	body := string(firstBody)
@@ -454,7 +499,7 @@ func TestStreamAgentResponsesIncludesContext(t *testing.T) {
 		Context:  "ATTACHMENT-CONTEXT-BLOCK",
 		Messages: []Message{{Role: "user", Content: "hi"}},
 		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "x"}}},
-	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }))
+	}, func(context.Context, ToolCall) (string, string, error) { return "", "", nil }, AgentOptions{}))
 
 	mu.Lock()
 	body := string(firstBody)
@@ -464,5 +509,304 @@ func TestStreamAgentResponsesIncludesContext(t *testing.T) {
 	}
 	if !strings.Contains(body, `"role":"system"`) {
 		t.Errorf("context was not sent as a system message: %s", body)
+	}
+}
+
+// TestStreamAgentDSMLFallback proves a reply that leaks DeepSeek's native tool
+// markup is executed as a real tool call and never reaches the client.
+func TestStreamAgentDSMLFallback(t *testing.T) {
+	var calls int32
+	var mu sync.Mutex
+	var secondBody []byte
+	var gotCall ToolCall
+
+	textFrame := func(chunk string) string {
+		b, _ := json.Marshal(chunk)
+		return "data: {\"choices\":[{\"delta\":{\"content\":" + string(b) + "}}]}\n\n"
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			// Three runes per delta so markers straddle deltas.
+			runes := []rune("Let me check." + dsmlFixtureSingle)
+			frames := make([]string, 0, len(runes)/3+3)
+			for i := 0; i < len(runes); i += 3 {
+				end := i + 3
+				if end > len(runes) {
+					end = len(runes)
+				}
+				frames = append(frames, textFrame(string(runes[i:end])))
+			}
+			frames = append(frames,
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3}}\n\n",
+				"data: [DONE]\n\n",
+			)
+			writeSSE(w, frames...)
+			return
+		}
+		mu.Lock()
+		secondBody = body
+		mu.Unlock()
+		writeSSE(w,
+			textFrame("All set."),
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2}}\n\n",
+			"data: [DONE]\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	c := &Client{hc: srv.Client(), baseURL: srv.URL}
+	exec := func(_ context.Context, call ToolCall) (string, string, error) {
+		gotCall = call
+		return "RESULT", "ok", nil
+	}
+	events := collectEvents(t, c.StreamAgent(context.Background(), Params{
+		Dialect:  "chat",
+		Model:    "test",
+		APIKey:   "k",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "run_python"}}},
+	}, exec, AgentOptions{}))
+
+	if gotCall.Name != "run_python" || gotCall.Arguments != `{"code":"import json\nprint(1)\n"}` {
+		t.Errorf("exec got %+v", gotCall)
+	}
+	var answer strings.Builder
+	for _, ev := range events {
+		if ev.Kind == EventError {
+			t.Fatalf("unexpected error event: %v", ev.Err)
+		}
+		if ev.Kind == EventText {
+			if strings.Contains(ev.Delta, "\uFF5CDSML") {
+				t.Fatalf("markup leaked to the client: %q", ev.Delta)
+			}
+			answer.WriteString(ev.Delta)
+		}
+	}
+	if answer.String() != "Let me check.\n\nAll set." {
+		t.Errorf("client text = %q", answer.String())
+	}
+
+	mu.Lock()
+	body := string(secondBody)
+	mu.Unlock()
+	for _, want := range []string{`"role":"tool"`, `"tool_call_id":"call_dsml_1"`, "RESULT", `"tool_calls"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("second request missing %s: %s", want, body)
+		}
+	}
+}
+
+// TestStreamAgentDSMLUnknownTool proves a hallucinated tool name is fed back as
+// an ordinary tool error instead of ending the turn.
+func TestStreamAgentDSMLUnknownTool(t *testing.T) {
+	var calls int32
+	var mu sync.Mutex
+	var secondBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			writeSSE(w,
+				"data: {\"choices\":[{\"delta\":{\"content\":\"<\\uFF5CDSML\\uFF5Cinvoke name=\\\"email_list\\\">\\n</\\uFF5CDSML\\uFF5Cinvoke>\"}}]}\n\n",
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+				"data: [DONE]\n\n",
+			)
+			return
+		}
+		mu.Lock()
+		secondBody = body
+		mu.Unlock()
+		writeSSE(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"Sorry.\"}}]}\n\n",
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}\n\n",
+			"data: [DONE]\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	c := &Client{hc: srv.Client(), baseURL: srv.URL}
+	exec := func(_ context.Context, call ToolCall) (string, string, error) {
+		return "", "", fmt.Errorf("unknown tool %q; available tools: web_search, fetch_url", call.Name)
+	}
+	events := collectEvents(t, c.StreamAgent(context.Background(), Params{
+		Dialect:  "chat",
+		Model:    "test",
+		APIKey:   "k",
+		Messages: []Message{{Role: "user", Content: "email"}},
+		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "web_search"}}},
+	}, exec, AgentOptions{}))
+
+	var sawToolError, sawFinal bool
+	for _, ev := range events {
+		switch {
+		case ev.Kind == EventError:
+			t.Fatalf("unknown tool must not be fatal: %v", ev.Err)
+		case ev.Kind == EventTool && ev.Tool != nil && ev.Tool.Status == ToolError:
+			sawToolError = true
+		case ev.Kind == EventText && ev.Delta == "Sorry.":
+			sawFinal = true
+		}
+	}
+	if !sawToolError || !sawFinal {
+		t.Errorf("toolError=%v final=%v", sawToolError, sawFinal)
+	}
+	mu.Lock()
+	body := string(secondBody)
+	mu.Unlock()
+	if !strings.Contains(body, "Tool error: unknown tool") || !strings.Contains(body, "available tools: web_search") {
+		t.Errorf("second request missing the tool error: %s", body)
+	}
+}
+
+// TestReplayToolHistoryChat proves stored tool calls are replayed as a
+// tool_calls assistant turn plus tool result messages.
+func TestReplayToolHistoryChat(t *testing.T) {
+	var mu sync.Mutex
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+			"data: [DONE]\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	c := &Client{hc: srv.Client(), baseURL: srv.URL}
+	collectEvents(t, c.StreamAgent(context.Background(), Params{
+		Dialect: "chat",
+		Model:   "test",
+		APIKey:  "k",
+		Messages: []Message{
+			{Role: "user", Content: "digest"},
+			{
+				ID:      "m1",
+				Role:    "assistant",
+				Content: "Here is the digest.\n" + dsmlFixtureSingle, // old polluted row
+				Tools: []ToolResult{
+					{Name: "email_digest", Arguments: `{"range":"today"}`, Output: "DIGEST", Status: "done"},
+					{Name: "run_python", Arguments: "{}", Error: "kaboom", Status: "error"},
+					{Name: "still_running", Arguments: "{}", Status: "running"},
+				},
+			},
+		},
+	}, nil, AgentOptions{}))
+
+	mu.Lock()
+	got := string(body)
+	mu.Unlock()
+	for _, want := range []string{
+		`"role":"assistant"`, "Here is the digest.", `"tool_calls"`,
+		`"tool_call_id":"call_m1_0"`, "DIGEST",
+		`"tool_call_id":"call_m1_1"`, "Tool error: kaboom",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("request missing %s: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "\uFF5CDSML") {
+		t.Errorf("replayed history still contains leaked markup: %s", got)
+	}
+	if strings.Contains(got, "still_running") {
+		t.Errorf("running tool must not be replayed: %s", got)
+	}
+	if n := strings.Count(got, `"role":"tool"`); n != 2 {
+		t.Errorf("tool messages = %d, want 2: %s", n, got)
+	}
+}
+
+// TestReplayToolHistoryBudget proves each replayed output and the request total
+// are capped, with the newest calls kept.
+func TestReplayToolHistoryBudget(t *testing.T) {
+	run := func(t *testing.T, msgs []Message) string {
+		t.Helper()
+		var mu sync.Mutex
+		var body []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			body = b
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeSSE(w,
+				"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+				"data: [DONE]\n\n",
+			)
+		}))
+		defer srv.Close()
+		c := &Client{hc: srv.Client(), baseURL: srv.URL}
+		collectEvents(t, c.StreamAgent(context.Background(), Params{
+			Dialect: "chat", Model: "test", APIKey: "k", Messages: msgs,
+		}, nil, AgentOptions{}))
+		mu.Lock()
+		defer mu.Unlock()
+		return string(body)
+	}
+
+	t.Run("single output cap", func(t *testing.T) {
+		body := run(t, []Message{{
+			ID: "big", Role: "assistant", Content: "ran",
+			Tools: []ToolResult{{Name: "t", Arguments: "{}", Output: strings.Repeat("a", 20000), Status: "done"}},
+		}})
+		if !strings.Contains(body, "[truncated]") {
+			t.Error("capped output is not marked")
+		}
+		if strings.Contains(body, strings.Repeat("a", 9000)) {
+			t.Error("output was not capped")
+		}
+	})
+
+	t.Run("total cap keeps newest", func(t *testing.T) {
+		var msgs []Message
+		for i := 0; i < 5; i++ {
+			msgs = append(msgs, Message{
+				ID: fmt.Sprintf("m%d", i), Role: "assistant", Content: "ran",
+				Tools: []ToolResult{{
+					Name: "t", Arguments: "{}", Status: "done",
+					Output: fmt.Sprintf("OUT%d", i) + strings.Repeat("x", 8<<10-4),
+				}},
+			})
+		}
+		body := run(t, msgs)
+		if n := strings.Count(body, `"role":"tool"`); n != 4 {
+			t.Errorf("tool messages = %d, want 4 (32 KB budget)", n)
+		}
+		for _, want := range []string{"OUT4", "OUT3", "OUT2", "OUT1"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("missing recent output %s", want)
+			}
+		}
+		if strings.Contains(body, "OUT0") {
+			t.Error("oldest output exceeded the per-request budget")
+		}
+	})
+}
+
+// TestResponsesHistoryReplay proves the responses dialect replays stored calls
+// as function_call / function_call_output items.
+func TestResponsesHistoryReplay(t *testing.T) {
+	input := responsesInput(Params{Messages: []Message{{
+		ID: "m1", Role: "assistant", Content: "ran", Tools: []ToolResult{
+			{Name: "fetch_url", Arguments: `{"url":"https://x"}`, Output: "PAGE", Status: "done"},
+		},
+	}}})
+	b, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(b)
+	for _, want := range []string{`"type":"function_call"`, `"type":"function_call_output"`, `"call_id":"call_m1_0"`, `"output":"PAGE"`, `"content":"ran"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("responses input missing %s: %s", want, body)
+		}
 	}
 }

@@ -45,8 +45,8 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 // fixedStream returns a streamer that emits events then closes.
-func fixedStream(events ...upstream.Event) func(context.Context, upstream.Params, upstream.ExecuteTool) <-chan upstream.Event {
-	return func(context.Context, upstream.Params, upstream.ExecuteTool) <-chan upstream.Event {
+func fixedStream(events ...upstream.Event) func(context.Context, upstream.Params, upstream.ExecuteTool, upstream.AgentOptions) <-chan upstream.Event {
+	return func(context.Context, upstream.Params, upstream.ExecuteTool, upstream.AgentOptions) <-chan upstream.Event {
 		out := make(chan upstream.Event, len(events))
 		for _, ev := range events {
 			out <- ev
@@ -58,8 +58,8 @@ func fixedStream(events ...upstream.Event) func(context.Context, upstream.Params
 
 // gatedStream emits a text delta and then waits for release (or context cancel)
 // before completing with usage — long enough to observe a running job.
-func gatedStream(release <-chan struct{}) func(context.Context, upstream.Params, upstream.ExecuteTool) <-chan upstream.Event {
-	return func(c context.Context, _ upstream.Params, _ upstream.ExecuteTool) <-chan upstream.Event {
+func gatedStream(release <-chan struct{}) func(context.Context, upstream.Params, upstream.ExecuteTool, upstream.AgentOptions) <-chan upstream.Event {
+	return func(c context.Context, _ upstream.Params, _ upstream.ExecuteTool, _ upstream.AgentOptions) <-chan upstream.Event {
 		out := make(chan upstream.Event, 2)
 		go func() {
 			defer close(out)

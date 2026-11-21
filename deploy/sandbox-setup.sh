@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 # Provision the MyOGChat code sandbox (Phase 2.6 Python / 2.7 Bash).
 #
-#   deploy/sandbox-setup.sh            # part A: create network + pull images (no sudo)
+#   deploy/sandbox-setup.sh            # part A: create network + build images (no sudo)
 #   sudo deploy/sandbox-setup.sh --harden   # part B: restrict sandbox egress (sudo)
 #
 # Part A (no sudo needed — the user is in the `docker` group):
 #   * creates the dedicated user-defined bridge network (no published ports, so
 #     there is no inbound path into a sandbox container),
-#   * pulls the Bash image, and
-#   * builds the Python image (reportlab, openpyxl, python-docx, Pillow,
-#     matplotlib) so the agent can produce PDF/XLSX/DOCX files (5.8); run_bash
-#     and run_python use `docker run --pull=never`.
+#   * builds BOTH images locally: the Bash image from deploy/sandbox/Dockerfile.bash
+#     (tagged `myogchat-sandbox-bash`) and the Python image (reportlab, openpyxl,
+#     python-docx, Pillow, matplotlib) from deploy/sandbox/Dockerfile, so the agent
+#     can produce PDF/XLSX/DOCX files (5.8). Both install the shared toolbelt in
+#     deploy/sandbox/tools.list.
+#
+# Both images are rebuilt on every run (idempotent, Docker layer-cached), so a
+# new package in tools.list is picked up by simply re-running this script.
+# run_bash and run_python use `docker run --pull=never`.
 #
 # Part B (needs sudo) adds DOCKER-USER iptables rules that DROP sandbox egress
 # to RFC1918 / link-local / loopback / CGNAT ranges, leaving only the public
@@ -22,7 +27,7 @@
 set -euo pipefail
 
 NETWORK="${MYOGCHAT_SANDBOX_NETWORK:-myogchat-sbx}"
-BASH_IMAGE="${MYOGCHAT_SANDBOX_IMAGE_BASH:-bash:5.3}"
+BASH_IMAGE="${MYOGCHAT_SANDBOX_IMAGE_BASH:-myogchat-sandbox-bash}"
 PYTHON_IMAGE="${MYOGCHAT_SANDBOX_IMAGE_PYTHON:-myogchat-sandbox-python}"
 DOCKER="${MYOGCHAT_DOCKER:-docker}"
 IMAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sandbox"
@@ -44,14 +49,17 @@ else
 fi
 
 echo "== [3/3] images =="
-echo "   pulling $BASH_IMAGE"
-"$DOCKER" pull "$BASH_IMAGE"
-if "$DOCKER" image inspect "$PYTHON_IMAGE" >/dev/null 2>&1; then
-  echo "   $PYTHON_IMAGE already present (rebuild with: $DOCKER build -t $PYTHON_IMAGE $IMAGE_DIR)"
-else
-  echo "   building $PYTHON_IMAGE from $IMAGE_DIR (reportlab, openpyxl, python-docx, Pillow, matplotlib)"
-  "$DOCKER" build -t "$PYTHON_IMAGE" "$IMAGE_DIR"
-fi
+# Always rebuild: layer-cached when nothing changed, and a new package in
+# tools.list must reach the images without anyone remembering to rebuild.
+echo "   pulling base images"
+"$DOCKER" pull bash:5.3
+"$DOCKER" pull python:3.14-slim
+
+echo "   building $BASH_IMAGE from Dockerfile.bash"
+"$DOCKER" build -t "$BASH_IMAGE" -f "$IMAGE_DIR/Dockerfile.bash" "$IMAGE_DIR"
+
+echo "   building $PYTHON_IMAGE from Dockerfile (reportlab, openpyxl, python-docx, Pillow, matplotlib)"
+"$DOCKER" build -t "$PYTHON_IMAGE" -f "$IMAGE_DIR/Dockerfile" "$IMAGE_DIR"
 
 SUBNET="$("$DOCKER" network inspect "$NETWORK" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | awk '{print $1}')"
 echo
