@@ -13,6 +13,11 @@ import (
 const (
 	maxProjectNameRunes  = 120
 	maxInstructionsRunes = 8000
+	// maxProjectMemoryRunes caps the rolling project memory (6.2). It is a
+	// deliberate ceiling: the memory is re-sent on every turn of every chat in
+	// the project, so it bounds the per-turn context cost. It is separate from
+	// the user-authored instructions budget.
+	maxProjectMemoryRunes = 32000
 )
 
 // handleListProjects returns the caller's projects with conversation counts (§8.2).
@@ -40,6 +45,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Name         string  `json:"name"`
 		Instructions string  `json:"instructions"`
 		DefaultModel *string `json:"default_model"`
+		MemoryAuto   *bool   `json:"memory_auto"`
 	}
 	if err := decodeJSON(w, r, &req, 64*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -70,6 +76,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Name:         name,
 		Instructions: req.Instructions,
 		DefaultModel: dm,
+		MemoryAuto:   req.MemoryAuto == nil || *req.MemoryAuto,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -79,6 +86,19 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
+}
+
+// handleGetProject returns one of the caller's projects (§8.2).
+func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	p, ok := s.getProject(w, r, u.ID)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
 }
 
 // handlePatchProject updates the caller's project (§8.2).
@@ -95,6 +115,8 @@ func (s *Server) handlePatchProject(w http.ResponseWriter, r *http.Request) {
 		Name         *string `json:"name"`
 		Instructions *string `json:"instructions"`
 		DefaultModel *string `json:"default_model"`
+		Memory       *string `json:"memory"`
+		MemoryAuto   *bool   `json:"memory_auto"`
 		SortOrder    *int64  `json:"sort_order"`
 	}
 	if err := decodeJSON(w, r, &req, 64*1024); err != nil {
@@ -119,6 +141,16 @@ func (s *Server) handlePatchProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.Instructions = *req.Instructions
+	}
+	if req.Memory != nil {
+		if len([]rune(*req.Memory)) > maxProjectMemoryRunes {
+			writeError(w, http.StatusBadRequest, "memory exceeds 32000 characters")
+			return
+		}
+		p.Memory = *req.Memory
+	}
+	if req.MemoryAuto != nil {
+		p.MemoryAuto = *req.MemoryAuto
 	}
 	if req.DefaultModel != nil {
 		dm, ok := validDefaultModel(w, req.DefaultModel)

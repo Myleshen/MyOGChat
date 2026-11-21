@@ -418,6 +418,8 @@ CREATE TABLE IF NOT EXISTS projects (
   name          TEXT NOT NULL,
   instructions  TEXT NOT NULL DEFAULT '',
   default_model TEXT,                 -- nullable registry model id
+  memory        TEXT NOT NULL DEFAULT '',  -- rolling project memory (6.2)
+  memory_auto   INTEGER NOT NULL DEFAULT 1,
   sort_order    INTEGER NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
@@ -429,19 +431,32 @@ CREATE TABLE IF NOT EXISTS projects (
 The store must migrate an existing database: `CREATE TABLE IF NOT EXISTS` for
 projects, and `ALTER TABLE … ADD COLUMN` for `conversations.project_id`,
 `messages.reasoning_tokens`, `messages.duration_ms` when
-`PRAGMA table_info(...)` shows them missing. Never drop existing data.
+`PRAGMA table_info(...)` shows them missing. `projects.memory` and
+`projects.memory_auto` (Phase 6.2) migrate the same way: existing projects start
+with empty memory and auto-updates on. Never drop existing data.
 
 ### 8.2 Projects API
 
 - `GET /api/projects` → array sorted by `sort_order` ASC then `created_at` ASC:
-  `{"id","name","instructions","default_model","sort_order","created_at","updated_at","conversation_count"}`
+  `{"id","name","instructions","default_model","memory","memory_auto","sort_order","created_at","updated_at","conversation_count"}`
   (`conversation_count` = chats currently in the project).
-- `POST /api/projects` `{"name" (required, ≤120), "instructions"?, "default_model"?}`
+- `GET /api/projects/{id}` → `200` the same project object, `404` when it is not
+  the caller's.
+- `POST /api/projects` `{"name" (required, ≤120), "instructions"?, "default_model"?, "memory_auto"?}`
   → `201` project object (`conversation_count: 0`). `default_model` must be a
-  registry id or absent.
-- `PATCH /api/projects/{id}` `{"name"?, "instructions"?, "default_model"?, "sort_order"?}`
-  → `200` updated project. `instructions` ≤ 8000 chars. `default_model: ""` or
-  `null` clears it.
+  registry id or absent. `memory_auto` defaults to `true`.
+- `PATCH /api/projects/{id}` `{"name"?, "instructions"?, "default_model"?, "memory"?, "memory_auto"?, "sort_order"?}`
+  → `200` updated project. `instructions` ≤ 8000 chars. `memory` ≤ **32000
+  runes** — longer is `400` (the cap counts characters, not bytes; user-authored
+  instructions keep their own 8000 budget). `default_model: ""` or `null` clears
+  it. `memory: ""` clears the memory.
+
+  Memory is deliberate context cost: it is injected into every turn of every
+  chat in the project, so at the 32000-character ceiling it adds roughly 8k
+  tokens of input per turn (about $0.0012/turn on the cheapest model, cached
+  after the first turn). The ceiling is a context/attention trade-off, not a
+  limit of the model. Past this size the right move is a separate project or
+  `read_chat`, not a bigger memory.
 - `DELETE /api/projects/{id}` → `204`. Chats are **not** deleted; their
   `project_id` becomes NULL (explicit `UPDATE` before delete).
 
@@ -513,7 +528,9 @@ nothing else; `updated_at` is bumped.
   - **chat dialect**: when non-empty, prepend `{"role":"system","content":Instructions}`
     to the messages array.
   - **responses dialect**: set top-level `"instructions": Instructions`.
-  - Instructions come from the conversation's project (`projects.instructions`).
+  - Instructions come from the conversation's project: `projects.instructions`
+    plus, when non-empty, a `## Project memory` block separated by a blank line
+    (6.2). The server composes that one string; the dialect only passes it on.
 - `Usage` gains `ReasoningTokens`:
   - chat: `usage.completion_tokens_details.reasoning_tokens`
   - responses: `usage.output_tokens_details.reasoning_tokens`

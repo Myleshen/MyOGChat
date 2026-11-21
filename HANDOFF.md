@@ -91,7 +91,7 @@ internal/
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
 deploy/       systemd unit + deploy.sh + sandbox-setup.sh + ocr-setup.sh + ocr/ (Dockerfile) + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-providers.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.10-2.11-tool-activity-usage.md, 2.13-vision-ocr.md, 3.1-imagegen.md, 3.2-imap.md, 3.3-calendar.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, SCOPING.md, 5-vision.md, 5-search-pin.md, 5-export-edit.md, 5.7-background-generation.md, 5.8-sandbox-artifacts.md, 5.9-email-digest.md, 5.10-reuse-draft.md, 5.11-multi-mailbox.md, 5-hardening.md, 5.12-agent-mode.md, 6.0-calendar-triggers.md, research/phase4/
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-providers.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.10-2.11-tool-activity-usage.md, 2.13-vision-ocr.md, 3.1-imagegen.md, 3.2-imap.md, 3.3-calendar.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, SCOPING.md, 5-vision.md, 5-search-pin.md, 5-export-edit.md, 5.7-background-generation.md, 5.8-sandbox-artifacts.md, 5.9-email-digest.md, 5.10-reuse-draft.md, 5.11-multi-mailbox.md, 5-hardening.md, 5.12-agent-mode.md, 6.0-calendar-triggers.md, 6.2-project-memory.md, research/phase4/
 ```
 
 ## Docs index

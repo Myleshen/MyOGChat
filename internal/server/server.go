@@ -228,6 +228,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/groups/{id}/members/{userId}", s.handleRemoveGroupMember)
 
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
+	mux.HandleFunc("GET /api/projects/{id}", s.handleGetProject)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("PATCH /api/projects/{id}", s.handlePatchProject)
 	mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)

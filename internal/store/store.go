@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS projects (
   name          TEXT NOT NULL,
   instructions  TEXT NOT NULL DEFAULT '',
   default_model TEXT,
+  memory        TEXT NOT NULL DEFAULT '',
+  memory_auto   INTEGER NOT NULL DEFAULT 1,
   sort_order    INTEGER NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
@@ -361,6 +363,8 @@ type Project struct {
 	Name              string  `json:"name"`
 	Instructions      string  `json:"instructions"`
 	DefaultModel      *string `json:"default_model"`
+	Memory            string  `json:"memory"`
+	MemoryAuto        bool    `json:"memory_auto"`
 	SortOrder         int64   `json:"sort_order"`
 	CreatedAt         int64   `json:"created_at"`
 	UpdatedAt         int64   `json:"updated_at"`
@@ -451,6 +455,10 @@ func (s *Store) migrate() error {
 		{"conversations", "agent_mode", `ALTER TABLE conversations ADD COLUMN agent_mode INTEGER NOT NULL DEFAULT 0`},
 		// Calendar discovery cache (3.3): lets tool calls skip PROPFINDs.
 		{"calendar_accounts", "home_set", `ALTER TABLE calendar_accounts ADD COLUMN home_set TEXT`},
+		// Rolling project memory (6.2): additive; existing projects start empty
+		// with auto-updates on.
+		{"projects", "memory", `ALTER TABLE projects ADD COLUMN memory TEXT NOT NULL DEFAULT ''`},
+		{"projects", "memory_auto", `ALTER TABLE projects ADD COLUMN memory_auto INTEGER NOT NULL DEFAULT 1`},
 	}
 	cache := map[string]map[string]bool{}
 	for _, st := range steps {
@@ -1301,24 +1309,27 @@ func (s *Store) Backup(ctx context.Context, destPath string) error {
 
 // ---------- projects ----------
 
-const projectCols = "id, name, instructions, default_model, sort_order, created_at, updated_at"
+const projectCols = "id, user_id, name, instructions, default_model, memory, memory_auto, sort_order, created_at, updated_at"
 
 func scanProject(sc scanner) (Project, error) {
 	var p Project
-	var model sql.NullString
-	if err := sc.Scan(&p.ID, &p.Name, &p.Instructions, &model, &p.SortOrder, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	var model, userID sql.NullString
+	var memoryAuto int
+	if err := sc.Scan(&p.ID, &userID, &p.Name, &p.Instructions, &model, &p.Memory, &memoryAuto, &p.SortOrder, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		return Project{}, err
 	}
+	p.UserID = optString(userID)
 	p.DefaultModel = optString(model)
+	p.MemoryAuto = memoryAuto != 0
 	return p, nil
 }
 
 // InsertProject inserts a new project row for its owner.
 func (s *Store) InsertProject(ctx context.Context, p *Project) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO projects (id, user_id, name, instructions, default_model, sort_order, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, nullString(p.UserID), p.Name, p.Instructions, nullString(p.DefaultModel), p.SortOrder, p.CreatedAt, p.UpdatedAt)
+		`INSERT INTO projects (id, user_id, name, instructions, default_model, memory, memory_auto, sort_order, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, nullString(p.UserID), p.Name, p.Instructions, nullString(p.DefaultModel), p.Memory, boolToInt(p.MemoryAuto), p.SortOrder, p.CreatedAt, p.UpdatedAt)
 	return err
 }
 
@@ -1372,10 +1383,27 @@ func (s *Store) ListProjects(ctx context.Context, userID string) ([]Project, err
 // UpdateProject updates a project's mutable fields (owner-guarded).
 func (s *Store) UpdateProject(ctx context.Context, p *Project) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE projects SET name = ?, instructions = ?, default_model = ?, sort_order = ?, updated_at = ?
+		`UPDATE projects SET name = ?, instructions = ?, default_model = ?, memory = ?, memory_auto = ?, sort_order = ?, updated_at = ?
 		 WHERE id = ? AND user_id = ?`,
-		p.Name, p.Instructions, nullString(p.DefaultModel), p.SortOrder, p.UpdatedAt, p.ID, nullString(p.UserID))
+		p.Name, p.Instructions, nullString(p.DefaultModel), p.Memory, boolToInt(p.MemoryAuto), p.SortOrder, p.UpdatedAt, p.ID, nullString(p.UserID))
 	return err
+}
+
+// SetProjectMemoryIfUnchanged stores memory only when it still holds oldMemory,
+// so a background update never clobbers a value the user edited meanwhile. It
+// reports whether the row was written.
+func (s *Store) SetProjectMemoryIfUnchanged(ctx context.Context, id, userID, oldMemory, memory string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE projects SET memory = ? WHERE id = ? AND user_id = ? AND memory = ?`,
+		memory, id, userID, oldMemory)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // DeleteProject deletes a project; its conversations are moved to Unfiled.
