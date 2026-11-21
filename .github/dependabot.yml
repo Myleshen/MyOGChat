@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Go modules (modernc.org/sqlite, pdf, go-webdav, go-ical).
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Actions are pinned by commit SHA; Dependabot bumps the SHA and keeps the
+  # version comment, which is what sha_pinning_required expects.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"
+
+  # Both sandbox images live here (Dockerfile, Dockerfile.bash).
+  - package-ecosystem: docker
+    directory: "/deploy/sandbox"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
