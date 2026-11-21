@@ -448,7 +448,8 @@ merges sequentially and resolves the small additive conflicts in shared files
   upstream/tool call) with a persistent, quota'd sandbox workspace
   (`~/.local/share/myogchat/sandbox/agent/<user>/<conv>`, 5 GiB per user,
   7-day idle sweep); one agent job per user with a FIFO queue
-  (`202 {"queued":true,"position":N}`); partial reply persisted on stop;
+  (`202 {"queued":true,"position":N}`); partial reply persisted on stop,
+  shutdown and failure (with a one-line `WARN` per failed job);
   artifact SHA-256 de-dupe; a 1 GiB disk pre-flight (`507`); workspace
   list/delete endpoints; admin `agent_enabled` kill switch.
   Files: `internal/server/{jobs,chat,workspace,integrations}.go`,

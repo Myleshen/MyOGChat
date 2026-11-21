@@ -216,6 +216,11 @@ cancelled and its **partial reply is persisted** (content, reasoning, tool
 activity, images, artifacts; no usage); a queued send is removed from the queue.
 `404` when there is neither.
 
+A job that ends in a **terminal failure** (upstream/stream error, a stream that
+closes without usage, a timeout) persists the same partial row for an agent job
+before the `error` frame; a normal chat persists nothing and an empty run stores
+no row.
+
 Workspace endpoints (owner-scoped; works even when `agent_enabled` is off):
 
 - `GET /api/me/agent/workspaces` →

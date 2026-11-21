@@ -155,6 +155,13 @@ func (j *genJob) isRunning() bool {
 	return j.status == jobRunning
 }
 
+// failure returns the terminal error message, or "" when the job did not fail.
+func (j *genJob) failure() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.errMsg
+}
+
 // emitLocked fans a frame out to every subscriber. Caller holds mu.
 func (j *genJob) emitLocked(f sseFrame) {
 	for sub := range j.subs {

@@ -368,7 +368,14 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 // a client disconnect, reload, or tab close cannot interrupt it. Progress is
 // published on the job (live SSE + the generation snapshot).
 func (s *Server) runReply(j *genJob, spec replySpec) {
+	began := time.Now()
 	defer func() {
+		// Every terminal failure gets one WARN line so the next incident is
+		// diagnosable from the journal (no stack, one line per failed job).
+		if msg := j.failure(); msg != "" {
+			s.log.Warn("reply job failed", "conversation", j.convID, "agent", j.agent,
+				"elapsed", time.Since(began).Round(time.Second), "error", msg)
+		}
 		if next, nextSpec, ok := s.hub().complete(j); ok {
 			go s.runReply(next, nextSpec)
 		}
@@ -436,10 +443,10 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	// data URIs to the just-sent user message and drop the redundant OCR text of
 	// image attachments (the model reads them directly). Otherwise fall back to
 	// the folded OCR text exactly as before.
-	context := foldAttachments(atts)
+	chatCtx := foldAttachments(atts)
 	if m.Vision && len(spec.images) > 0 {
 		attachImagesToLastUser(msgs, spec.images)
-		context = foldAttachments(nonImageAttachments(atts))
+		chatCtx = foldAttachments(nonImageAttachments(atts))
 	}
 	instructions := s.projectInstructions(ctx, conv.ProjectID, u.ID)
 
@@ -498,7 +505,7 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 		APIKey:       apiKey,
 		Messages:     msgs,
 		Instructions: instructions,
-		Context:      context,
+		Context:      chatCtx,
 		Tools:        upstreamToolSpecs(reg.Specs()),
 	}, s.toolExecutor(reg, toolTimeout), opts)
 
@@ -510,30 +517,50 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	var firstTokenAt time.Time
 	startedAt := time.Now()
 
-	// stop ends the job. Agent mode persists what it produced so far (a long run
-	// is expensive and the partial answer is still useful); normal chats keep
-	// today's discard-on-stop behaviour.
-	stop := func() {
-		if agent {
-			s.persistPartial(ctx, conv, asstID, content.String(), reasoning.String(),
-				tools, generatedImages, generatedArtifacts, startedAt)
+	// persistPartialReply stores what the job produced so far. Only agent mode
+	// does: a long agent run is expensive and its work must survive a stop,
+	// shutdown or failure. A normal chat keeps the historical discard
+	// behaviour, so a failed reply never leaves a junk half-message behind.
+	persistPartialReply := func() {
+		if !agent {
+			return
 		}
+		s.persistPartial(ctx, conv, asstID, content.String(), reasoning.String(),
+			tools, generatedImages, generatedArtifacts, startedAt)
+	}
+	// stop ends the job on an explicit stop or shutdown. fail ends it on a
+	// terminal error but still reports the real message to the client.
+	stop := func() {
+		persistPartialReply()
 		j.finish(jobStopped, "", "")
+	}
+	fail := func(msg string) {
+		persistPartialReply()
+		j.finish(jobError, "", msg)
+	}
+	// cancelled ends a job whose context is done: a budget running out is a
+	// failure, an explicit stop or shutdown is not.
+	cancelled := func() {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			fail("reply timed out")
+		} else {
+			stop()
+		}
 	}
 
 stream:
 	for {
 		select {
 		case <-ctx.Done():
-			stop()
+			cancelled()
 			return
 		case ev, open := <-events:
 			if !open {
 				if ctx.Err() != nil {
-					stop()
+					cancelled()
 					return
 				}
-				j.finish(jobError, "", "upstream stream ended unexpectedly")
+				fail("upstream stream ended unexpectedly")
 				return
 			}
 			switch ev.Kind {
@@ -551,7 +578,7 @@ stream:
 				j.addText(ev.Delta)
 			case upstream.EventUsage:
 				if ev.Usage == nil {
-					j.finish(jobError, "", "upstream sent empty usage")
+					fail("upstream sent empty usage")
 					return
 				}
 				usage = ev.Usage
@@ -577,8 +604,7 @@ stream:
 				if ev.Err != nil {
 					msg = ev.Err.Error()
 				}
-				s.log.Error("upstream stream failed", "model", conv.Model, "error", msg)
-				j.finish(jobError, "", msg)
+				fail(msg)
 				return
 			case upstream.EventTool:
 				if ev.Tool != nil {
@@ -592,7 +618,7 @@ stream:
 	}
 
 	if usage == nil {
-		j.finish(jobError, "", "upstream stream ended without usage")
+		fail("upstream stream ended without usage")
 		return
 	}
 	reasoningTokens := usage.ReasoningTokens
@@ -647,9 +673,9 @@ stream:
 	j.finish(jobDone, title, "")
 }
 
-// persistPartial stores what an interrupted agent reply produced so far: the
-// partial content/reasoning/tools plus any collected images and artifacts. No
-// usage is recorded because the stream never reported it. An empty reply is
+// persistPartial stores what a stopped or failed agent reply produced so far:
+// the partial content/reasoning/tools plus any collected images and artifacts.
+// No usage is recorded because the stream never reported it. An empty reply is
 // never stored, and the write uses a context detached from the cancelled job.
 func (s *Server) persistPartial(ctx context.Context, conv store.Conversation, id, content, reasoning string,
 	tools []store.ToolActivity, images []store.GeneratedImage, artifacts []store.ArtifactRef, startedAt time.Time) {
