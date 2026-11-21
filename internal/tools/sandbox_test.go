@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"myogchat/internal/sandbox"
 )
@@ -48,6 +49,76 @@ func TestRunPythonToolMetadata(t *testing.T) {
 	}
 	if !strings.Contains(tool.Description(), "Python 3.14") {
 		t.Error("description must mention Python 3.14")
+	}
+}
+
+// TestWorkspaceToolsFillSpec checks the workspace constructors put the
+// persistent-workspace fields on every call.
+func TestWorkspaceToolsFillSpec(t *testing.T) {
+	ws := Workspace{
+		Path:       "/data/agent/u1/c1",
+		QuotaDir:   "/data/agent/u1",
+		QuotaBytes: 5 << 30,
+		Timeout:    90 * time.Minute,
+	}
+	for _, tc := range []struct {
+		name string
+		run  func(*fakeRunner) (string, error)
+		lang string
+	}{
+		{
+			"bash",
+			func(f *fakeRunner) (string, error) {
+				return NewRunBashToolForWorkspace(f, nil, ws).Run(context.Background(), json.RawMessage(`{"code":"echo hi"}`))
+			},
+			sandbox.LanguageBash,
+		},
+		{
+			"python",
+			func(f *fakeRunner) (string, error) {
+				return NewRunPythonToolForWorkspace(f, nil, ws).Run(context.Background(), json.RawMessage(`{"code":"print(1)"}`))
+			},
+			sandbox.LanguagePython,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeRunner{res: sandbox.Result{ExitCode: 0, Stdout: "ok"}}
+			if _, err := tc.run(f); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if f.spec.Workspace != ws.Path || f.spec.QuotaDir != ws.QuotaDir ||
+				f.spec.QuotaBytes != ws.QuotaBytes || f.spec.Timeout != ws.Timeout {
+				t.Fatalf("spec = %+v, want workspace %+v", f.spec, ws)
+			}
+			if f.spec.Language != tc.lang {
+				t.Errorf("language = %q, want %q", f.spec.Language, tc.lang)
+			}
+		})
+	}
+}
+
+// TestWorkspaceDescription checks the agent variant tells the truth about
+// persistence, fresh containers and its real per-call limit.
+func TestWorkspaceDescription(t *testing.T) {
+	ws := Workspace{Path: "/data/agent/u1/c1", Timeout: 90 * time.Minute}
+	for _, desc := range []string{
+		NewRunBashToolForWorkspace(&fakeRunner{}, nil, ws).Description(),
+		NewRunPythonToolForWorkspace(&fakeRunner{}, nil, ws).Description(),
+	} {
+		for _, want := range []string{"persist between calls in this conversation", "brand-new container", "90-minute"} {
+			if !strings.Contains(desc, want) {
+				t.Errorf("description missing %q: %s", want, desc)
+			}
+		}
+		if strings.Contains(desc, "does NOT persist") {
+			t.Errorf("workspace description still claims files do not persist: %s", desc)
+		}
+	}
+	quotaDesc := NewRunBashToolForWorkspace(&fakeRunner{}, nil, Workspace{
+		Path: "/data/agent/u1/c1", QuotaBytes: 1 << 30,
+	}).Description()
+	if !strings.Contains(quotaDesc, "disk quota") {
+		t.Errorf("description with a quota missing the cap notice: %s", quotaDesc)
 	}
 }
 

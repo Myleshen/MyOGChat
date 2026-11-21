@@ -5,7 +5,7 @@
 **Core app**
 
 - Single Go binary (`net/http` + `modernc.org/sqlite`), embedded PWA, SQLite
-  (WAL), ~4 MB RAM on a Raspberry Pi 4B. Cross-compiled `linux/arm64` on the
+  (WAL), ~24 MB RSS at idle (measured on the workstation). Cross-compiled `linux/arm64` on the
   workstation.
 - Two upstream dialects against OpenCode Go: OpenAI-compatible
   `/chat/completions` (Kimi, GLM, DeepSeek, MiMo, …) and the Responses API
@@ -33,7 +33,8 @@
 
 - Layout pinned to the **visual viewport** (`interactive-widget=resizes-content`
   - `visualViewport` sync) so the composer stays above the on-screen keyboard
-    with no page jump. Installable PWA (cache v5).
+    with no page jump. Installable PWA (service worker versioned by the shell
+    content hash).
 
 **Deploy / ops**
 
@@ -154,8 +155,9 @@ key when sharing is allowed.
   button return to the previous view. See `docs/2.9-settings-page.md`.
 
 > **Status: Phase 2 is complete and deployed** (`https://chat.example.com`).
-> Host provisioning done on the Pi: `deploy/sandbox-setup.sh` (network +
-> `bash:5.3`/`python:3.14-slim`) and `deploy/ocr-setup.sh` (`myogchat-ocr`).
+> Host provisioning done on the Pi: `deploy/sandbox-setup.sh` (network + builds
+> the local `myogchat-sandbox-*` images from pulled `bash:5.3`/`python:3.14-slim`
+> bases, always rebuilding) and `deploy/ocr-setup.sh` (`myogchat-ocr`).
 > Optional hardening still pending owner action:
 > `sudo deploy/sandbox-setup.sh --harden` (blocks sandbox LAN egress).
 
@@ -180,8 +182,8 @@ merges sequentially and resolves the small additive conflicts in shared files
 - **Batch 1 (parallel, done):** 2.2 Groups · 2.3 Files/PDF · 2.4+2.8 Tools & web/URL/Linkwarden
 - **Batch 2 (parallel, done):** 2.6 Python sandbox · 2.7 Bash sandbox · 2.5 OCR · 2.9 Settings page
   · multi-provider web search (2.4 extension)
-- **Batch 3 (in progress):** 2.10 tool activity ✅ · 2.11 usage/quotas ✅ ·
-  2.12 Serper + Brave llm/context · 2.13 vision-model OCR ✅
+- **Batch 3 (done):** 2.10 tool activity ✅ · 2.11 usage/quotas ✅ ·
+  2.12 Serper + Brave llm/context ✅ · 2.13 vision-model OCR ✅
 
 ---
 
@@ -298,7 +300,7 @@ merges sequentially and resolves the small additive conflicts in shared files
   body, 5 MB attachment (metadata only), 50 search results.
 - Files: `internal/mail/` (read-only client + allowlist), `internal/tools/email.go`,
   `internal/server/email.go`, `internal/store` (schema + CRUD), `static/`
-  (`#email-section`), `docs/3.2-imap.md`, `API_CONTRACT.md` §11.
+  (`#email-section`), `docs/3.2-imap.md`, `API_CONTRACT.md` §15.
 
 ### 3.3 Calendar — ✅ done (deployed)
 - **Apple/iCloud + Zoho → CalDAV** (read/write, app-specific password).
@@ -307,7 +309,7 @@ merges sequentially and resolves the small additive conflicts in shared files
   tools (registered per-request only when the user connected a calendar) + a
   self-contained Settings section. New `calendar_accounts` table (`kind`
   discriminator + encrypted credential). Pure-Go `emersion/go-webdav` +
-  `go-ical`. See `docs/3.3-calendar.md` and `API_CONTRACT.md` §11.
+  `go-ical`. See `docs/3.3-calendar.md` and `API_CONTRACT.md` §13.
 - v1 = whole-series edits; ICS is read-only (write tools return a clear error).
 
 ### 3.4 Maps — ✅ done (deployed)
@@ -363,7 +365,8 @@ merges sequentially and resolves the small additive conflicts in shared files
   Tools / Voice / Usage / Users / About, with a left nav rail (≥768px) and a
   horizontal chip bar on mobile. The admin web-search block is relabelled
   "Server web search (admin)"; the per-user Serper key lives under
-  Integrations → Web search. UI battery 45/45 on mobile.
+  Integrations → Web search. UI battery: 60 asserts (`scripts/ui-test.sh`);
+  `edited message resent` still fails.
 
 ### 4.5 File formats
 - **4.5a Document extraction — ✅ done:** `internal/extract` handles
@@ -440,8 +443,40 @@ merges sequentially and resolves the small additive conflicts in shared files
   aliases; `account` parameter on the email tools + an `email_accounts` listing
   tool; SPA accounts list. 5.9 digests all enabled mailboxes by default.
 
+### 5.12 Agent mode — ✅ shipped ([`docs/5.12-agent-mode.md`](5.12-agent-mode.md))
+- Per-conversation `agent_mode`: a 60-minute job (60 steps, 10 min per
+  upstream/tool call) with a persistent, quota'd sandbox workspace
+  (`~/.local/share/myogchat/sandbox/agent/<user>/<conv>`, 5 GiB per user,
+  7-day idle sweep); one agent job per user with a FIFO queue
+  (`202 {"queued":true,"position":N}`); partial reply persisted on stop;
+  artifact SHA-256 de-dupe; a 1 GiB disk pre-flight (`507`); workspace
+  list/delete endpoints; admin `agent_enabled` kill switch.
+  Files: `internal/server/{jobs,chat,workspace,integrations}.go`,
+  `internal/sandbox/{sandbox,harvest}.go`, `internal/store/store.go`,
+  `internal/tools/sandbox.go`.
+- **Known limitation:** nothing here has run live yet (no full 60-minute agent
+  run, no live Docker persistent-workspace test) and there is no `GITHUB_TOKEN`,
+  so private repos cannot be cloned. Not deployed.
+
 ### 5.x Hardening — ✅ shipped ([`docs/5-hardening.md`](5-hardening.md))
 - Server + SPA fixes for the audit findings: atomic edit/truncate, private-temp
   backup, model-gated vision images, image-only sends, client image caps,
   stricter data URIs, markdown fencing, export-menu a11y, Esc-to-cancel, download
   error handling, and Phase-5 UI-battery coverage (60/60 locally).
+
+## Phase 6 — proactive agents
+
+### 6.0 Calendar triggers — 📝 design only, not implemented ([`docs/6.0-calendar-triggers.md`](6.0-calendar-triggers.md))
+- Let a connected calendar start conversations on its own: one per event
+  instance (30 min before, default) or one morning digest, run as an **agent
+  reply** (`AgentMode` + the agent job path, 60 min / 60 tool rounds) so the
+  agent has every tool. Includes the durable `calendar_trigger_runs` dedupe
+  ledger keyed on `calendar_id + uid + start` with the conversation UUID
+  pre-allocated for crash-safe recovery, a 120 s scheduler tick beside the
+  retention janitor with its own drain guard, a 10-minute late window
+  (`skipped_late` rather than a stale reminder), quiet hours + a daily cap, and
+  the Settings → Integrations → Calendar UI. **Design only — nothing is built.**
+  Its CalDAV-collection prerequisite (the backend ignoring the stored
+  `calendar_id`) has since shipped, so it is no longer blocked on that; the
+  `startAgentNow` refusal, the scheduler's drain guard and the `last_error`
+  column are still missing.

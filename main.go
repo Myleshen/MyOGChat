@@ -624,6 +624,10 @@ func run(cfg config, log *slog.Logger) error {
 	if _, err := st.EnsureSetting(ctx, "sandbox_enabled", "1"); err != nil {
 		return err
 	}
+	// Agent mode (persistent workspaces, long jobs) is on by default.
+	if _, err := st.EnsureSetting(ctx, "agent_enabled", "1"); err != nil {
+		return err
+	}
 	// Image OCR defaults to on; the admin can toggle it in Settings (2.5).
 	if _, err := st.EnsureSetting(ctx, "ocr_enabled", "1"); err != nil {
 		return err
@@ -855,6 +859,13 @@ func janitor(ctx context.Context, st *store.Store, retentionDays int, sbx *sandb
 		// A crash mid-run can leave a workspace behind; sweep stale ones (5.8).
 		if sbx != nil {
 			sbx.SweepLeftovers()
+			// Agent workspaces are persistent, so they get their own, much
+			// longer idle window instead of the one-hour leftover sweep.
+			if n, err := sbx.SweepAgentWorkspaces(sandbox.AgentWorkspaceMaxAge); err != nil {
+				log.Error("agent workspace sweep", "error", err)
+			} else if n > 0 {
+				log.Info("purged idle agent workspaces", "count", n)
+			}
 		}
 	}
 

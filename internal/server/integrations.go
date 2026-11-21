@@ -22,6 +22,8 @@ const (
 	settingBraveKey       = "brave_key"
 	settingBraveMode      = "brave_mode" // web | context (2.12)
 	settingSandboxEnabled = "sandbox_enabled"
+	// Agent mode (persistent workspaces + long jobs) admin kill switch.
+	settingAgentEnabled = "agent_enabled"
 )
 
 // SearchDefaults holds the env-derived web-search configuration. DB settings
@@ -172,6 +174,26 @@ func (s *Server) setSandboxEnabled(ctx context.Context, enabled bool) error {
 	return s.st.SetSetting(ctx, settingSandboxEnabled, v)
 }
 
+// agentEnabled reports whether agent mode is on (default true). When off, an
+// agent-mode conversation behaves like a normal chat: ephemeral sandbox tools,
+// normal timeouts, no queue.
+func (s *Server) agentEnabled(ctx context.Context) bool {
+	v, ok, err := s.st.GetSetting(ctx, settingAgentEnabled)
+	if err != nil || !ok {
+		return true
+	}
+	return v == "1"
+}
+
+// setAgentEnabled persists the global agent-mode toggle.
+func (s *Server) setAgentEnabled(ctx context.Context, enabled bool) error {
+	v := "0"
+	if enabled {
+		v = "1"
+	}
+	return s.st.SetSetting(ctx, settingAgentEnabled, v)
+}
+
 // userLinkwardenConfig returns the caller's own stored Linkwarden URL and
 // decrypted token (2.8). ok is false when the user has not configured both.
 func (s *Server) userLinkwardenConfig(u store.User) (rawURL, token string, ok bool) {
@@ -254,7 +276,13 @@ func (s *Server) toolRegistryWithImage(ctx context.Context, u store.User, onImag
 	return s.toolRegistryWith(ctx, u, onImage, nil)
 }
 
-// toolRegistryWith builds the per-request set of tools. It is empty when
+// toolRegistryWith builds the per-request set of tools with no persistent
+// workspace (the ephemeral sandbox tools).
+func (s *Server) toolRegistryWith(ctx context.Context, u store.User, onImage func(store.GeneratedImage), onArtifact tools.ArtifactCollector) *tools.Registry {
+	return s.toolRegistryWithWorkspace(ctx, u, onImage, onArtifact, nil)
+}
+
+// toolRegistryWithWorkspace builds the per-request set of tools. It is empty when
 // tools are disabled. web_search is present whenever any search provider is
 // usable (DuckDuckGo needs no key, so it is always available); fetch_url is
 // always available; Linkwarden tools require the integration; the read-only
@@ -263,8 +291,8 @@ func (s *Server) toolRegistryWithImage(ctx context.Context, u store.User, onImag
 // connected calendar (3.3). When onImage is non-nil and a ComfyUI backend is
 // configured, the generate_image tool (4.3b) is registered and reports generated
 // images through onImage. onArtifact (5.8) reports files produced by the code
-// sandbox.
-func (s *Server) toolRegistryWith(ctx context.Context, u store.User, onImage func(store.GeneratedImage), onArtifact tools.ArtifactCollector) *tools.Registry {
+// sandbox. A non-nil ws binds run_bash/run_python to a persistent agent workspace.
+func (s *Server) toolRegistryWithWorkspace(ctx context.Context, u store.User, onImage func(store.GeneratedImage), onArtifact tools.ArtifactCollector, ws *tools.Workspace) *tools.Registry {
 	reg := tools.NewRegistry()
 	if !s.toolsEnabled(ctx) {
 		return reg
@@ -299,9 +327,15 @@ func (s *Server) toolRegistryWith(ctx context.Context, u store.User, onImage fun
 	}
 	// Code sandbox (Phase 2.6 / 2.7): registered only when the DB toggle is on
 	// AND Docker is reachable. Missing images surface a clear error at call time.
+	// Agent mode swaps in the workspace variants (persistent /work).
 	if s.sbx != nil && s.sandboxEnabled(ctx) && s.sbx.Available(ctx) {
-		reg.Add(tools.NewRunBashToolWithCollect(s.sbx, onArtifact))
-		reg.Add(tools.NewRunPythonToolWithCollect(s.sbx, onArtifact))
+		if ws != nil {
+			reg.Add(tools.NewRunBashToolForWorkspace(s.sbx, onArtifact, *ws))
+			reg.Add(tools.NewRunPythonToolForWorkspace(s.sbx, onArtifact, *ws))
+		} else {
+			reg.Add(tools.NewRunBashToolWithCollect(s.sbx, onArtifact))
+			reg.Add(tools.NewRunPythonToolWithCollect(s.sbx, onArtifact))
+		}
 	}
 	// Read-only email (feature 3.2, multi-mailbox 5.11): registered only when the
 	// user has at least one enabled mailbox. The connector resolves an optional
@@ -343,12 +377,24 @@ func upstreamToolSpecs(specs []tools.Spec) []upstream.ToolSpec {
 }
 
 // toolExecutor adapts the registry to upstream.ExecuteTool, producing a short
-// UI summary from the tool result.
-func (s *Server) toolExecutor(reg *tools.Registry) upstream.ExecuteTool {
+// UI summary from the tool result. A positive timeout bounds each tool call so a
+// hung tool cannot eat the whole job.
+func (s *Server) toolExecutor(reg *tools.Registry, timeout time.Duration) upstream.ExecuteTool {
 	return func(ctx context.Context, call upstream.ToolCall) (string, string, error) {
 		t, ok := reg.Get(call.Name)
 		if !ok {
-			return "", "", fmt.Errorf("unknown tool %q", call.Name)
+			// Feed the miss back to the model as a normal tool error, listing
+			// what it can actually call (models do hallucinate names).
+			names := make([]string, 0, reg.Len())
+			for _, sp := range reg.Specs() {
+				names = append(names, sp.Name)
+			}
+			return "", "", fmt.Errorf("unknown tool %q; available tools: %s", call.Name, strings.Join(names, ", "))
+		}
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
 		}
 		result, err := t.Run(ctx, json.RawMessage(call.Arguments))
 		if err != nil {
@@ -383,6 +429,7 @@ func (s *Server) integrationSettings(ctx context.Context) map[string]any {
 		"brave_mode":        braveMode(cfg.BraveContext),
 		"sandbox_enabled":   s.sandboxEnabled(ctx),
 		"sandbox_available": sandboxAvailable,
+		"agent_enabled":     s.agentEnabled(ctx),
 	}
 }
 

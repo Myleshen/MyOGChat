@@ -24,6 +24,7 @@ import (
 
 // Job statuses (contract §3.7).
 const (
+	jobQueued  = "queued" // agent send waiting for the user's running agent job
 	jobRunning = "running"
 	jobDone    = "done"
 	jobError   = "error"
@@ -38,6 +39,14 @@ const (
 	maxUserJobs   = 3                // concurrent detached replies per user
 	jobTimeout    = 15 * time.Minute // overall per-reply budget (tools included)
 	jobGrace      = 60 * time.Second // keep a terminal job around for polling
+
+	// Agent mode (per-conversation flag) gets a much bigger budget: 60 minutes
+	// wall clock, 60 tool rounds and 10 minutes per upstream/tool call. One
+	// agent job runs per user; further sends wait in a FIFO queue.
+	agentJobTimeout  = 60 * time.Minute
+	agentCallTimeout = 10 * time.Minute
+	agentToolTimeout = 10 * time.Minute
+	agentMaxSteps    = 60
 )
 
 // Errors returned by jobHub.start.
@@ -117,6 +126,9 @@ type genJob struct {
 	convID string
 	userID string
 	model  string
+	// agent marks an agent-mode reply (bigger budget, workspace tools, the
+	// one-per-user queue).
+	agent  bool
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -129,6 +141,8 @@ type genJob struct {
 	reasoning strings.Builder
 	tools     []store.ToolActivity
 	usage     *usageEvent
+	step      int // 1-based tool round reported by the agent loop
+	maxSteps  int
 	subs      map[*jobSubscriber]struct{}
 
 	done chan struct{}
@@ -196,6 +210,14 @@ func (j *genJob) addUsage(ev usageEvent) {
 	j.mu.Unlock()
 }
 
+// setStep records the tool loop's current round for the generation snapshot.
+func (j *genJob) setStep(step, max int) {
+	j.mu.Lock()
+	j.step = step
+	j.maxSteps = max
+	j.mu.Unlock()
+}
+
 // finish marks the job terminal exactly once, emits the terminal frame (done or
 // error; a stop ends the stream without a frame), closes subscribers, and
 // releases the job context.
@@ -250,13 +272,23 @@ func (j *genJob) unsubscribe(sub *jobSubscriber) {
 	sub.close()
 }
 
+// agentProgress is the agent block of the generation snapshot. It is present
+// only for an agent-mode conversation.
+type agentProgress struct {
+	Enabled       bool `json:"enabled"`
+	Step          int  `json:"step"`
+	MaxSteps      int  `json:"max_steps"`
+	Queued        bool `json:"queued"`
+	QueuePosition int  `json:"queue_position"`
+}
+
 // generationSnapshot is the owner-scoped view returned by
 // GET /api/conversations/{id}/generation (contract §3.7). It carries enough to
 // rehydrate the live bubble after a reload.
 type generationSnapshot struct {
 	ConversationID string               `json:"conversation_id"`
 	Active         bool                 `json:"active"`
-	Status         string               `json:"status"` // running|done|error|stopped|none
+	Status         string               `json:"status"` // queued|running|done|error|stopped|none
 	MessageID      string               `json:"message_id,omitempty"`
 	Model          string               `json:"model,omitempty"`
 	Title          string               `json:"title,omitempty"`
@@ -265,6 +297,7 @@ type generationSnapshot struct {
 	Tools          []store.ToolActivity `json:"tools,omitempty"`
 	Usage          *usageEvent          `json:"usage,omitempty"`
 	Error          string               `json:"error,omitempty"`
+	Agent          *agentProgress       `json:"agent,omitempty"`
 }
 
 func (j *genJob) snapshot() generationSnapshot {
@@ -288,7 +321,19 @@ func (j *genJob) snapshot() generationSnapshot {
 		u := *j.usage
 		snap.Usage = &u
 	}
+	if j.agent {
+		snap.Agent = &agentProgress{Enabled: true, Step: j.step, MaxSteps: j.maxSteps}
+	}
 	return snap
+}
+
+// queuedReply is one agent send waiting for the user's running agent job. The
+// API key is deliberately not held: it is resolved again at dequeue time.
+type queuedReply struct {
+	convID string
+	userID string
+	model  string
+	spec   replySpec
 }
 
 // jobHub owns all jobs, keyed by conversation. One running job per conversation.
@@ -297,25 +342,75 @@ type jobHub struct {
 	jobs    map[string]*genJob
 	global  chan struct{}
 	perUser map[string]int
+	// queue holds agent sends waiting per user (FIFO, in memory only) and
+	// agentActive counts each user's running agent job (at most 1).
+	queue       map[string][]*queuedReply
+	agentActive map[string]int
+	// closing stops the queue from starting anything during shutdown.
+	closing bool
 }
 
 func newJobHub() *jobHub {
 	return &jobHub{
-		jobs:    make(map[string]*genJob),
-		global:  make(chan struct{}, maxGlobalJobs),
-		perUser: make(map[string]int),
+		jobs:        make(map[string]*genJob),
+		global:      make(chan struct{}, maxGlobalJobs),
+		perUser:     make(map[string]int),
+		queue:       make(map[string][]*queuedReply),
+		agentActive: make(map[string]int),
 	}
 }
 
 // start reserves a slot and creates a job for convID. It refuses a second
 // running job for the same conversation and enforces the global/per-user caps.
 // The caller must launch runReply(j, …) and eventually call complete(j).
-func (h *jobHub) start(convID, userID, model string) (*genJob, error) {
+func (h *jobHub) start(convID, userID, model string, agent bool) (*genJob, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if existing, ok := h.jobs[convID]; ok && existing.isRunning() {
 		return nil, errJobRunning
 	}
+	if h.queuedForLocked(convID) {
+		return nil, errJobRunning
+	}
+	return h.startLocked(convID, userID, model, agent)
+}
+
+// queuedForLocked reports whether convID has a waiting agent send. Caller holds h.mu.
+func (h *jobHub) queuedForLocked(convID string) bool {
+	for _, q := range h.queue {
+		for _, e := range q {
+			if e.convID == convID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// startAgent starts an agent job for the user, or queues the reply when that
+// user already has an agent job running. A non-zero pos is the 1-based queue
+// position and j is nil. Caller holds no lock.
+func (h *jobHub) startAgent(convID, userID, model string, spec replySpec) (j *genJob, pos int, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if existing, ok := h.jobs[convID]; ok && existing.isRunning() {
+		return nil, 0, errJobRunning
+	}
+	if h.queuedForLocked(convID) {
+		return nil, 0, errJobRunning
+	}
+	if h.agentActive[userID] > 0 {
+		h.queue[userID] = append(h.queue[userID], &queuedReply{
+			convID: convID, userID: userID, model: model, spec: spec,
+		})
+		return nil, len(h.queue[userID]), nil
+	}
+	j, err = h.startLocked(convID, userID, model, true)
+	return j, 0, err
+}
+
+// startLocked reserves the concurrency slots and creates the job. Caller holds h.mu.
+func (h *jobHub) startLocked(convID, userID, model string, agent bool) (*genJob, error) {
 	select {
 	case h.global <- struct{}{}:
 	default:
@@ -326,17 +421,28 @@ func (h *jobHub) start(convID, userID, model string) (*genJob, error) {
 		return nil, errTooManyJobs
 	}
 	h.perUser[userID]++
+	if agent {
+		h.agentActive[userID]++
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), jobTimeout)
+	timeout := jobTimeout
+	maxSteps := 0
+	if agent {
+		timeout = agentJobTimeout
+		maxSteps = agentMaxSteps
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	j := &genJob{
-		id:     newUUID(),
-		convID: convID,
-		userID: userID,
-		model:  model,
-		ctx:    ctx,
-		cancel: cancel,
-		status: jobRunning,
-		done:   make(chan struct{}),
+		id:       newUUID(),
+		convID:   convID,
+		userID:   userID,
+		model:    model,
+		agent:    agent,
+		ctx:      ctx,
+		cancel:   cancel,
+		status:   jobRunning,
+		maxSteps: maxSteps,
+		done:     make(chan struct{}),
 	}
 	h.jobs[convID] = j
 	return j, nil
@@ -344,8 +450,10 @@ func (h *jobHub) start(convID, userID, model string) (*genJob, error) {
 
 // complete releases the concurrency slot for a finished job and schedules its
 // removal after the grace window (so the snapshot endpoint can still answer a
-// reload that races the terminal frame). Safe to call once per job.
-func (h *jobHub) complete(j *genJob) {
+// reload that races the terminal frame). When an agent job finishes, the user's
+// next queued send is started and returned for the caller to launch. Safe to
+// call once per job.
+func (h *jobHub) complete(j *genJob) (*genJob, replySpec, bool) {
 	h.mu.Lock()
 	select {
 	case <-h.global:
@@ -357,6 +465,20 @@ func (h *jobHub) complete(j *genJob) {
 			delete(h.perUser, j.userID)
 		}
 	}
+	if j.agent && h.agentActive[j.userID] > 0 {
+		h.agentActive[j.userID]--
+		if h.agentActive[j.userID] <= 0 {
+			delete(h.agentActive, j.userID)
+		}
+	}
+	var (
+		next     *genJob
+		nextSpec replySpec
+		ok       bool
+	)
+	if j.agent && !h.closing {
+		next, nextSpec, ok = h.dequeueLocked(j.userID)
+	}
 	h.mu.Unlock()
 	time.AfterFunc(jobGrace, func() {
 		h.mu.Lock()
@@ -365,6 +487,64 @@ func (h *jobHub) complete(j *genJob) {
 		}
 		h.mu.Unlock()
 	})
+	return next, nextSpec, ok
+}
+
+// dequeueLocked pops the user's next queued send and starts it. A send that
+// cannot start (global cap) stays at the head of the queue for the next
+// completion to pick up. Caller holds h.mu.
+func (h *jobHub) dequeueLocked(userID string) (*genJob, replySpec, bool) {
+	q := h.queue[userID]
+	if len(q) == 0 {
+		return nil, replySpec{}, false
+	}
+	j, err := h.startLocked(q[0].convID, q[0].userID, q[0].model, true)
+	if err != nil {
+		return nil, replySpec{}, false
+	}
+	spec := q[0].spec
+	if len(q) > 1 {
+		h.queue[userID] = q[1:]
+	} else {
+		delete(h.queue, userID)
+	}
+	return j, spec, true
+}
+
+// queuedPosition reports the 1-based queue position of a conversation's waiting
+// send, or 0 when it is not queued.
+func (h *jobHub) queuedPosition(convID string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, q := range h.queue {
+		for i, e := range q {
+			if e.convID == convID {
+				return i + 1
+			}
+		}
+	}
+	return 0
+}
+
+// removeQueued drops a conversation's waiting send. It reports whether one was
+// removed.
+func (h *jobHub) removeQueued(convID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for userID, q := range h.queue {
+		for i, e := range q {
+			if e.convID != convID {
+				continue
+			}
+			if len(q) == 1 {
+				delete(h.queue, userID)
+			} else {
+				h.queue[userID] = append(q[:i], q[i+1:]...)
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // get returns the job for a conversation, or nil.
@@ -374,9 +554,12 @@ func (h *jobHub) get(convID string) *genJob {
 	return h.jobs[convID]
 }
 
-// stop cancels the conversation's running job. It reports whether one was
-// running.
+// stop cancels the conversation's running job, or removes its queued send. It
+// reports whether there was anything to stop.
 func (h *jobHub) stop(convID string) bool {
+	if h.removeQueued(convID) {
+		return true
+	}
 	j := h.get(convID)
 	if j == nil || !j.isRunning() {
 		return false
@@ -386,10 +569,12 @@ func (h *jobHub) stop(convID string) bool {
 }
 
 // shutdown cancels every running job and waits (bounded by ctx) for each to
-// unwind. A canceled reply is treated like an explicit stop — partial output is
-// not persisted.
+// unwind. Queued agent sends are dropped, never started, and a canceled reply is
+// treated like an explicit stop (an agent partial is persisted).
 func (h *jobHub) shutdown(ctx context.Context) {
 	h.mu.Lock()
+	h.closing = true
+	h.queue = make(map[string][]*queuedReply)
 	jobs := make([]*genJob, 0, len(h.jobs))
 	for _, j := range h.jobs {
 		if j.isRunning() {
@@ -428,6 +613,20 @@ func (s *Server) handleGetGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 	j := s.hub().get(conv.ID)
 	if j == nil {
+		// A queued agent send has no job yet: report its queue position so a
+		// polling client keeps waiting instead of showing an idle chat.
+		if pos := s.hub().queuedPosition(conv.ID); pos > 0 {
+			writeJSON(w, http.StatusOK, generationSnapshot{
+				ConversationID: conv.ID,
+				Active:         true,
+				Status:         jobQueued,
+				Model:          conv.Model,
+				Agent: &agentProgress{
+					Enabled: true, MaxSteps: agentMaxSteps, Queued: true, QueuePosition: pos,
+				},
+			})
+			return
+		}
 		writeJSON(w, http.StatusOK, generationSnapshot{
 			ConversationID: conv.ID, Active: false, Status: "none",
 		})

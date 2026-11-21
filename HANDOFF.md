@@ -18,7 +18,8 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
   export + admin backup, 5.4 edit & resend, 5.5 pinned chats, 5.6 paste image,
   5.7 background/concurrent generation, 5.8 sandbox file artifacts, 5.9 email
   digest, 5.10 reuse empty draft, 5.11 multiple mailboxes — plus the hardening
-  pass (see `TODO.md` → Phase 5).
+  pass (see `TODO.md` → Phase 5). **5.12 agent mode** is implemented and
+  unit-tested but **not deployed** (`docs/5.12-agent-mode.md`).
 
 ## Live deployment
 
@@ -31,8 +32,9 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 | Tunnel | Cloudflare Tunnel (docker container `cloudflaretunnel`, dashboard-managed) → `http://raspberrypi.local:8787`. Owner manages the CF dashboard. |
 | Repo on Pi | `~/softwares/MyOGChat` (checkout) + `~/softwares/MyOGChat.git` (bare relay — see "Deploy") |
 
-**Deployed commit:** `929a877` (OpenCode Go endpoint/key/catalog migration — see
-"Upstream migration (2026-11-01)"). The sandbox Python image
+**Last deployed commit:** not tracked in this file — read it from the Pi with
+`ssh pi@raspberrypi.local 'cd ~/softwares/MyOGChat && git rev-parse --short HEAD'`.
+The sandbox Python image
 (`myogchat-sandbox-python`, for 5.8 file output) is built on the Pi via
 `deploy/sandbox-setup.sh`.
 
@@ -85,7 +87,7 @@ internal/
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
 deploy/       systemd unit + deploy.sh + sandbox-setup.sh + ocr-setup.sh + ocr/ (Dockerfile) + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.13-vision-ocr.md, 3.2-imap.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, 5-vision.md, 5-search-pin.md, 5-export-edit.md, 5.7-background-generation.md, 5.8-sandbox-artifacts.md, 5.9-email-digest.md, 5.10-reuse-draft.md, 5.11-multi-mailbox.md, 5-hardening.md, research/phase4/
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-providers.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.10-2.11-tool-activity-usage.md, 2.13-vision-ocr.md, 3.1-imagegen.md, 3.2-imap.md, 3.3-calendar.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, SCOPING.md, 5-vision.md, 5-search-pin.md, 5-export-edit.md, 5.7-background-generation.md, 5.8-sandbox-artifacts.md, 5.9-email-digest.md, 5.10-reuse-draft.md, 5.11-multi-mailbox.md, 5-hardening.md, 5.12-agent-mode.md, 6.0-calendar-triggers.md, research/phase4/
 ```
 
 ## Docs index
@@ -96,13 +98,18 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.5-ocr.md, 2.6-2
 - `TODO.md` — roadmap with per-item status
 - `README.md` — user-facing overview
 - `docs/` — `2.2-groups.md`, `2.3-attachments.md`, `2.4-tools.md`,
-  `2.4-search-providers.md`, `2.8-linkwarden.md`, `2.10-2.11-tool-activity-usage.md`,
-  `2.13-vision-ocr.md`, `3.2-imap.md`, `3.4-maps.md`, `3.5-3.6-speech.md`
+  `2.4-search-providers.md`, `2.5-ocr.md`, `2.6-2.7-sandbox.md`,
+  `2.8-linkwarden.md`, `2.9-settings-page.md`,
+  `2.10-2.11-tool-activity-usage.md`, `2.13-vision-ocr.md`, `3.1-imagegen.md`,
+  `3.2-imap.md`, `3.3-calendar.md`, `3.4-maps.md`, `3.5-3.6-speech.md`
 - `docs/PHASE4.md` — Phase 4 plan of record; `docs/research/phase4/` — the 1..5
   research reports behind it
 - `docs/` Phase 5: `5-vision.md`, `5-search-pin.md`, `5-export-edit.md` (shipped),
   `5.7-background-generation.md`, `5.8-sandbox-artifacts.md`, `5.9-email-digest.md`,
-  `5.10-reuse-draft.md`, `5.11-multi-mailbox.md`, `5-hardening.md` (planned)
+  `5.10-reuse-draft.md`, `5.11-multi-mailbox.md`, `5-hardening.md` (shipped),
+  `5.12-agent-mode.md` (implemented, unit-tested, not deployed)
+- `docs/6.0-calendar-triggers.md` — Phase 6, design only (the calendar starts its
+  own conversations)
 
 ## Conventions & hard constraints
 
@@ -152,8 +159,9 @@ scripts/test-user.sh list
 
 ## Testing (UI/UX is a gate — use agent-browser)
 
-`agent-browser` (Vercel Labs CLI) is installed; the **agent-browser skill** is
-registered. Prefer it for all UI testing.
+`agent-browser` (Vercel Labs CLI) is installed here — `ui-test.sh` cannot run
+without it — and the **agent-browser skill** is registered. Prefer it for all UI
+testing.
 
 ```sh
 # FULL isolated run: fresh test DB + seeded admin & test user + server + battery
@@ -168,8 +176,9 @@ scripts/ui-test.sh <BASE_URL> <TEST_USER> <TEST_PASS>
   login, no-overflow, keyboard (composer pinned, no page scroll), sidebar,
   projects, attachments, settings (key + groups), themes, send; as **admin** —
   badge, Users panel, Integrations. Prints PASS/FAIL + saves screenshots to
-  `/tmp/opencode/ui/`. Currently **45/45** locally (mobile); the tunnel run uses
-  `SKIP_ADMIN` (admin pass skipped).
+  `/tmp/opencode/ui/`. The battery is **60 asserts** (one `assert` per check in
+  `scripts/ui-test.sh`); the `edited message resent` assert still fails, so it is
+  not a fully green run. The tunnel run uses `SKIP_ADMIN` (admin pass skipped).
 - The runner uses a **dedicated test DB** (`/tmp/opencode/myogchat-ui.db`) and
   seeds users directly into it — the real DB is never touched. It has a port guard.
 - On the Pi: add a temp account via the CLI, test against the tunnel, then remove it.
@@ -180,7 +189,7 @@ scripts/ui-test.sh <BASE_URL> <TEST_USER> <TEST_PASS>
 approval-gated registration, admin, per-user isolation), mobile visual-viewport
 fix, deploy.
 
-**Phase 2 — 6 of 9 shipped:**
+**Phase 2 — complete (2.1–2.13):**
 
 | # | Item | Status |
 |---|---|---|
@@ -196,7 +205,9 @@ fix, deploy.
 | 2.10 | **Persist tool activity** | ✅ shipped — `messages.tools`; the inline tool block survives a reload |
 | 2.11 | **Usage & quota accounting** | ✅ shipped — `/api/me/usage`, admin all-users view, optional quotas; see `docs/2.10-2.11-tool-activity-usage.md` |
 
-All Phase 2 items (2.1–2.11) are implemented. Provision the host with
+All Phase 2 items (2.1–2.13) are implemented; 2.12 (Serper + Brave `llm/context`, in
+the search chain above) and 2.13 (vision-model OCR) are documented in
+`docs/2.4-search-providers.md` and `docs/2.13-vision-ocr.md`. Provision the host with
 `deploy/sandbox-setup.sh` and `deploy/ocr-setup.sh`.
 Parallelize with git worktrees off `main` (see "Parallel workstreams").
 
@@ -206,7 +217,7 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 (`docs/3.3-calendar.md`), 3.4 keyless OSM maps (`docs/3.4-maps.md`), and
 3.5/3.6 speech STT/TTS (`docs/3.5-3.6-speech.md`).
 
-**Phase 4 — in progress** (plan of record `docs/PHASE4.md`; research reports in
+**Phase 4 — complete** (plan of record `docs/PHASE4.md`; research reports in
 `docs/research/phase4/`):
 
 | # | Item | Status |
@@ -215,7 +226,7 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 | 4.2 | Attachment chips in chat | ✅ done — sent user messages show file type-icon + name + size chips (metadata only; original bytes are **not** stored) |
 | 4.3a | Image prompt enhancement | ✅ done — `POST /api/images/enhance` rewrites a brief into a rich SD-Turbo prompt (LLM via the caller's key, deterministic template fallback with `enhanced:false`); the SPA shows a preview & edit modal before generating |
 | 4.3b | `generate_image` model tool | ✅ done — the model calls `generate_image` mid-conversation; the image is stored owner-scoped and attached to the assistant message (`messages.images`), so it renders in chat and survives a reload. Live-verified: prompt written by the model, PNG served via `GET /api/images/{id}` |
-| 4.4 | Settings IA/UX overhaul | ✅ done — settings categorized (left nav rail ≥768px, horizontal chip bar on mobile) into Account / Appearance / AI & access / Integrations / Tools / Voice / Usage / Users / About; admin web-search block relabelled "Server web search (admin)"; per-user Serper under Integrations → Web search; UI battery 45/45 on mobile |
+| 4.4 | Settings IA/UX overhaul | ✅ done — settings categorized (left nav rail ≥768px, horizontal chip bar on mobile) into Account / Appearance / AI & access / Integrations / Tools / Voice / Usage / Users / About; admin web-search block relabelled "Server web search (admin)"; per-user Serper under Integrations → Web search; UI battery: 60 asserts (`scripts/ui-test.sh`), `edited message resent` still fails |
 | 4.5a | Document extraction | ✅ done — `internal/extract` handles `.docx/.xlsx/.pptx` (OOXML), `.odt/.ods/.odp` (ODF), `.epub`, `.rtf` with the standard library only (no new deps) |
 | 4.5b | Media transcription | ✅ done — audio/video attachments (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) are transcribed via the configured speech-to-text service. **Asynchronous**: the upload returns `202 pending` and a bounded background worker fills in the transcript (so long clips never hit the tunnel timeout); the SPA polls until ready. Live-verified. |
 
@@ -224,8 +235,10 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 - **web_search** now works with zero configuration (DuckDuckGo keyless fallback).
   Tavily/Brave keys (`TAVILY_API_KEY` / `BRAVE_API_KEY`, or the `brave_key` DB
   setting) and a per-user Serper key give higher-quality results; the provider is
-  selectable in Settings → Integrations (`search_provider`). Serper + Brave
-  `llm/context` (2.12) are on branch `feat/search-providers2` (not merged).
+  selectable in Settings → Integrations (`search_provider`). Serper and Brave
+  `llm/context` (2.12) have shipped: Serper is the 4th provider (per-user key,
+  `GET/PUT /api/me/serper`) and `MYOGCHAT_BRAVE_MODE=web|context` switches the
+  existing Brave provider to `llm/context` (`docs/2.4-search-providers.md`).
   `fetch_url` + Linkwarden are independent; **Linkwarden is now per-user**
   (`GET/PUT/DELETE /api/me/linkwarden`, `users.linkwarden_*` columns) with an
   optional `LINKWARDEN_URL`/`LINKWARDEN_TOKEN` env fallback. Operators can set a
@@ -248,6 +261,9 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
   not in the `docker` group on the workstation). Build the image on the Pi with
   `bash deploy/ocr-setup.sh`, then `MYOGCHAT_OCR_LIVE=1 go test ./internal/ocr/
   -run LiveSmoke -v`.
+- **Agent mode (5.12)** is implemented and unit-tested but **not deployed**: no
+  live 60-minute agent run, no live Docker persistent-workspace test, and no
+  `GITHUB_TOKEN` support (private repos cannot be cloned).
 - **Usage/quota accounting** (2.11) is implemented: per-user token/cost view
   (`GET /api/me/usage`), admin all-users view, and optional admin quotas
   (`daily_token_limit` / `monthly_cost_limit`, 0 = off) with per-user overrides.
@@ -295,10 +311,14 @@ After each merge: `go build/vet/test` + `node --check static/app.js` + run
 
 ## Immediate next steps
 
-1. (Optional) Add `TAVILY_API_KEY` to the Pi env to enable web search.
+1. Web search works out of the box: with no key it falls back to the keyless
+   DuckDuckGo backend. `TAVILY_API_KEY`, `BRAVE_API_KEY` / a per-user Serper key
+   only improve result quality — see `docs/2.4-search-providers.md`.
 2. (Done) **2.5 OCR** — run `bash deploy/ocr-setup.sh` on the Pi (Docker) and restart.
 3. (Done) **2.7 bash sandbox** + **2.6 python sandbox** — run
-   `deploy/sandbox-setup.sh` on the Pi to create the network and pull
-   `bash:5.3` / `python:3.14-slim`; optional `sudo … --harden` blocks LAN egress.
+   `deploy/sandbox-setup.sh` on the Pi to create the network and build the local
+   `myogchat-sandbox-bash` / `myogchat-sandbox-python` images (the `bash:5.3` /
+   `python:3.14-slim` bases are pulled; it always rebuilds); optional
+   `sudo … --harden` blocks LAN egress.
 4. (Done) **2.9 settings page** — `#/settings` replaces the modal.
 5. Keep `API_CONTRACT.md` / `TODO.md` current; add a `docs/2.x-*.md` per feature.

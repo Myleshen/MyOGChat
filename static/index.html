@@ -253,6 +253,18 @@
               <path d="M21 16l-5-5L5 20"/>
             </svg>
           </button>
+          <!-- Agent mode (long-running jobs) — per-conversation toggle. -->
+          <button id="agent-btn" class="icon-btn agent-btn" type="button"
+                  aria-pressed="false" aria-label="Agent mode" aria-describedby="agent-hint"
+                  title="Turn on agent mode">
+            <svg class="agent-btn-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+                 aria-hidden="true">
+              <path d="M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7z"/>
+              <path d="M18 14.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>
+            </svg>
+            <span class="agent-btn-label">Agent</span>
+          </button>
           <textarea id="input" rows="1" placeholder="Message MyOGChat…"
                     enterkeyhint="send" autocomplete="off"></textarea>
           <button id="mic-btn" class="icon-btn mic-btn" type="button" hidden
@@ -276,6 +288,7 @@
             </svg>
           </button>
         </div>
+        <p id="agent-hint" class="agent-hint" aria-live="polite" hidden>Long jobs, files persist between steps</p>
         <input id="file-input" class="visually-hidden" type="file" multiple>
         <input id="audio-input" class="visually-hidden" type="file" accept="audio/*">
       </form>
@@ -440,6 +453,18 @@
           update, and delete events.
         </p>
         <p id="calendar-status" class="settings-subtitle-sm">Calendar: loading…</p>
+
+        <!-- Default calendar (connected accounts only). CalDAV gets a picker;
+             ICS feeds are single and read-only, so they render as plain text. -->
+        <div id="calendar-default" hidden>
+          <label class="field" id="calendar-default-field">
+            <span class="field-label">Default calendar</span>
+            <select id="calendar-default-select"></select>
+          </label>
+          <p id="calendar-default-static" class="settings-subtitle-sm" hidden></p>
+          <p id="calendar-default-hint" class="settings-subtitle-sm" aria-live="polite" hidden></p>
+          <button type="button" id="calendar-default-retry" class="btn btn-ghost" hidden>Retry</button>
+        </div>
 
         <label class="field">
           <span class="field-label">Type</span>
@@ -656,6 +681,31 @@
         <p id="sandbox-status" class="settings-subtitle-sm">Sandbox: loading…</p>
       </section>
       <!-- ==== END code-sandbox tools section ==== -->
+
+      <!-- ==== BEGIN agent mode (3.x) — self-contained, safe to relocate ==== -->
+      <!-- Long-running agent jobs with per-conversation files. The server-wide
+           toggle is admin-only; the workspace list is per-user. -->
+      <section id="agent-section" class="settings-section settings-agent">
+        <h2 class="settings-heading">Agent</h2>
+        <p class="settings-subtitle-sm">
+          Agent mode lets one reply keep working on a job: up to 60 minutes per
+          job and 10 minutes per tool call. Files it saves stay with the chat —
+          up to 5 GB per user, deleted after 7 days idle.
+        </p>
+        <div id="agent-admin-block" hidden>
+          <label class="setting-toggle">
+            <span>Enable agent mode (server-wide)</span>
+            <input type="checkbox" id="setting-agent-enabled">
+          </label>
+          <p id="agent-status" class="settings-subtitle-sm">Agent: loading…</p>
+        </div>
+        <p class="settings-subtitle settings-subtitle-sm">Saved files</p>
+        <ul id="agent-workspaces" class="agent-workspaces"></ul>
+        <p id="agent-workspaces-empty" class="nav-empty" hidden>No saved agent files yet.</p>
+        <p id="agent-workspaces-error" class="login-error" role="alert" hidden></p>
+        <p id="agent-usage" class="settings-subtitle-sm"></p>
+      </section>
+      <!-- ==== END agent mode ==== -->
 
       <!-- ===== Image OCR (feature 2.5) — self-contained block; safe to relocate ===== -->
       <section id="ocr-section" class="settings-section settings-ocr" hidden>

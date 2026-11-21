@@ -53,28 +53,60 @@ func newCalDAV(cfg Config) (*caldavBackend, error) {
 	if base.Host == "" {
 		return nil, fmt.Errorf("calendar server url has no host")
 	}
-	base.Path = strings.TrimRight(base.Path, "/")
+	base.Path = ensureTrailingSlash(base.Path)
 	base.RawQuery = ""
 	base.Fragment = ""
 	endpoint := base.String()
 
-	hc := &http.Client{Timeout: caldavTimeout}
-	authClient := webdav.HTTPClientWithBasicAuth(hc, cfg.Username, cfg.Password)
-	client, err := caldav.NewClient(authClient, endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("caldav client: %w", err)
+	// CalendarPath is the explicit collection; CalendarID is the shared
+	// "default calendar" field, which for CalDAV is the collection path too.
+	calendarPath := normalizeCollectionPath(cfg.CalendarPath)
+	if calendarPath == "" {
+		calendarPath = normalizeCollectionPath(cfg.CalendarID)
 	}
+
+	hc := &http.Client{Timeout: caldavTimeout}
 	b := &caldavBackend{
 		username:     cfg.Username,
 		password:     cfg.Password,
 		endpoint:     endpoint,
-		calendarPath: normalizeCollectionPath(cfg.CalendarPath),
+		calendarPath: calendarPath,
 		homeSet:      normalizeCollectionPath(cfg.HomeSet),
 		base:         base,
 		hc:           hc,
-		client:       client,
 	}
+	client, err := b.newClient(base.Path)
+	if err != nil {
+		return nil, fmt.Errorf("caldav client: %w", err)
+	}
+	b.client = client
 	return b, nil
+}
+
+// collectionSlashClient restores the trailing slash on requests that address
+// the collection base itself: go-webdav resolves relative paths with path.Join,
+// which drops it, and a collection PROPFIND without the slash returns nothing.
+type collectionSlashClient struct {
+	collection string // base path without its trailing slash ("" for a host root)
+	inner      webdav.HTTPClient
+}
+
+func (c collectionSlashClient) Do(req *http.Request) (*http.Response, error) {
+	if c.collection != "" && req.URL.Path == c.collection {
+		req.URL.Path += "/"
+		req.URL.RawPath = ""
+	}
+	return c.inner.Do(req)
+}
+
+// newClient builds the go-webdav client for the endpoint and base path.
+func (b *caldavBackend) newClient(basePath string) (*caldav.Client, error) {
+	auth := webdav.HTTPClientWithBasicAuth(b.hc, b.username, b.password)
+	transport := collectionSlashClient{
+		collection: strings.TrimSuffix(basePath, "/"),
+		inner:      auth,
+	}
+	return caldav.NewClient(transport, b.endpoint)
 }
 
 // Writable reports true: CalDAV supports create/update/delete.
@@ -93,6 +125,15 @@ func normalizeCollectionPath(p string) string {
 		p += "/"
 	}
 	return p
+}
+
+// ensureTrailingSlash keeps collection semantics on a URL path: only a path
+// ending in "/" is the collection itself, per RFC 6764/4918.
+func ensureTrailingSlash(p string) string {
+	if p == "" || strings.HasSuffix(p, "/") {
+		return p
+	}
+	return p + "/"
 }
 
 // resolveEndpoint follows the RFC 6764 /.well-known/caldav redirect to find the
@@ -127,13 +168,15 @@ func (b *caldavBackend) resolveEndpoint(ctx context.Context) string {
 		return b.endpoint
 	}
 	resolved := b.base.ResolveReference(u)
+	resolved.Path = ensureTrailingSlash(resolved.Path)
 	resolved.RawQuery = ""
 	resolved.Fragment = ""
-	return strings.TrimRight(resolved.String(), "/")
+	return resolved.String()
 }
 
 // discover resolves the principal, calendar-home-set, and available calendars,
-// caching them on the backend. It is a no-op when already resolved.
+// caching them on the backend. It is a no-op when already resolved. The
+// first-calendar fallback only applies when no default collection is known.
 func (b *caldavBackend) discover(ctx context.Context) error {
 	if b.homeSet != "" && b.calendarPath != "" {
 		return nil
@@ -141,10 +184,12 @@ func (b *caldavBackend) discover(ctx context.Context) error {
 	// Re-point the client at the well-known context URL if one exists.
 	if resolved := b.resolveEndpoint(ctx); resolved != b.endpoint {
 		b.endpoint = resolved
-		if u, err := url.Parse(resolved); err == nil {
-			b.base = u
+		u, err := url.Parse(resolved)
+		if err != nil {
+			return err
 		}
-		client, err := caldav.NewClient(webdav.HTTPClientWithBasicAuth(b.hc, b.username, b.password), resolved)
+		b.base = u
+		client, err := b.newClient(u.Path)
 		if err != nil {
 			return err
 		}

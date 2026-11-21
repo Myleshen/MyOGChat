@@ -905,6 +905,48 @@ button { font: inherit; }
 }
 /* ===== end image generation ===== */
 
+/* ===== Agent mode — composer chip + live progress caption (self-contained) ===== */
+.agent-btn {
+  flex-shrink: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.agent-btn-icon { display: none; }
+/* "On" is a filled accent chip (white on accent: 5.2:1 light, 4.6:1 dark) so
+   the state reads without the label and clears AA. */
+.agent-btn[aria-pressed="true"] {
+  color: #fff;
+  border-color: var(--accent-em);
+  background: var(--accent-em);
+}
+.agent-btn:disabled { opacity: 0.5; cursor: default; }
+.agent-hint {
+  margin: 0;
+  padding: 4px 4px 0;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+/* Phones: the composer row is crowded, so the chip drops its label and becomes
+   a 44px icon button. The tighter gap + padding keep the message field usable
+   (412px viewport: 113px of field before, 156px after). */
+@media (max-width: 640px) {
+  .composer { padding-left: 8px; padding-right: 8px; }
+  .composer-row { gap: 4px; }
+  .agent-btn { padding: 8px; border-radius: 50%; }
+  .agent-btn-icon { display: block; }
+  .agent-btn-label { display: none; }
+}
+.agent-caption {
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+/* ===== end Agent mode ===== */
+
 /* Attachment chips inside a sent user message (metadata only) */
 .msg-attachments {
   display: flex;
@@ -944,6 +986,13 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
 }
 .composer textarea:focus { outline: none; border-color: var(--accent); }
 .composer textarea:disabled { opacity: 0.6; }
+/* The placeholder is one line in a one-line pill: truncate instead of wrapping
+   (a wrapped placeholder used to be half hidden and inflated scrollHeight). */
+.composer textarea::placeholder {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
 
 .send-btn {
   flex-shrink: 0;
@@ -1414,6 +1463,43 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
 
 .settings-ocr { display: flex; flex-direction: column; gap: 12px; }
 
+/* ---------- Settings: Agent mode ---------- */
+
+.settings-agent { display: flex; flex-direction: column; gap: 12px; }
+.agent-workspaces {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agent-workspace {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.agent-workspace-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.agent-workspace-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-workspace-meta { color: var(--text-dim); font-size: 0.78rem; }
+.agent-workspace-delete { flex-shrink: 0; }
+
 /* ---------- Settings: Usage & quotas (2.11) ---------- */
 
 .settings-usage { display: flex; flex-direction: column; gap: 12px; }
@@ -1677,7 +1763,8 @@ body.modal-open { overflow: hidden; }
 @media (hover: none), (pointer: coarse) {
   .msg-action,
   .msg-edit-actions .btn,
-  .menu-item {
+  .menu-item,
+  .agent-workspace-delete {
     min-height: 44px;
   }
 }

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 )
 
@@ -94,6 +95,13 @@ func skipArtifactFile(name string) bool {
 //
 // Files are returned in a deterministic (walk) order so tests are stable.
 func harvest(dir string, cfg Config) []Artifact {
+	return harvestSince(dir, cfg, time.Time{})
+}
+
+// harvestSince is harvest restricted to files modified at or after since. A
+// persistent agent workspace is reused across calls, so only the files this
+// call produced are harvested; the zero time harvests everything (ephemeral).
+func harvestSince(dir string, cfg Config, since time.Time) []Artifact {
 	if dir == "" {
 		return nil
 	}
@@ -118,6 +126,12 @@ func harvest(dir string, cfg Config) []Artifact {
 			}
 			if skipArtifactFile(d.Name()) {
 				return nil
+			}
+			if !since.IsZero() {
+				info, err := d.Info()
+				if err != nil || info.ModTime().Before(since) {
+					return nil
+				}
 			}
 			if len(out) >= cfg.MaxFiles {
 				return fs.SkipAll

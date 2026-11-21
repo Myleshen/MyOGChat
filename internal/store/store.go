@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   model      TEXT NOT NULL,
   effort     TEXT,
   pinned     INTEGER NOT NULL DEFAULT 0,
+  agent_mode INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -116,7 +117,8 @@ CREATE TABLE IF NOT EXISTS calendar_accounts (
   calendar_id   TEXT,               -- default CalDAV collection path / ICS label
   username      TEXT,               -- CalDAV username (not secret)
   credential    TEXT,               -- encrypted blob: CalDAV password / ICS URL
-  endpoint      TEXT,               -- CalDAV server URL / cached home set
+  endpoint      TEXT,               -- resolved CalDAV server URL
+  home_set      TEXT,               -- cached CalDAV calendar-home-set
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -194,8 +196,11 @@ type Conversation struct {
 	Effort    *string `json:"effort"`
 	ProjectID *string `json:"project_id"`
 	Pinned    bool    `json:"pinned"`
-	CreatedAt int64   `json:"created_at"`
-	UpdatedAt int64   `json:"updated_at"`
+	// AgentMode gives the chat a persistent sandbox workspace, a longer job
+	// budget and one-at-a-time-per-user scheduling.
+	AgentMode bool  `json:"agent_mode"`
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
 }
 
 // ConversationHit is one search result (feature A): a conversation that
@@ -442,6 +447,10 @@ func (s *Store) migrate() error {
 		{"attachments", "error", `ALTER TABLE attachments ADD COLUMN error TEXT`},
 		// Pinned chats (feature B): additive, defaults to unpinned.
 		{"conversations", "pinned", `ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`},
+		// Per-conversation agent mode: additive, existing chats stay normal.
+		{"conversations", "agent_mode", `ALTER TABLE conversations ADD COLUMN agent_mode INTEGER NOT NULL DEFAULT 0`},
+		// Calendar discovery cache (3.3): lets tool calls skip PROPFINDs.
+		{"calendar_accounts", "home_set", `ALTER TABLE calendar_accounts ADD COLUMN home_set TEXT`},
 	}
 	cache := map[string]map[string]bool{}
 	for _, st := range steps {
@@ -814,28 +823,30 @@ func (s *Store) EnsureSetting(ctx context.Context, key, def string) (string, err
 
 // ---------- conversations ----------
 
-const conversationCols = "id, user_id, title, model, effort, project_id, pinned, created_at, updated_at"
+const conversationCols = "id, user_id, title, model, effort, project_id, pinned, agent_mode, created_at, updated_at"
 
 func scanConversation(sc scanner) (Conversation, error) {
 	var c Conversation
 	var userID, effort, project sql.NullString
-	var pinned int
-	if err := sc.Scan(&c.ID, &userID, &c.Title, &c.Model, &effort, &project, &pinned, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	var pinned, agent int
+	if err := sc.Scan(&c.ID, &userID, &c.Title, &c.Model, &effort, &project, &pinned, &agent, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return Conversation{}, err
 	}
 	c.UserID = optString(userID)
 	c.Effort = optString(effort)
 	c.ProjectID = optString(project)
 	c.Pinned = pinned != 0
+	c.AgentMode = agent != 0
 	return c, nil
 }
 
 // InsertConversation inserts a new conversation row for its owner.
 func (s *Store) InsertConversation(ctx context.Context, c *Conversation) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO conversations (id, user_id, title, model, effort, project_id, pinned, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, nullString(c.UserID), c.Title, c.Model, nullString(c.Effort), nullString(c.ProjectID), boolToInt(c.Pinned), c.CreatedAt, c.UpdatedAt)
+		`INSERT INTO conversations (id, user_id, title, model, effort, project_id, pinned, agent_mode, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, nullString(c.UserID), c.Title, c.Model, nullString(c.Effort), nullString(c.ProjectID),
+		boolToInt(c.Pinned), boolToInt(c.AgentMode), c.CreatedAt, c.UpdatedAt)
 	return err
 }
 
@@ -854,6 +865,26 @@ func (s *Store) GetConversation(ctx context.Context, id, userID string) (Convers
 func (s *Store) ListConversations(ctx context.Context, userID string) ([]Conversation, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+conversationCols+` FROM conversations WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	convs := make([]Conversation, 0)
+	for rows.Next() {
+		c, err := scanConversation(rows)
+		if err != nil {
+			return nil, err
+		}
+		convs = append(convs, c)
+	}
+	return convs, rows.Err()
+}
+
+// ListAgentConversations returns the user's agent-mode conversations (used by
+// the workspace-management endpoint).
+func (s *Store) ListAgentConversations(ctx context.Context, userID string) ([]Conversation, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+conversationCols+` FROM conversations WHERE user_id = ? AND agent_mode = 1 ORDER BY updated_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1011,9 +1042,9 @@ func makeSnippet(content, query string, width int) string {
 // UpdateConversation updates a conversation's mutable fields (owner-guarded).
 func (s *Store) UpdateConversation(ctx context.Context, c *Conversation) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE conversations SET title = ?, model = ?, effort = ?, project_id = ?, updated_at = ?
+		`UPDATE conversations SET title = ?, model = ?, effort = ?, project_id = ?, agent_mode = ?, updated_at = ?
 		 WHERE id = ? AND user_id = ?`,
-		c.Title, c.Model, nullString(c.Effort), nullString(c.ProjectID), c.UpdatedAt, c.ID, nullString(c.UserID))
+		c.Title, c.Model, nullString(c.Effort), nullString(c.ProjectID), boolToInt(c.AgentMode), c.UpdatedAt, c.ID, nullString(c.UserID))
 	return err
 }
 
@@ -1864,16 +1895,17 @@ type CalendarAccount struct {
 	Username      string `json:"username,omitempty"`
 	CredentialEnc string `json:"-"`
 	Endpoint      string `json:"endpoint,omitempty"`
+	HomeSet       string `json:"-"`
 	CreatedAt     int64  `json:"created_at"`
 	UpdatedAt     int64  `json:"updated_at"`
 }
 
-const calendarAccountCols = "id, user_id, kind, provider, calendar_id, username, credential, endpoint, created_at, updated_at"
+const calendarAccountCols = "id, user_id, kind, provider, calendar_id, username, credential, endpoint, home_set, created_at, updated_at"
 
 func scanCalendarAccount(sc scanner) (CalendarAccount, error) {
 	var a CalendarAccount
-	var provider, calendarID, username, credential, endpoint sql.NullString
-	if err := sc.Scan(&a.ID, &a.UserID, &a.Kind, &provider, &calendarID, &username, &credential, &endpoint, &a.CreatedAt, &a.UpdatedAt); err != nil {
+	var provider, calendarID, username, credential, endpoint, homeSet sql.NullString
+	if err := sc.Scan(&a.ID, &a.UserID, &a.Kind, &provider, &calendarID, &username, &credential, &endpoint, &homeSet, &a.CreatedAt, &a.UpdatedAt); err != nil {
 		return CalendarAccount{}, err
 	}
 	a.Provider = strOr(provider)
@@ -1881,6 +1913,7 @@ func scanCalendarAccount(sc scanner) (CalendarAccount, error) {
 	a.Username = strOr(username)
 	a.CredentialEnc = strOr(credential)
 	a.Endpoint = strOr(endpoint)
+	a.HomeSet = strOr(homeSet)
 	return a, nil
 }
 
@@ -2136,7 +2169,7 @@ func (s *Store) DeleteMailAccount(ctx context.Context, userID, id string) error 
 func (s *Store) UpsertCalendarAccount(ctx context.Context, a *CalendarAccount) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO calendar_accounts (`+calendarAccountCols+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id) DO UPDATE SET
 		   kind = excluded.kind,
 		   provider = excluded.provider,
@@ -2144,10 +2177,11 @@ func (s *Store) UpsertCalendarAccount(ctx context.Context, a *CalendarAccount) e
 		   username = excluded.username,
 		   credential = excluded.credential,
 		   endpoint = excluded.endpoint,
+		   home_set = excluded.home_set,
 		   updated_at = excluded.updated_at`,
 		a.ID, a.UserID, a.Kind, nullString(&a.Provider), nullString(&a.CalendarID),
 		nullString(&a.Username), nullString(&a.CredentialEnc), nullString(&a.Endpoint),
-		a.CreatedAt, a.UpdatedAt)
+		nullString(&a.HomeSet), a.CreatedAt, a.UpdatedAt)
 	return err
 }
 
@@ -2210,6 +2244,24 @@ func (s *Store) GetArtifact(ctx context.Context, id, userID string) (Artifact, e
 		return Artifact{}, ErrNotFound
 	}
 	return a, err
+}
+
+// ArtifactRefBySHA finds an artifact already stored for a conversation with the
+// same content hash, so an agent loop that re-produces a file every call does
+// not store it again. ok is false when no row matches.
+func (s *Store) ArtifactRefBySHA(ctx context.Context, conversationID, sha string) (ArtifactRef, bool, error) {
+	var ref ArtifactRef
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, mime, size FROM artifacts
+		  WHERE conversation_id = ? AND sha256 = ? ORDER BY created_at ASC LIMIT 1`,
+		conversationID, sha).Scan(&ref.ID, &ref.Name, &ref.Mime, &ref.Size)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ArtifactRef{}, false, nil
+	}
+	if err != nil {
+		return ArtifactRef{}, false, err
+	}
+	return ref, true, nil
 }
 
 // DeleteArtifact removes an owner's artifact. It returns the number of rows

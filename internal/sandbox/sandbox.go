@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -38,7 +39,7 @@ const (
 const (
 	DefaultDocker      = "/usr/bin/docker"
 	DefaultNetwork     = "myogchat-sbx"
-	DefaultBashImage   = "bash:5.3"
+	DefaultBashImage   = "myogchat-sandbox-bash"
 	DefaultPythonImage = "myogchat-sandbox-python"
 	DefaultMemory      = "256m"
 	DefaultCPUs        = "1"
@@ -57,9 +58,26 @@ const (
 	DefaultFileSizeLimit = "10485760:10485760" // docker --ulimit fsize soft:hard
 	DefaultWorkDirName   = "myogchat/sandbox"  // under ~/.local/share
 
+	// Agent mode uses a persistent workspace, so its per-file cap is much
+	// larger than an ephemeral run's, and the whole user tree is quota'd.
+	DefaultAgentFileSizeLimit = "2g:2g"
+	DefaultAgentQuotaBytes    = 5 << 30 // 5 GiB
+
+	// AgentWorkspaceDirName is the subdirectory of WorkDir that holds
+	// persistent agent workspaces (<WorkDir>/agent/<userID>/<convID>).
+	AgentWorkspaceDirName = "agent"
+
+	// AgentWorkspaceMaxAge bounds how long an idle conversation workspace may
+	// survive before the hourly sweep removes it.
+	AgentWorkspaceMaxAge = 7 * 24 * time.Hour
+
 	// workspaceMaxAge bounds how long a crashed run's workspace may survive
 	// before the startup/hourly sweep removes it. Real runs are <= Timeout.
 	workspaceMaxAge = time.Hour
+
+	// quotaCacheTTL bounds how often the quota tree is walked; a 60-minute
+	// agent run would otherwise re-walk gigabytes on every tool call.
+	quotaCacheTTL = 60 * time.Second
 
 	// LabelKey/Value tag every sandbox container so leaked containers can be
 	// cleaned up with `docker rm -f $(docker ps -aq --filter label=...)`.
@@ -94,6 +112,9 @@ var (
 	// ErrTimeout means the container exceeded the per-call wall-clock limit and
 	// was force-removed.
 	ErrTimeout = errors.New("sandbox execution timed out")
+	// ErrQuotaExceeded means the agent workspace tree is at or over its disk
+	// quota, so the call was refused before anything ran.
+	ErrQuotaExceeded = errors.New("agent workspace quota exceeded")
 )
 
 // Config holds the hardened container parameters.
@@ -111,10 +132,13 @@ type Config struct {
 	MaxOutput   int           // max characters of stdout+stderr returned
 	// Workspace + artifact harvest (5.8).
 	WorkDir       string // host directory root for per-run workspaces (never /tmp)
-	FileSizeLimit string // docker --ulimit fsize= value (soft:hard)
+	FileSizeLimit string // docker --ulimit fsize= value for ephemeral runs (soft:hard)
 	MaxFileSize   int64  // per-file harvest cap (bytes)
 	MaxTotalSize  int64  // total harvest cap (bytes)
 	MaxFiles      int    // max harvested files per run
+	// Agent mode: persistent workspaces are much larger than ephemeral ones.
+	AgentFileSizeLimit string // docker --ulimit fsize= value for persistent runs
+	AgentQuotaBytes    int64  // default per-user workspace quota (0 = no check)
 }
 
 // DefaultConfig returns the built-in defaults.
@@ -137,6 +161,9 @@ func DefaultConfig() Config {
 		MaxFileSize:   DefaultMaxFileSize,
 		MaxTotalSize:  DefaultMaxTotalSize,
 		MaxFiles:      DefaultMaxFiles,
+
+		AgentFileSizeLimit: DefaultAgentFileSizeLimit,
+		AgentQuotaBytes:    DefaultAgentQuotaBytes,
 	}
 }
 
@@ -144,7 +171,7 @@ func DefaultConfig() Config {
 //
 //	MYOGCHAT_DOCKER               docker CLI path (default /usr/bin/docker, else LookPath)
 //	MYOGCHAT_SANDBOX_NETWORK      network name (default myogchat-sbx)
-//	MYOGCHAT_SANDBOX_IMAGE_BASH   bash image (default bash:5.3)
+//	MYOGCHAT_SANDBOX_IMAGE_BASH   bash image (default myogchat-sandbox-bash)
 //	MYOGCHAT_SANDBOX_IMAGE_PYTHON python image (default myogchat-sandbox-python)
 //	MYOGCHAT_SANDBOX_MEMORY       memory limit (default 256m)
 //	MYOGCHAT_SANDBOX_CPUS         CPU limit (default 1)
@@ -152,6 +179,8 @@ func DefaultConfig() Config {
 //	MYOGCHAT_SANDBOX_MAX_OUTPUT   characters (default 100000)
 //	MYOGCHAT_SANDBOX_WORKDIR      host root for per-run workspaces (default
 //	                              ~/.local/share/myogchat/sandbox)
+//	MYOGCHAT_AGENT_QUOTA_BYTES    per-user agent workspace quota in bytes
+//	                              (default 5368709120, i.e. 5 GiB; 0 disables)
 func ConfigFromEnv() Config {
 	c := DefaultConfig()
 	c.Docker = resolveDocker(os.Getenv("MYOGCHAT_DOCKER"))
@@ -182,6 +211,11 @@ func ConfigFromEnv() Config {
 	}
 	if v := os.Getenv("MYOGCHAT_SANDBOX_WORKDIR"); v != "" {
 		c.WorkDir = v
+	}
+	if v := os.Getenv("MYOGCHAT_AGENT_QUOTA_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			c.AgentQuotaBytes = n
+		}
 	}
 	return c
 }
@@ -238,6 +272,17 @@ func resolveWorkDir(explicit string) string {
 type Spec struct {
 	Language string // LanguageBash or LanguagePython
 	Code     string // fed to the interpreter on stdin
+	// Workspace is an absolute host directory bind-mounted at /work and kept
+	// after the call (agent mode). Empty means a fresh per-run directory that is
+	// removed afterwards (today's ephemeral behaviour).
+	Workspace string
+	// QuotaDir is the user-level directory measured against QuotaBytes before a
+	// call runs. Empty means no quota check.
+	QuotaDir string
+	// QuotaBytes is the disk limit for QuotaDir; 0 disables the check.
+	QuotaBytes int64
+	// Timeout overrides Config.Timeout for this call only; 0 uses the config.
+	Timeout time.Duration
 }
 
 // Result is the outcome of a sandboxed run.
@@ -266,7 +311,7 @@ type Artifact struct {
 // so the runner is unit-testable without Docker.
 type ExecFunc func(ctx context.Context, name string, args []string, stdin []byte) (stdout, stderr []byte, err error)
 
-// Runner executes code in ephemeral sandbox containers.
+// Runner executes code in sandbox containers.
 type Runner struct {
 	cfg  Config
 	exec ExecFunc
@@ -275,11 +320,20 @@ type Runner struct {
 	probeOK  bool
 	probeAt  time.Time
 	netReady bool
+
+	quotaMu sync.Mutex
+	quota   map[string]quotaEntry // QuotaDir -> last measurement
+}
+
+// quotaEntry is one cached DirSize result.
+type quotaEntry struct {
+	size int64
+	at   time.Time
 }
 
 // NewRunner returns a Runner using the real os/exec executor.
 func NewRunner(cfg Config) *Runner {
-	return &Runner{cfg: cfg, exec: osExec}
+	return &Runner{cfg: cfg, exec: osExec(captureLimit(cfg.MaxOutput))}
 }
 
 // NewRunnerWithExec returns a Runner using a custom executor (tests).
@@ -293,17 +347,55 @@ func (r *Runner) Config() Config { return r.cfg }
 // Docker returns the docker CLI path in use (for status display).
 func (r *Runner) Docker() string { return r.cfg.Docker }
 
-// osExec is the default ExecFunc: exec.CommandContext with piped stdin/stdout.
-func osExec(ctx context.Context, name string, args []string, stdin []byte) ([]byte, []byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
+// captureLimit is the raw per-stream capture cap: four times the returned
+// budget so truncate still has something to clip to MaxOutput.
+func captureLimit(maxOutput int) int {
+	if maxOutput <= 0 {
+		return 0 // unbounded (MaxOutput disables truncation)
 	}
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	err := cmd.Run()
-	return out.Bytes(), errb.Bytes(), err
+	return maxOutput * 4
+}
+
+// limitedBuf is a bytes.Buffer that stops storing after limit bytes, so a
+// chatty script cannot exhaust the Pi's RAM before truncation. Writes past the
+// limit are discarded and still report full length, so the child never blocks
+// on a full pipe. limit <= 0 is unbounded.
+type limitedBuf struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *limitedBuf) Write(p []byte) (int, error) {
+	n := len(p)
+	if w.limit > 0 {
+		if room := w.limit - w.buf.Len(); room < n {
+			if room < 0 {
+				room = 0
+			}
+			p = p[:room]
+			w.truncated = true
+		}
+	}
+	_, _ = w.buf.Write(p)
+	return n, nil
+}
+
+// osExec returns the default ExecFunc: exec.CommandContext with piped
+// stdin/stdout, capturing at most maxBytes per stream.
+func osExec(maxBytes int) ExecFunc {
+	return func(ctx context.Context, name string, args []string, stdin []byte) ([]byte, []byte, error) {
+		cmd := exec.CommandContext(ctx, name, args...)
+		if stdin != nil {
+			cmd.Stdin = bytes.NewReader(stdin)
+		}
+		out := &limitedBuf{limit: maxBytes}
+		errb := &limitedBuf{limit: maxBytes}
+		cmd.Stdout = out
+		cmd.Stderr = errb
+		err := cmd.Run()
+		return out.buf.Bytes(), errb.buf.Bytes(), err
+	}
 }
 
 // Available reports whether the Docker daemon is reachable. The result is cached
@@ -340,22 +432,57 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
 	if strings.TrimSpace(spec.Code) == "" {
 		return Result{}, errors.New("code is required")
 	}
+	if spec.QuotaBytes > 0 && spec.QuotaDir != "" {
+		if err := r.checkQuota(spec); err != nil {
+			return Result{}, err
+		}
+	}
 	if err := r.ensureNetwork(ctx); err != nil {
 		return Result{}, err
 	}
 
-	name := r.containerName()
-	runDir, cleanupDir, err := r.prepareWorkspace(name)
-	if err != nil {
-		return Result{}, err
+	timeout := spec.Timeout
+	if timeout <= 0 {
+		timeout = r.cfg.Timeout
 	}
-	defer cleanupDir()
-	args := r.runArgs(image, command, name, runDir)
+	fileSizeLimit := r.cfg.FileSizeLimit
+	if spec.Workspace != "" {
+		fileSizeLimit = r.cfg.AgentFileSizeLimit
+	}
 
-	runCtx, cancel := context.WithTimeout(ctx, r.cfg.Timeout)
+	name := r.containerName()
+	var (
+		runDir string
+		since  time.Time // persistent workspaces harvest only this call's files
+	)
+	if spec.Workspace != "" {
+		runDir = spec.Workspace
+		// Keep the workspace root 0700 like the ephemeral root, so unrelated
+		// local users cannot enumerate persisted conversation files.
+		if err := os.MkdirAll(r.cfg.WorkDir, 0o700); err != nil {
+			return Result{}, fmt.Errorf("create sandbox workdir: %w", err)
+		}
+		if err := preparePersistentWorkspace(runDir); err != nil {
+			return Result{}, err
+		}
+	} else {
+		var cleanupDir func()
+		var err error
+		runDir, cleanupDir, err = r.prepareWorkspace(name)
+		if err != nil {
+			return Result{}, err
+		}
+		defer cleanupDir()
+	}
+	args := r.runArgs(image, command, name, runDir, fileSizeLimit)
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	start := time.Now()
+	if spec.Workspace != "" {
+		since = start.Add(-time.Second)
+	}
 	stdout, stderr, execErr := r.exec(runCtx, r.cfg.Docker, args, []byte(spec.Code))
 	res := Result{
 		Stdout:   string(stdout),
@@ -365,14 +492,14 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
 	// Harvest the workspace before the container is force-removed and before the
 	// deferred RemoveAll. The harvest never follows symlinks and enforces the
 	// per-file/count/total caps (5.8).
-	res.Artifacts = harvest(runDir, r.cfg)
+	res.Artifacts = harvestSince(runDir, r.cfg, since)
 	res.Truncated = r.truncate(&res)
 
 	// Timeout: the container must not leak, so force-remove it by name.
 	if runCtx.Err() == context.DeadlineExceeded {
 		res.TimedOut = true
 		r.cleanup(name)
-		return res, fmt.Errorf("%w after %s", ErrTimeout, r.cfg.Timeout)
+		return res, fmt.Errorf("%w after %s", ErrTimeout, timeout)
 	}
 	// Caller cancelled (e.g. client disconnect): also remove the container.
 	if ctx.Err() != nil {
@@ -434,9 +561,37 @@ func (r *Runner) prepareWorkspace(name string) (string, func(), error) {
 	return runDir, func() { _ = os.RemoveAll(runDir) }, nil
 }
 
+// preparePersistentWorkspace makes an agent workspace writable by the container
+// user and touches its mtime, so the idle sweep sees recent use. It is never
+// removed here: the directory belongs to the conversation. Intermediate
+// directories are traverse-only (0711), keeping the 0700 WorkDir invariant.
+func preparePersistentWorkspace(dir string) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("sandbox workspace %q is not an absolute path", dir)
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o711); err != nil {
+		return fmt.Errorf("create agent workspace: %w", err)
+	}
+	if err := os.Mkdir(dir, 0o777); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("create agent workspace: %w", err)
+	}
+	// Mkdir is filtered by umask, so make the mode explicit: the container user
+	// (65534) is no relation of the service user and must be able to write.
+	if err := os.Chmod(dir, 0o777); err != nil {
+		return fmt.Errorf("chmod agent workspace: %w", err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(dir, now, now); err != nil {
+		return fmt.Errorf("touch agent workspace: %w", err)
+	}
+	return nil
+}
+
 // SweepLeftovers removes per-run workspaces older than workspaceMaxAge. It
 // covers crash leftovers (a SIGKILL mid-run skips the deferred RemoveAll) and is
-// safe to call at startup and hourly from the retention janitor.
+// safe to call at startup and hourly from the retention janitor. Persistent
+// agent workspaces under agent/ are skipped — they are swept by
+// SweepAgentWorkspaces with a much longer idle window.
 func (r *Runner) SweepLeftovers() {
 	root := r.cfg.WorkDir
 	if root == "" {
@@ -448,7 +603,7 @@ func (r *Runner) SweepLeftovers() {
 	}
 	cutoff := time.Now().Add(-workspaceMaxAge)
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || e.Name() == AgentWorkspaceDirName {
 			continue
 		}
 		info, err := e.Info()
@@ -459,8 +614,133 @@ func (r *Runner) SweepLeftovers() {
 	}
 }
 
-// runArgs builds the full hardened `docker run` argv.
-func (r *Runner) runArgs(image string, command []string, name, workDir string) []string {
+// SweepAgentWorkspaces removes conversation directories under
+// <WorkDir>/agent/ whose mtime is older than idle, then any user directory left
+// empty. It returns how many conversation workspaces were removed.
+func (r *Runner) SweepAgentWorkspaces(idle time.Duration) (int, error) {
+	root := filepath.Join(r.cfg.WorkDir, AgentWorkspaceDirName)
+	users, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read agent workspace root: %w", err)
+	}
+	cutoff := time.Now().Add(-idle)
+	removed := 0
+	for _, u := range users {
+		if !u.IsDir() {
+			continue
+		}
+		userDir := filepath.Join(root, u.Name())
+		entries, err := os.ReadDir(userDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			info, err := e.Info()
+			if err != nil || !info.IsDir() || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(userDir, e.Name())); err != nil {
+				return removed, fmt.Errorf("remove agent workspace: %w", err)
+			}
+			removed++
+		}
+		if rest, err := os.ReadDir(userDir); err == nil && len(rest) == 0 {
+			_ = os.Remove(userDir)
+		}
+	}
+	return removed, nil
+}
+
+// DirSize returns the total size of the regular files under path. Symlinks are
+// not followed and unreadable entries are skipped (a quota undercount is safer
+// than failing every agent call). A missing path is size 0.
+func DirSize(path string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// FreeBytes returns the bytes available to unprivileged users on the filesystem
+// holding path.
+func FreeBytes(path string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", path, err)
+	}
+	return uint64(st.Bavail) * uint64(st.Bsize), nil
+}
+
+// checkQuota refuses a call when QuotaDir is at or over QuotaBytes. The size is
+// cached for quotaCacheTTL so a long agent run does not re-walk the tree on
+// every call.
+func (r *Runner) checkQuota(spec Spec) error {
+	size, err := r.quotaSize(spec.QuotaDir)
+	if err != nil {
+		return fmt.Errorf("measure agent workspace: %w", err)
+	}
+	if size < spec.QuotaBytes {
+		return nil
+	}
+	return fmt.Errorf("%w: workspace is %s of its %s limit — delete files in /work or remove an old agent workspace",
+		ErrQuotaExceeded, formatBytes(size), formatBytes(spec.QuotaBytes))
+}
+
+// quotaSize returns the cached size of dir, measuring it again when the cache
+// entry is older than quotaCacheTTL.
+func (r *Runner) quotaSize(dir string) (int64, error) {
+	r.quotaMu.Lock()
+	if e, ok := r.quota[dir]; ok && time.Since(e.at) < quotaCacheTTL {
+		r.quotaMu.Unlock()
+		return e.size, nil
+	}
+	r.quotaMu.Unlock()
+
+	size, err := DirSize(dir)
+	if err != nil {
+		return 0, err
+	}
+	r.quotaMu.Lock()
+	if r.quota == nil {
+		r.quota = map[string]quotaEntry{}
+	}
+	r.quota[dir] = quotaEntry{size: size, at: time.Now()}
+	r.quotaMu.Unlock()
+	return size, nil
+}
+
+// formatBytes renders a byte count for a model-facing message.
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit && exp < 5; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// runArgs builds the full hardened `docker run` argv. fileSizeLimit is the
+// effective --ulimit fsize value for this call (ephemeral vs agent).
+func (r *Runner) runArgs(image string, command []string, name, workDir, fileSizeLimit string) []string {
 	args := []string{
 		"run",
 		"--rm",
@@ -482,7 +762,7 @@ func (r *Runner) runArgs(image string, command []string, name, workDir string) [
 		"--pids-limit", strconv.Itoa(r.cfg.PidsLimit),
 		"--ulimit", "nofile=" + r.cfg.NoFile,
 		// A hard per-file size cap so one runaway write cannot exhaust the disk.
-		"--ulimit", "fsize=" + r.cfg.FileSizeLimit,
+		"--ulimit", "fsize=" + fileSizeLimit,
 		"--stop-timeout", "2",
 		"--pull", "never",
 		"-e", "HOME=/work",

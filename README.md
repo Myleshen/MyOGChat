@@ -3,15 +3,20 @@
 <https://github.com/Myleshen/MyOGChat>
 
 A personal, self-hosted ChatGPT-style web app (installable PWA) backed by an
-[OpenCode Go](https://opencode.ai/docs/go/) subscription. One static Go binary,
-no runtime dependencies, SQLite storage, ~3 MB RAM — comfortable on a
-Raspberry Pi 4B.
+[OpenCode Go](https://opencode.ai/docs/go/) subscription. One static Go binary
+with no runtime dependencies, SQLite storage, ~24 MB RSS at idle — comfortable on
+a Raspberry Pi 4B. Optional features need local services (Docker for the
+sandbox/OCR, an HTTP STT/TTS service, ComfyUI for images) — see the per-feature
+docs under [`docs/`](docs/).
 
 ## Features
 
 - Streaming chat with markdown + syntax highlighting and conversation history
 - **Projects** — named containers with a system-instructions prompt and an
   optional default model; a chat is filed in a project or left unfiled
+- **Agent mode** — opt-in per conversation for long jobs: a persistent 5 GiB
+  sandbox workspace, a 60-minute / 60-step budget and a per-user queue
+  ([`docs/5.12-agent-mode.md`](docs/5.12-agent-mode.md))
 - **Two upstream dialects** — OpenAI-compatible `/chat/completions` (Kimi, GLM,
   DeepSeek, MiMo, …) and the Responses API `/responses` (GPT 6 Luna, Grok), with
   a reasoning-effort selector
@@ -19,6 +24,19 @@ Raspberry Pi 4B.
   thinking badge on models that surface reasoning
 - Per-message **cost** and **tokens/sec**, plus a conversation running total
 - **Regenerate** and copy tools; auto-generated chat titles
+- **Tools** — the model can call `web_search` (Tavily → Brave → Serper →
+  DuckDuckGo fallback, keyless by default), `fetch_url`, Linkwarden, OpenStreetMap
+  `maps_*`, and `run_bash` / `run_python` in a hardened Docker sandbox
+- **Email (read-only)** — IMAP search/read across one or more mailboxes, with no
+  send path ([`docs/3.2-imap.md`](docs/3.2-imap.md))
+- **Calendar** — CalDAV read/write plus read-only ICS, exposed as
+  `calendar_list`/`_create`/`_update`/`_delete`
+  ([`docs/3.3-calendar.md`](docs/3.3-calendar.md))
+- **Image generation** — `generate_image` tool and a prompt-enhance step against
+  a self-hosted ComfyUI backend ([`docs/3.1-imagegen.md`](docs/3.1-imagegen.md))
+- **Speech** — microphone transcription (whisper.cpp) and reply read-aloud
+  (Piper) through persistent HTTP services
+  ([`docs/3.5-3.6-speech.md`](docs/3.5-3.6-speech.md))
 - **Light / dark / system** themes and a categorized **settings page** (Account,
   Appearance, AI & access, Integrations, Tools, Voice, Usage, Users, About)
 - Installable **PWA** (mobile-first; add to home screen on Android/iOS)
@@ -34,6 +52,7 @@ Raspberry Pi 4B.
 | `MYOGCHAT_PORT` | `8787` | listen port |
 | `MYOGCHAT_DB` | `~/.local/share/myogchat/chat.db` | SQLite path |
 | `MYOGCHAT_RETENTION_DAYS` | `30` | clamped to `[1, 60]` |
+| `MYOGCHAT_AGENT_QUOTA_BYTES` | `5368709120` | per-user agent workspace quota (5 GiB); `0` disables |
 
 Users sign in with a username/password; there is no shared token
 (`MYOGCHAT_AUTH_TOKEN` is obsolete).

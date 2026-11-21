@@ -76,6 +76,9 @@ const imageBar = document.getElementById("image-bar");
 const imagePrompt = document.getElementById("image-prompt");
 const imageGenerate = document.getElementById("image-generate");
 const imageCancel = document.getElementById("image-cancel");
+/* Agent mode — composer chip + hint (self-contained). */
+const agentBtn = document.getElementById("agent-btn");
+const agentHint = document.getElementById("agent-hint");
 /* Prompt preview & edit modal (feature 4.3). */
 const imageModal = document.getElementById("image-modal");
 const imageModalPrompt = document.getElementById("image-modal-prompt");
@@ -130,6 +133,12 @@ const groupError = document.getElementById("group-error");
 /* Calendar (per-user, feature 3.3) — self-contained block; safe to relocate. */
 const calendarSection = document.getElementById("calendar-section");
 const calendarStatus = document.getElementById("calendar-status");
+const calendarDefault = document.getElementById("calendar-default");
+const calendarDefaultField = document.getElementById("calendar-default-field");
+const calendarDefaultSelect = document.getElementById("calendar-default-select");
+const calendarDefaultStatic = document.getElementById("calendar-default-static");
+const calendarDefaultHint = document.getElementById("calendar-default-hint");
+const calendarDefaultRetry = document.getElementById("calendar-default-retry");
 const calendarKind = document.getElementById("calendar-kind");
 const calendarProvider = document.getElementById("calendar-provider");
 const calendarCaldavFields = document.getElementById("calendar-caldav-fields");
@@ -187,6 +196,15 @@ const imagegenClear = document.getElementById("imagegen-clear");
 const toolsSection = document.getElementById("tools-section");
 const settingSandboxEnabled = document.getElementById("setting-sandbox-enabled");
 const sandboxStatus = document.getElementById("sandbox-status");
+
+/* Agent mode (per-user workspace list + admin-wide kill switch). */
+const agentAdminBlock = document.getElementById("agent-admin-block");
+const settingAgentEnabled = document.getElementById("setting-agent-enabled");
+const agentStatus = document.getElementById("agent-status");
+const agentWorkspaces = document.getElementById("agent-workspaces");
+const agentWorkspacesEmpty = document.getElementById("agent-workspaces-empty");
+const agentWorkspacesError = document.getElementById("agent-workspaces-error");
+const agentUsage = document.getElementById("agent-usage");
 /* ==== END code-sandbox tools ==== */
 
 /* Image OCR (feature 2.5) — self-contained. */
@@ -274,6 +292,8 @@ const state = {
     tts_voice: "",
   },
   mail: { accounts: [], presets: [], max_accounts: 10, connected: false }, // GET /api/me/mail/accounts (feature 3.2 / 5.11)
+  agentDraft: false,       // Agent choice for a not-yet-created chat (applied on create)
+  flags: { toolsEnabled: true, agentEnabled: true }, // server switches (both from /api/auth/me; /api/settings repeats them for admins)
 };
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -545,6 +565,7 @@ async function readError(res) {
 function handleUnauthorized() {
   for (const gen of state.gens.values()) {
     if (gen.pollTimer) clearTimeout(gen.pollTimer);
+    if (gen.agentTimer) clearTimeout(gen.agentTimer);
     if (gen.controller) {
       try {
         gen.controller.abort();
@@ -568,6 +589,8 @@ function handleUnauthorized() {
   state.pendingAttachments = [];
   renderAttachments();
   stopSpeaking();
+  state.agentDraft = false;
+  state.flags = { toolsEnabled: true, agentEnabled: true };
   state.speech = { stt_available: false, stt_enabled: false, tts_available: false, tts_enabled: false, tts_voice: "" };
   appEl.hidden = true;
   hideSettingsPage();
@@ -640,6 +663,7 @@ async function loadMe() {
   const res = await fetch("/api/auth/me");
   if (res.ok) {
     state.user = await res.json();
+    applyAgentSettings(state.user); /* both switches are per-session, not admin-only */
     return true;
   }
   if (res.status === 401) {
@@ -856,7 +880,7 @@ const SETTINGS_CATEGORIES = [
     id: "tools",
     label: "Tools",
     icon: "🧰",
-    sections: ["tools-section", "integrations-section", "ocr-section"],
+    sections: ["tools-section", "agent-section", "integrations-section", "ocr-section"],
   },
   { id: "voice", label: "Voice", icon: "🗣️", sections: ["voice-section"] },
   { id: "usage", label: "Usage", icon: "📊", sections: ["usage-section"] },
@@ -954,6 +978,7 @@ function showSettingsPage() {
   shareKeyRow.hidden = !isAdmin;
   integrationsSection.hidden = !isAdmin;
   toolsSection.hidden = !isAdmin; /* code-sandbox tools (2.6/2.7) */
+  agentAdminBlock.hidden = !isAdmin; /* agent mode: the server switch is admin-only */
   ocrSection.hidden = !isAdmin;
   usageAdmin.hidden = !isAdmin; /* usage & quotas (2.11) */
   voiceSection.hidden = !isAdmin; /* voice / speech (3.5/3.6) */
@@ -969,6 +994,7 @@ function showSettingsPage() {
   loadMyLinkwarden().catch(() => {}); /* per-user Linkwarden (2.8) */
   loadCalendarStatus().catch(() => {});
   loadMail().catch(() => {}); /* email (feature 3.2) — per-user, all users */
+  loadAgentWorkspaces().catch(() => {}); /* agent files (per-user, all users) */
   if (isAdmin) {
     loadUsers().catch(() => {});
     loadSettingsInfo(false).catch(() => {});
@@ -1189,12 +1215,14 @@ async function loadSettingsInfo(silent) {
     applyMapsSettings(s); /* maps (3.4) */
     applyVoiceSettings(s); /* voice / speech (3.5/3.6) */
     applyImagegenSettings(s); /* image generation (3.1) */
+    applyAgentSettings(s); /* agent mode (server-wide switch) */
   } catch (err) {
     if (err instanceof AuthError) return;
     if (isForbidden(err)) {
       usersSection.hidden = true;
       integrationsSection.hidden = true;
       toolsSection.hidden = true; /* code-sandbox tools (2.6/2.7) */
+      agentAdminBlock.hidden = true;
       ocrSection.hidden = true;
       usageAdmin.hidden = true; /* usage & quotas (2.11) */
       voiceSection.hidden = true; /* voice / speech (3.5/3.6) */
@@ -1409,6 +1437,118 @@ async function saveSandboxEnabled() {
   }
 }
 /* ==== END code-sandbox tools ==== */
+
+/* ==== BEGIN agent mode — self-contained, safe to relocate ==== */
+/* Admin toggle from GET /api/settings; the workspace list is per-user. */
+function applyAgentSettings(s) {
+  if (!s) return;
+  /* /api/auth/me carries both switches for every user; /api/settings (admin)
+     repeats them alongside the rest of the admin state. */
+  if (typeof s.tools_enabled === "boolean") state.flags.toolsEnabled = s.tools_enabled;
+  state.flags.agentEnabled = s.agent_enabled !== false;
+  if (settingAgentEnabled) settingAgentEnabled.checked = state.flags.agentEnabled;
+  if (agentStatus) {
+    agentStatus.textContent = state.flags.agentEnabled
+      ? "Agent mode is available to everyone on this server."
+      : "Agent mode is off for everyone on this server.";
+  }
+  syncAgentChip();
+}
+
+async function saveAgentEnabled() {
+  const value = settingAgentEnabled.checked;
+  try {
+    const s = await api("/api/settings", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ agent_enabled: value }),
+    });
+    applyAgentSettings(s);
+    toast(value ? "Agent mode enabled" : "Agent mode disabled");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    settingAgentEnabled.checked = !value;
+    toast(isForbidden(err) ? "Admin access required" : err.message);
+  }
+}
+
+/* "2h ago" from a Unix-millisecond timestamp (workspace last use). */
+function fmtAgentAge(ms) {
+  if (typeof ms !== "number" || ms <= 0) return "";
+  const mins = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + "m ago";
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + "h ago";
+  return Math.floor(hours / 24) + "d ago";
+}
+
+async function loadAgentWorkspaces() {
+  if (!agentWorkspaces) return;
+  setFormError(agentWorkspacesError, "");
+  try {
+    const list = await api("/api/me/agent/workspaces");
+    renderAgentWorkspaces(Array.isArray(list) ? list : []);
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    agentWorkspaces.innerHTML = "";
+    agentWorkspacesEmpty.hidden = true;
+    agentUsage.textContent = "";
+    setFormError(agentWorkspacesError, err.message || "Could not load saved agent files.");
+  }
+}
+
+function renderAgentWorkspaces(list) {
+  agentWorkspaces.innerHTML = "";
+  agentWorkspacesEmpty.hidden = list.length > 0;
+  let total = 0;
+  for (const w of list) {
+    const bytes = typeof w.bytes === "number" && w.bytes > 0 ? w.bytes : 0;
+    total += bytes;
+    const li = el("li", "agent-workspace");
+    const info = el("div", "agent-workspace-info");
+    const title = el("span", "agent-workspace-title");
+    title.textContent = w.title || "Untitled";
+    title.title = title.textContent;
+    const meta = el("span", "agent-workspace-meta");
+    meta.textContent = [fmtBytes(bytes) || "0 B", fmtAgentAge(w.updated_at)]
+      .filter(Boolean)
+      .join(" · ");
+    info.append(title, meta);
+    const del = el("button", "user-action danger agent-workspace-delete");
+    del.type = "button";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", "Delete saved agent files for " + title.textContent);
+    del.addEventListener("click", () => deleteAgentWorkspace(w, del));
+    li.append(info, del);
+    agentWorkspaces.appendChild(li);
+  }
+  agentUsage.textContent =
+    list.length === 0
+      ? ""
+      : "Total: " +
+        fmtBytes(total) +
+        " across " +
+        list.length +
+        " chat" +
+        (list.length === 1 ? "" : "s") +
+        ".";
+}
+
+async function deleteAgentWorkspace(w, btn) {
+  const title = w.title || "this chat";
+  if (!window.confirm('Delete saved agent files for "' + title + '"?')) return;
+  btn.disabled = true;
+  try {
+    await api("/api/conversations/" + enc(w.conversation_id) + "/workspace", { method: "DELETE" });
+    toast("Agent files deleted");
+    await loadAgentWorkspaces();
+  } catch (err) {
+    btn.disabled = false;
+    if (!(err instanceof AuthError)) toast(err.message);
+  }
+}
+/* ==== END agent mode ==== */
 
 async function saveToolsEnabled() {
   const value = settingToolsEnabled.checked;
@@ -2203,6 +2343,91 @@ function showCalendarError(msg) {
   calendarError.hidden = false;
 }
 
+/* Last confirmed default calendar, so a failed PATCH can revert the select. */
+let calendarDefaultValue = "";
+
+function hideCalendarDefaultNote() {
+  calendarDefaultHint.hidden = true;
+  calendarDefaultRetry.hidden = true;
+}
+
+function showCalendarDefaultNote(msg, showRetry) {
+  calendarDefaultHint.textContent = msg;
+  calendarDefaultHint.hidden = false;
+  calendarDefaultRetry.hidden = !showRetry;
+}
+
+/* Fill the picker from {default, calendars:[{id,name,writable}]}. */
+function renderCalendarDefaultOptions(calendars, current) {
+  const list = Array.isArray(calendars) ? calendars : [];
+  if (!list.length) {
+    calendarDefaultField.hidden = true;
+    showCalendarDefaultNote("This account returned no calendars.", false);
+    return;
+  }
+  const prev = calendarDefaultValue;
+  calendarDefaultSelect.innerHTML = "";
+  list.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = c.name || c.id;
+    calendarDefaultSelect.appendChild(opt);
+  });
+  const wanted = current || prev;
+  calendarDefaultSelect.value = list.some((c) => c.id === wanted) ? wanted : list[0].id;
+  calendarDefaultValue = calendarDefaultSelect.value;
+  calendarDefaultSelect.disabled = false;
+  calendarDefaultField.hidden = false;
+  hideCalendarDefaultNote();
+}
+
+/* Fetch the account's calendars for the picker (CalDAV only; ICS is one feed). */
+async function loadCalendarCalendars() {
+  if (!calendarDefault) return;
+  calendarDefaultField.hidden = true;
+  calendarDefaultSelect.disabled = true;
+  showCalendarDefaultNote("Loading calendars…", false);
+  try {
+    const data = await api("/api/me/calendar/calendars");
+    if (!data || !data.connected) {
+      calendarDefault.hidden = true;
+      return;
+    }
+    renderCalendarDefaultOptions(data.calendars, data.default);
+  } catch (err) {
+    if (err instanceof AuthError) {
+      calendarDefault.hidden = true;
+      return;
+    }
+    showCalendarDefaultNote(err.message, true);
+  }
+}
+
+/* Change the default calendar in place — no credential re-entry (§3.3). */
+async function saveCalendarDefault() {
+  const previous = calendarDefaultValue;
+  const next = calendarDefaultSelect.value;
+  if (!next || next === previous) return;
+  calendarDefaultSelect.disabled = true;
+  hideCalendarDefaultNote();
+  try {
+    const s = await api("/api/me/calendar", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ calendar_id: next }),
+    });
+    calendarDefaultValue = next;
+    applyCalendarStatus(s);
+    toast("Default calendar updated");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    calendarDefaultSelect.value = previous;
+    showCalendarDefaultNote(err.message, false);
+  } finally {
+    calendarDefaultSelect.disabled = false;
+  }
+}
+
 /* Render the connected state (never shows the secret). */
 function applyCalendarStatus(s) {
   if (s && s.connected) {
@@ -2224,13 +2449,35 @@ function applyCalendarStatus(s) {
     calendarDisconnect.hidden = true;
     calendarSave.textContent = "Connect";
   }
+  applyCalendarDefaultVisibility(s);
   updateCalendarFieldVisibility();
+}
+
+/* The picker only exists for a connected account; ICS feeds are single and
+   read-only, so they render as a label instead of a select. */
+function applyCalendarDefaultVisibility(s) {
+  if (!calendarDefault) return;
+  const connected = !!(s && s.connected);
+  calendarDefault.hidden = !connected;
+  if (!connected) {
+    hideCalendarDefaultNote();
+    return;
+  }
+  const ics = s.kind === "ics";
+  calendarDefaultField.hidden = ics || !calendarDefaultSelect.options.length;
+  calendarDefaultStatic.hidden = !ics;
+  if (ics) {
+    calendarDefaultStatic.textContent =
+      "Calendar feed: " + (s.calendar_id || "read-only feed") + " (read-only).";
+    hideCalendarDefaultNote();
+  }
 }
 
 async function loadCalendarStatus() {
   try {
     const s = await api("/api/me/calendar");
     applyCalendarStatus(s);
+    if (s && s.connected && s.kind !== "ics") await loadCalendarCalendars();
   } catch (err) {
     if (err instanceof AuthError) return;
     calendarStatus.textContent = "Could not load calendar status.";
@@ -2266,6 +2513,11 @@ async function saveCalendar() {
     calendarPassword.value = "";
     calendarURL.value = "";
     applyCalendarStatus(s);
+    /* The connect response already lists the calendars — no second request. */
+    if (s && s.connected && s.kind !== "ics") {
+      if (Array.isArray(s.calendars)) renderCalendarDefaultOptions(s.calendars, s.calendar_id);
+      else loadCalendarCalendars().catch(() => {});
+    }
     toast("Calendar connected");
   } catch (err) {
     if (err instanceof AuthError) return;
@@ -3052,6 +3304,7 @@ function applyConvUpdate(updated) {
   renderConvoList();
   updateEffortVisibility();
   renderTotalCost();
+  syncAgentChip();
 }
 
 /* ============================== Conversation view ============================== */
@@ -3067,6 +3320,7 @@ function showWelcome() {
   updateEffortVisibility();
   updateNewChatLabel();
   renderConvoList();
+  syncAgentChip();
 }
 
 async function openConversation(id) {
@@ -3113,6 +3367,7 @@ function setCurrentConversation(conv) {
   updateNewChatLabel();
   renderTotalCost();
   syncComposerState();
+  syncAgentChip();
   if (!currentGenerating() && settingsPage.hidden) input.focus({ preventScroll: true });
 }
 
@@ -3152,6 +3407,19 @@ async function createConversation() {
   state.conversations.unshift(conv);
   if (conv.project_id) state.expandedProjects.add(conv.project_id);
   setCurrentConversation(Object.assign({ messages: [] }, conv));
+  // A draft toggle made before the chat existed applies now. Agent mode stays
+  // opt-in per conversation, so the next new chat starts off again.
+  if (state.agentDraft) {
+    state.agentDraft = false;
+    if (!conv.agent_mode) {
+      try {
+        applyConvUpdate(await patchConversation({ agent_mode: true }));
+      } catch (err) {
+        if (!(err instanceof AuthError)) toast(err.message);
+      }
+    }
+  }
+  syncAgentChip();
   return conv;
 }
 
@@ -3161,17 +3429,21 @@ async function ensureConversation() {
 }
 
 /* Re-pull the open conversation so server-computed fields (reasoning_tokens,
-   duration_ms, cost, title) are reflected. */
+   duration_ms, cost, title) are reflected. Resolves true only when the rendered
+   transcript was actually replaced (false on a navigated-away or failed fetch,
+   e.g. the conversation was deleted). */
 async function refreshCurrentConversation() {
-  if (!state.current) return;
+  if (!state.current) return false;
   const id = state.current.id;
+  let applied = false;
   try {
     const conv = await api("/api/conversations/" + enc(id));
-    if (!state.current || state.current.id !== id) return;
+    if (!state.current || state.current.id !== id) return false;
     state.current = conv;
     state.currentMessages = Array.isArray(conv.messages) ? conv.messages : [];
     renderMessages();
     renderTotalCost();
+    applied = true;
   } catch (err) {
     if (!(err instanceof AuthError)) {
       /* keep the optimistic rendering */
@@ -3180,6 +3452,7 @@ async function refreshCurrentConversation() {
   loadConversations().catch((err) => {
     if (!(err instanceof AuthError)) toast(err.message);
   });
+  return applied;
 }
 
 /* ============================== Message rendering ============================== */
@@ -3738,6 +4011,13 @@ function isVisibleConv(convId) {
   return !!state.current && state.current.id === convId;
 }
 
+/* True when this conversation runs as an agent (from the open conv or the list). */
+function convAgentMode(convId) {
+  if (state.current && state.current.id === convId) return !!state.current.agent_mode;
+  const conv = state.conversations.find((c) => c.id === convId);
+  return !!(conv && conv.agent_mode);
+}
+
 function genFor(convId) {
   return state.gens.get(convId) || null;
 }
@@ -3786,6 +4066,67 @@ function updateSendBtn() {
     currentGenerating() || isUploading() || (!hasText && state.pendingAttachments.length === 0);
 }
 
+/* ============================== Agent mode (composer) ============================== */
+
+/* The chip reflects the open conversation; before one exists it reflects the
+   local draft choice, which is applied right after the chat is created. */
+function agentActive() {
+  return state.current ? !!state.current.agent_mode : !!state.agentDraft;
+}
+
+function agentAvailable() {
+  return state.flags.agentEnabled && state.flags.toolsEnabled;
+}
+
+function agentUnavailableReason() {
+  if (!state.flags.agentEnabled) return "Agent mode is turned off on this server.";
+  if (!state.flags.toolsEnabled) return "Agent mode needs tools, which are turned off on this server.";
+  return "";
+}
+
+function syncAgentChip() {
+  if (!agentBtn) return;
+  const available = agentAvailable();
+  const reason = agentUnavailableReason();
+  agentBtn.hidden = !available;
+  agentBtn.disabled = !available;
+  const on = available && agentActive();
+  agentBtn.setAttribute("aria-pressed", on ? "true" : "false");
+  agentBtn.title = available
+    ? on
+      ? "Agent mode on — long jobs, files persist between steps"
+      : "Turn on agent mode"
+    : reason;
+  if (agentHint) {
+    agentHint.hidden = !reason && !on;
+    // Only touch the live region when the text actually changes, so a screen
+    // reader announces the reason once instead of on every sync.
+    const hintText = reason || "Long jobs, files persist between steps";
+    if (agentHint.textContent !== hintText) agentHint.textContent = hintText;
+  }
+}
+
+async function toggleAgentMode() {
+  if (!agentAvailable()) return;
+  const on = !agentActive();
+  if (!state.current) {
+    state.agentDraft = on;
+    syncAgentChip();
+    return;
+  }
+  const prev = !!state.current.agent_mode;
+  state.current.agent_mode = on;
+  syncAgentChip();
+  try {
+    const updated = await patchConversation({ agent_mode: on });
+    applyConvUpdate(updated);
+  } catch (err) {
+    state.current.agent_mode = prev;
+    if (!(err instanceof AuthError)) toast(err.message);
+  }
+  syncAgentChip();
+}
+
 function newStreamUI() {
   return {
     convId: null,
@@ -3797,6 +4138,9 @@ function newStreamUI() {
     tools: [],
     footerEl: null,
     footerMeta: null,
+    agentEl: null,
+    agent: null,
+    queued: 0,
     textBuf: "",
     reasoningBuf: "",
     usage: null,
@@ -3804,6 +4148,7 @@ function newStreamUI() {
     messageId: null,
     done: false,
     failed: false,
+    errorText: "",
     firstTokenAt: 0,
     durationMs: null,
   };
@@ -3822,6 +4167,7 @@ function ensureStreamBubble(ui) {
   ui.toolsEl = null;
   ui.footerEl = null;
   ui.footerMeta = null;
+  ui.agentEl = null;
   const wrap = el("div", "msg msg-assistant");
   ui.bubble = el("div", "msg-bubble");
   wrap.appendChild(ui.bubble);
@@ -3834,7 +4180,8 @@ function renderStreamThinking(ui) {
   if (!ui.thinkingEl) {
     ui.thinkingEl = buildThinking("", { summary: "Thinking…" });
     ui.thinkingBody = ui.thinkingEl.querySelector(".thinking-body");
-    ui.bubble.insertBefore(ui.thinkingEl, ui.bubble.firstChild);
+    // Keep the agent progress caption above everything else in the bubble.
+    ui.bubble.insertBefore(ui.thinkingEl, ui.agentEl || ui.bubble.firstChild);
   }
   ui.thinkingBody.textContent = ui.reasoningBuf;
 }
@@ -3861,6 +4208,7 @@ function renderStream(ui, keepScroll) {
   ui.contentEl = null;
   ui.footerEl = null;
   ui.footerMeta = null;
+  ui.agentEl = null;
   if (ui.reasoningBuf) renderStreamThinking(ui);
   if (ui.tools && ui.tools.length) renderStreamTools(ui, toolState);
   if (ui.textBuf) {
@@ -3870,7 +4218,34 @@ function renderStream(ui, keepScroll) {
     ui.bubble.appendChild(ui.contentEl);
   }
   renderStreamFooter(ui);
+  renderAgentCaption(ui);
   if (stick) scrollToBottom();
+}
+
+/* One subtle caption at the top of the live bubble: agent step progress, or a
+   queued notice while another agent job from this user is still running. */
+function renderAgentCaption(ui) {
+  ui.agentEl = null;
+  let text = "";
+  if (ui.queued) {
+    text =
+      "Queued — your next agent job starts when the current one finishes (position " +
+      ui.queued +
+      ")";
+  } else if (
+    ui.agent &&
+    ui.agent.enabled &&
+    typeof ui.agent.step === "number" &&
+    ui.agent.step > 0
+  ) {
+    text = "Step " + ui.agent.step + "/" + (ui.agent.max_steps || 60);
+  }
+  if (!text || !ensureStreamBubble(ui)) return;
+  const caption = el("p", "agent-caption");
+  caption.textContent = text;
+  if (ui.queued) caption.setAttribute("role", "status");
+  ui.agentEl = caption;
+  ui.bubble.insertBefore(caption, ui.bubble.firstChild);
 }
 
 /* Cheap signature of the live buffers, so the poll only re-renders (and only
@@ -3881,7 +4256,10 @@ function genSignature(ui) {
     "|" +
     (ui.reasoningBuf || "").length +
     "|" +
-    (ui.tools || []).map((t) => t.name + ":" + t.status + ":" + (t.output || "").length).join(",")
+    (ui.tools || []).map((t) => t.name + ":" + t.status + ":" + (t.output || "").length).join(",") +
+    "|" +
+    (ui.agent ? "a" + ui.agent.step : "") +
+    (ui.queued ? "q" + ui.queued : "")
   );
 }
 
@@ -4012,7 +4390,13 @@ function renderStreamTools(ui, state) {
     ui.toolsEl = el("div", "msg-tools-slot");
     // Keep the live tool block after the thinking block and before the reply
     // text, matching the final render order.
-    const anchor = ui.contentEl || (ui.thinkingEl ? ui.thinkingEl.nextSibling : ui.bubble.firstChild);
+    const anchor =
+      ui.contentEl ||
+      (ui.thinkingEl
+        ? ui.thinkingEl.nextSibling
+        : ui.agentEl
+          ? ui.agentEl.nextSibling
+          : ui.bubble.firstChild);
     ui.bubble.insertBefore(ui.toolsEl, anchor);
   }
   // Preserve what the user expanded across the live rebuild, so a tool they
@@ -4137,7 +4521,8 @@ function handleStreamEvent(type, data, ui) {
       break;
     case "error":
       ui.failed = true;
-      if (visible) showStreamError(ui, payload.message || "Something went wrong");
+      ui.errorText = payload.message || "Something went wrong";
+      if (visible) showStreamError(ui, ui.errorText);
       else toast("Reply failed in " + convTitle(ui.convId));
       break;
   }
@@ -4192,7 +4577,7 @@ async function streamAssistant(opts) {
   const controller = new AbortController();
   const ui = newStreamUI();
   ui.convId = convId;
-  const gen = { convId, controller, ui, status: "running", pollTimer: null };
+  const gen = { convId, controller, ui, status: "running", pollTimer: null, agentTimer: null };
   state.gens.set(convId, gen);
   updateGenIndicators();
   syncComposerState();
@@ -4219,6 +4604,25 @@ async function streamAssistant(opts) {
     handleUnauthorized();
     return;
   }
+
+  // Agent queue: another agent job from this user is running, so the server
+  // accepted the message without a stream. The reply starts on its own; the
+  // snapshot poll below transitions it to running without a reload.
+  if (res.status === 202) {
+    let position = 1;
+    try {
+      const j = await res.json();
+      if (j && typeof j.position === "number" && j.position > 0) position = j.position;
+    } catch {
+      /* keep position 1 */
+    }
+    gen.status = "queued";
+    gen.ui.queued = position;
+    if (isVisibleConv(convId)) renderStream(gen.ui);
+    schedulePoll(convId);
+    return;
+  }
+
   if (!res.ok || !res.body) {
     let message = "Request failed (" + res.status + ")";
     try {
@@ -4231,6 +4635,11 @@ async function streamAssistant(opts) {
     toast(message);
     if (opts.onFatal) opts.onFatal();
     return;
+  }
+
+  // Agent step progress is only in the snapshot, so poll it beside the stream.
+  if (convAgentMode(convId)) {
+    gen.agentTimer = setTimeout(() => pollAgentProgress(convId), 1000);
   }
 
   const reader = res.body.getReader();
@@ -4249,9 +4658,17 @@ async function streamAssistant(opts) {
     else showStreamError(ui, "Connection interrupted");
   } finally {
     endGeneration(convId);
-    // A reply that ended without a done/error frame was stopped: drop the
-    // partial live bubble and re-render so the Retry affordance appears.
-    if (!ui.done && !ui.failed && isVisibleConv(convId)) refreshCurrentConversation();
+    // The live bubble is thrown away either way: a reply stopped without a
+    // terminal frame, or one that ended in an error, both need the server's rows
+    // so the optimistic user message gets its real id (Edit/Retry use it).
+    if (!ui.done && isVisibleConv(convId)) {
+      refreshCurrentConversation().then((applied) => {
+        // The refresh rebuilds from server rows, dropping the failure notice;
+        // re-attach it. `applied === false` (e.g. the chat was deleted) still has
+        // the notice on screen, so there is nothing to restore.
+        if (applied && ui.errorText) showStreamError(ui, ui.errorText);
+      });
+    }
   }
 }
 
@@ -4260,6 +4677,7 @@ function endGeneration(convId) {
   const gen = state.gens.get(convId);
   if (!gen) return;
   if (gen.pollTimer) clearTimeout(gen.pollTimer);
+  if (gen.agentTimer) clearTimeout(gen.agentTimer);
   state.gens.delete(convId);
   updateGenIndicators();
   syncComposerState();
@@ -4298,7 +4716,16 @@ function applySnapshot(ui, snap) {
   ui.tools = Array.isArray(snap.tools) ? snap.tools : [];
   ui.textBuf = snap.content || "";
   ui.usage = snap.usage || null;
+  applyAgentProgress(ui, snap);
   if (ui.textBuf && !ui.firstTokenAt) ui.firstTokenAt = performance.now();
+}
+
+/* Agent step / queue position come only from the snapshot (SSE frames carry no
+   step count). Kept separate so the streaming path can poll just this. */
+function applyAgentProgress(ui, snap) {
+  ui.agent = snap && snap.agent ? snap.agent : null;
+  ui.queued =
+    snap && snap.status === "queued" ? (snap.agent && snap.agent.queue_position) || 1 : 0;
 }
 
 async function probeGeneration(convId) {
@@ -4309,7 +4736,7 @@ async function probeGeneration(convId) {
   } catch {
     return;
   }
-  if (!snap || !snap.active) {
+  if (!snap || !(snap.active || snap.status === "queued")) {
     // The job finished between the conversation load and this probe: pull the
     // persisted reply (the load may have raced it).
     if (snap && snap.status === "done" && isVisibleConv(convId)) refreshCurrentConversation();
@@ -4319,7 +4746,14 @@ async function probeGeneration(convId) {
   const ui = newStreamUI();
   ui.convId = convId;
   applySnapshot(ui, snap);
-  state.gens.set(convId, { convId, controller: null, ui, status: "running", pollTimer: null });
+  state.gens.set(convId, {
+    convId,
+    controller: null,
+    ui,
+    status: snap.status === "queued" ? "queued" : "running",
+    pollTimer: null,
+    agentTimer: null,
+  });
   updateGenIndicators();
   if (isVisibleConv(convId)) {
     renderMessages();
@@ -4345,7 +4779,7 @@ async function pollGeneration(convId) {
     schedulePoll(convId);
     return;
   }
-  if (!snap || !snap.active) {
+  if (!snap || !(snap.active || snap.status === "queued")) {
     const status = snap ? snap.status : "none";
     const wasVisible = isVisibleConv(convId);
     endGeneration(convId);
@@ -4362,6 +4796,32 @@ async function pollGeneration(convId) {
     renderStream(gen.ui, true);
   }
   schedulePoll(convId);
+}
+
+/* Agent jobs report step progress only in the generation snapshot, so an SSE
+   reply in an agent conversation polls it alongside the stream. Only the
+   agent/queue fields are touched — never the streaming text buffers. */
+async function pollAgentProgress(convId) {
+  const gen = state.gens.get(convId);
+  if (!gen || gen.ui.done || gen.ui.failed) return;
+  let snap;
+  try {
+    snap = await api("/api/conversations/" + enc(convId) + "/generation");
+  } catch {
+    if (state.gens.get(convId) === gen) {
+      gen.agentTimer = setTimeout(() => pollAgentProgress(convId), 1000);
+    }
+    return;
+  }
+  // The stream may have finished while this request was in flight; a late
+  // render here would resurrect a stale live bubble over the persisted reply.
+  if (state.gens.get(convId) !== gen || gen.ui.done || gen.ui.failed) return;
+  const before = genSignature(gen.ui);
+  applyAgentProgress(gen.ui, snap);
+  if (isVisibleConv(convId) && genSignature(gen.ui) !== before) renderStream(gen.ui, true);
+  if (state.gens.get(convId) === gen && !gen.ui.done && !gen.ui.failed) {
+    gen.agentTimer = setTimeout(() => pollAgentProgress(convId), 1000);
+  }
 }
 
 async function sendMessage(conv, text) {
@@ -4453,7 +4913,8 @@ function fmtBytes(n) {
   if (typeof n !== "number" || n < 0) return "";
   if (n < 1024) return n + " B";
   if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10 * 1024 ? 1 : 0) + " KB";
-  return (n / (1024 * 1024)).toFixed(1) + " MB";
+  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+  return (n / (1024 * 1024 * 1024)).toFixed(n < 10 * 1024 * 1024 * 1024 ? 1 : 0) + " GB";
 }
 
 function isUploading() {
@@ -5151,6 +5612,12 @@ async function runImageGeneration(prompt) {
 /* ============================== Composer ============================== */
 
 function autosizeInput() {
+  // An empty textarea must not be measured: Chrome counts the wrapped
+  // placeholder in scrollHeight, which grew the box and clipped it.
+  if (input.value === "") {
+    input.style.height = "";
+    return;
+  }
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 200) + "px";
 }
@@ -5545,6 +6012,8 @@ function wireEvents() {
   if (calendarProvider) calendarProvider.addEventListener("change", applyCalendarProviderPreset);
   if (calendarSave) calendarSave.addEventListener("click", saveCalendar);
   if (calendarDisconnect) calendarDisconnect.addEventListener("click", disconnectCalendar);
+  if (calendarDefaultSelect) calendarDefaultSelect.addEventListener("change", saveCalendarDefault);
+  if (calendarDefaultRetry) calendarDefaultRetry.addEventListener("click", () => loadCalendarCalendars().catch(() => {}));
 
   /* Integrations: tools toggle + Linkwarden (admin, Phase 2.4 / 2.8). */
   settingToolsEnabled.addEventListener("change", saveToolsEnabled);
@@ -5573,6 +6042,10 @@ function wireEvents() {
   /* ==== BEGIN code-sandbox tools (2.6/2.7) — self-contained, safe to relocate ==== */
   if (settingSandboxEnabled) settingSandboxEnabled.addEventListener("change", saveSandboxEnabled);
   /* ==== END code-sandbox tools ==== */
+
+  /* ==== BEGIN agent mode — self-contained, safe to relocate ==== */
+  if (settingAgentEnabled) settingAgentEnabled.addEventListener("change", saveAgentEnabled);
+  /* ==== END agent mode ==== */
 
   /* Image OCR toggle (admin, feature 2.5). */
   settingOcrEnabled.addEventListener("change", saveOcrEnabled);
@@ -5715,6 +6188,10 @@ function wireEvents() {
   if (micBtn) micBtn.addEventListener("click", toggleMic);
   if (audioInput) audioInput.addEventListener("change", onAudioFileSelected);
 
+  /* Agent mode: the chip toggles agent mode on the open conversation (or the
+     next new chat when none is open yet). */
+  if (agentBtn) agentBtn.addEventListener("click", toggleAgentMode);
+
   /* Image generation (feature 3.1/4.3): the image button toggles the prompt bar;
      Generate opens the enhance + preview modal. */
   if (imageBtn) imageBtn.addEventListener("click", () => setImageBar(imageBar.hidden));
@@ -5783,6 +6260,14 @@ function syncViewport() {
 
 function wireViewport() {
   syncViewport();
+  // Phones: the composer pill is ~156px wide, so the full placeholder would be
+  // cut mid-word. Desktop keeps it.
+  const narrow = window.matchMedia("(max-width: 640px)");
+  const applyPlaceholder = () => {
+    input.placeholder = narrow.matches ? "Message…" : "Message MyOGChat…";
+  };
+  applyPlaceholder();
+  narrow.addEventListener("change", applyPlaceholder);
   const vv = window.visualViewport;
   if (vv) {
     vv.addEventListener("resize", syncViewport);

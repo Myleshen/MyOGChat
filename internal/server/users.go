@@ -261,7 +261,8 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		BraveKey          *string `json:"brave_key"`
 		BraveMode         *string `json:"brave_mode"`
 		SandboxEnabled    *bool   `json:"sandbox_enabled"`
-		OCREnabled        *bool   `json:"ocr_enabled"` // feature 2.5
+		AgentEnabled      *bool   `json:"agent_enabled"` // agent mode kill switch
+		OCREnabled        *bool   `json:"ocr_enabled"`   // feature 2.5
 		// Quota limits (2.11); 0 = off.
 		DailyTokenLimit  *int64 `json:"daily_token_limit"`
 		MonthlyCostLimit *int64 `json:"monthly_cost_limit"`
@@ -315,6 +316,13 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	if req.SandboxEnabled != nil {
 		if err := s.setSandboxEnabled(r.Context(), *req.SandboxEnabled); err != nil {
 			s.log.Error("set sandbox_enabled", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
+	if req.AgentEnabled != nil {
+		if err := s.setAgentEnabled(r.Context(), *req.AgentEnabled); err != nil {
+			s.log.Error("set agent_enabled", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update settings")
 			return
 		}

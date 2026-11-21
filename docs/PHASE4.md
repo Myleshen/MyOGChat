@@ -23,7 +23,7 @@
 | 4.2 | **Attachment chips in chat** | ✅ done | Render name/type/size chips under the sent user bubble using the metadata already on `messages.attachments`. No byte storage. |
 | 4.3a | **Image prompt enhancement** | ✅ done | `POST /api/images/enhance` — LLM rewrite (reuses the caller's key) with a deterministic template fallback (`enhanced:false`); preview/edit modal before ComfyUI. |
 | 4.3b | **`generate_image` model tool** | ✅ done | Mid-conversation generation with context over the 2.4 tool loop: the model calls `generate_image`, the bytes are stored owner-scoped and attached to the assistant message (`messages.images`). Registered only when tools are enabled + a ComfyUI backend is configured. |
-| 4.4 | **Settings IA + UX overhaul** | ✅ done | Categorized into ~9 sections with desktop/tablet nav rail + mobile chip bar; admin web-search block relabelled "Server web search (admin)"; per-user Serper under Integrations → Web search. UI battery 45/45 on mobile. |
+| 4.4 | **Settings IA + UX overhaul** | ✅ done | Categorized into ~9 sections with desktop/tablet nav rail + mobile chip bar; admin web-search block relabelled "Server web search (admin)"; per-user Serper under Integrations → Web search. UI battery: 60 asserts (`scripts/ui-test.sh`); `edited message resent` still fails. |
 | 4.5a | **Document extraction** | ✅ done | `internal/extract` dispatcher: OOXML (`.docx/.xlsx/.pptx`), ODF (`.odt/.ods/.odp`), `.epub`, `.rtf` — stdlib only (no new deps). |
 | 4.5b | **Media transcription** | ✅ done | Audio/video (`.mp3/.wav/.m4a/.ogg/.opus/.flac/.mp4/.mov/.webm/.mkv`) via the configured STT service. **Asynchronous**: upload returns `202 pending`, a bounded background worker writes the transcript, the SPA polls until ready (no tunnel-timeout limit). |
 
@@ -43,6 +43,8 @@ overhaul last so it wraps the finished sections; media last as the heaviest).
 
 - `go build ./...`, `go vet ./...`, `go test ./...`, `node --check static/app.js`
   all green; deploys are cache-busted automatically (content-hash `?v=`).
-- `scripts/ui-test-run.sh` passes; pwa battery green on the tunnel.
+- `scripts/ui-test-run.sh` runs the 60-assert battery (`scripts/ui-test.sh`,
+  Pixel 7, two passes); `edited message resent` is the one known local failure,
+  and the battery has **not** been re-run against the tunnel.
 - Every new UI surface audited on phone / iPad / desktop.
 - No secrets in tool outputs/logs; additive migrations only.
