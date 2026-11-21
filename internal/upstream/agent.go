@@ -41,9 +41,12 @@ func (c *Client) StreamAgent(ctx context.Context, p Params, exec ExecuteTool, op
 			}
 		}
 		var err error
-		if p.Dialect == "responses" {
+		switch p.Dialect {
+		case "responses":
 			err = c.agentResponses(ctx, p, exec, opts, send)
-		} else {
+		case "google":
+			err = c.agentGoogle(ctx, p, exec, opts, send)
+		default:
 			err = c.agentChat(ctx, p, exec, opts, send)
 		}
 		if err != nil && ctx.Err() == nil {

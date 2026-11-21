@@ -1,6 +1,6 @@
-// Package upstream implements the two OpenCode Go API dialect adapters
-// (chat completions and responses) per contract §4. Both emit a common
-// channel of normalized events.
+// Package upstream implements the OpenCode Go API dialect adapters (chat
+// completions, responses and Google generate-content) per contract §4. All
+// emit a common channel of normalized events.
 package upstream
 
 import (
@@ -383,7 +383,7 @@ type Event struct {
 
 // Params describes one streaming upstream call.
 type Params struct {
-	Dialect   string // "chat" | "responses"
+	Dialect   string // "chat" | "responses" | "google"
 	Model     string
 	Effort    string // may be empty; responses dialect defaults to "medium"
 	SessionID string // conversation UUID, sent as x-opencode-session
@@ -406,12 +406,13 @@ type Client struct {
 	hc        *http.Client
 	baseURL   string // defaults to BaseURL; overridable in tests
 	modelsURL string // defaults to ModelsURL; overridable in tests
+	googleURL string // defaults to GoogleBaseURL; overridable in tests
 }
 
 // NewClient returns a Client. The HTTP client has no overall timeout; every
 // call is bounded by its context.
 func NewClient() *Client {
-	return &Client{hc: &http.Client{}, baseURL: BaseURL, modelsURL: ModelsURL}
+	return &Client{hc: &http.Client{}, baseURL: BaseURL, modelsURL: ModelsURL, googleURL: GoogleBaseURL}
 }
 
 // ValidateKey checks an API key against the model catalog, which answers 401
@@ -471,9 +472,12 @@ func (c *Client) Stream(ctx context.Context, p Params) <-chan Event {
 			}
 		}
 		var err error
-		if p.Dialect == "responses" {
+		switch p.Dialect {
+		case "responses":
 			err = c.streamResponses(ctx, p, send)
-		} else {
+		case "google":
+			err = c.streamGoogle(ctx, p, send)
+		default:
 			err = c.streamChat(ctx, p, send)
 		}
 		if err != nil && ctx.Err() == nil {

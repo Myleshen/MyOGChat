@@ -12,6 +12,7 @@ import (
 const (
 	DialectChat      = "chat"
 	DialectResponses = "responses"
+	DialectGoogle    = "google"
 )
 
 // Model describes one upstream LLM. Tier thresholds and peak-pricing
