@@ -156,6 +156,9 @@ ab click ".settings-nav-item[data-cat=ai]" >/dev/null 2>&1; sleep 1
 assert "category switch shows key + groups" "!document.getElementById('key-section').classList.contains('cat-hidden') && !document.getElementById('groups-section').classList.contains('cat-hidden')"
 shot 07a-settings-top.png
 ab fill "#group-name" "UI Test Group" >/dev/null 2>&1
+# The AI & access category is taller than a phone viewport now that Providers
+# sits between the key and Groups; scroll the submit button into view first.
+ab scrollintoview "#group-form button[type=submit]" >/dev/null 2>&1; sleep 0.5
 ab click "#group-form button[type=submit]" >/dev/null 2>&1; sleep 1
 assert "group created & listed" "document.getElementById('groups-list').textContent.includes('UI Test Group')"
 ab scrollintoview "#groups-section" >/dev/null 2>&1; sleep 1
