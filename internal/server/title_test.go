@@ -13,8 +13,8 @@ import (
 )
 
 // TestAutoTitleRequestShape pins the one-shot title call: the caller's key and
-// conversation id, the cheap Go model, a small token budget, and at most 400
-// chars of the first user message.
+// conversation id, the non-reasoning Go model, a small token budget, and at
+// most 400 chars of the first user message.
 func TestAutoTitleRequestShape(t *testing.T) {
 	srv, _ := newJobTestServer(t)
 	var gotKey, gotSession, gotModel string
@@ -30,8 +30,8 @@ func TestAutoTitleRequestShape(t *testing.T) {
 	if title != "Quarterly budget review" {
 		t.Fatalf("title = %q, want sanitized title", title)
 	}
-	if gotModel != "mimo-v2.6-flash" {
-		t.Fatalf("model = %q, want mimo-v2.6-flash", gotModel)
+	if gotModel != "hy3" {
+		t.Fatalf("model = %q, want hy3", gotModel)
 	}
 	if gotKey != "user-key" || gotSession != "conv-1" {
 		t.Fatalf("key/session = %q/%q, want the caller's", gotKey, gotSession)
@@ -47,21 +47,30 @@ func TestAutoTitleRequestShape(t *testing.T) {
 	}
 }
 
-// TestAutoTitleBudgetSurvivesReasoning covers the empty-completion bug: the
-// title model reasons before it answers and those tokens share max_tokens, so a
-// budget that the reasoning exhausts leaves empty content. 32 reasoning tokens
-// is the top of the observed range on mimo-v2.6-flash.
+// TestAutoTitleBudgetSurvivesReasoning injects the old behaviour through the
+// fake upstream: 32 tokens burned thinking before the answer, and text only
+// when the budget has room left (that is how mimo-v2.6-flash returned empty
+// titles). The title model is non-reasoning and the budget has headroom, so the
+// title lands even against a model that burns that much.
 func TestAutoTitleBudgetSurvivesReasoning(t *testing.T) {
-	srv, _ := newJobTestServer(t)
 	const reasoningTokens = 32
-	srv.chatOnceFn = func(_ context.Context, _, _, _ string, _ []upstream.Message, maxTokens int) (string, error) {
+	reasoningModel := func(_ context.Context, _, _, _ string, _ []upstream.Message, maxTokens int) (string, error) {
 		if maxTokens <= reasoningTokens {
 			return "", errors.New("empty completion")
 		}
 		return "Van tyre rotation guide", nil
 	}
+
+	srv, _ := newJobTestServer(t)
+	srv.chatOnceFn = reasoningModel
 	if got := srv.autoTitle(context.Background(), "c", "k", "how do I rotate the tyres on my van safely"); got != "Van tyre rotation guide" {
 		t.Fatalf("title = %q, want the model title, not the fallback", got)
+	}
+
+	// The fake really does starve: the old 24-token budget still returns empty,
+	// so the assertion above is about the headroom, not a fake that never fails.
+	if _, err := reasoningModel(context.Background(), "k", "c", titleModel, nil, 24); err == nil {
+		t.Fatal("24-token budget did not starve the injected reasoning burn")
 	}
 }
 

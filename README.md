@@ -129,7 +129,7 @@ Logs: `journalctl --user -u myogchat -f`.
 - Upstream base is `https://opencode.ai/inference/go/openai/v1`. Each user can
   store a personal key in Settings → API key (it overrides the server key);
   keys from the old OpenCode console are no longer accepted.
-- Auto-titles use a cheap Go model (`mimo-v2.6-flash`) on your own key — a
+- Auto-titles use a cheap non-reasoning Go model (`hy3`) on your own key — a
   fraction of a cent per chat, and they fall back to the prompt text if the
   call fails.
 - Prompt-training models are intentionally excluded (`muse-spark-1.2-contributor`,
