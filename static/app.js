@@ -4187,6 +4187,7 @@ function newStreamUI() {
     messageId: null,
     done: false,
     failed: false,
+    reattaching: false,
     errorText: "",
     firstTokenAt: 0,
     durationMs: null,
@@ -4279,10 +4280,13 @@ function renderAgentCaption(ui) {
   ) {
     text = "Step " + ui.agent.step + "/" + (ui.agent.max_steps || 60);
   }
+  // The stream dropped but the job is still running server-side, so the caption
+  // says we are catching up rather than that anything failed.
+  if (ui.reattaching) text = text ? "Reconnecting… · " + text : "Reconnecting…";
   if (!text || !ensureStreamBubble(ui)) return;
   const caption = el("p", "agent-caption");
   caption.textContent = text;
-  if (ui.queued) caption.setAttribute("role", "status");
+  if (ui.queued || ui.reattaching) caption.setAttribute("role", "status");
   ui.agentEl = caption;
   ui.bubble.insertBefore(caption, ui.bubble.firstChild);
 }
@@ -4684,6 +4688,7 @@ async function streamAssistant(opts) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   const parser = createSSEParser((type, data) => handleStreamEvent(type, data, ui));
+  let aborted = false;
   try {
     for (;;) {
       const chunk = await reader.read();
@@ -4693,22 +4698,77 @@ async function streamAssistant(opts) {
     parser.feed(decoder.decode());
     parser.end();
   } catch (err) {
-    if (err.name === "AbortError") markStopped(ui);
-    else showStreamError(ui, "Connection interrupted");
+    if (err.name === "AbortError") {
+      aborted = true;
+      markStopped(ui);
+    }
+    // Any other read error is not a verdict: the job keeps running server-side,
+    // so the finally block asks the snapshot before calling the turn failed.
   } finally {
-    endGeneration(convId);
-    // The live bubble is thrown away either way: a reply stopped without a
-    // terminal frame, or one that ended in an error, both need the server's rows
-    // so the optimistic user message gets its real id (Edit/Retry use it).
-    if (!ui.done && isVisibleConv(convId)) {
-      refreshCurrentConversation().then((applied) => {
-        // The refresh rebuilds from server rows, dropping the failure notice;
-        // re-attach it. `applied === false` (e.g. the chat was deleted) still has
-        // the notice on screen, so there is nothing to restore.
-        if (applied && ui.errorText) showStreamError(ui, ui.errorText);
-      });
+    if (!ui.done && !ui.failed && !aborted) {
+      await reattachAfterDrop(convId, gen, ui);
+    } else {
+      endGeneration(convId);
+      // The live bubble is thrown away either way: a reply stopped without a
+      // terminal frame, or one that ended in an error, both need the server's
+      // rows so the optimistic user message gets its real id (Edit/Retry use it).
+      if (!ui.done && isVisibleConv(convId)) {
+        refreshCurrentConversation().then((applied) => {
+          // The refresh rebuilds from server rows, dropping the failure notice;
+          // re-attach it. `applied === false` (e.g. the chat was deleted) still
+          // has the notice on screen, so there is nothing to restore.
+          if (applied && ui.errorText) showStreamError(ui, ui.errorText);
+        });
+      }
     }
   }
+}
+
+/* The read loop ended without a terminal frame (network drop, or a body that
+   just closed). Replies run server-side (internal/server/jobs.go relayJob: "A
+   disconnect only unsubscribes"), so this is not a failed turn: ask the
+   snapshot, and while the job still runs hand the generation to the same poll
+   path a page reload uses. */
+async function reattachAfterDrop(convId, gen, ui) {
+  let snap = null;
+  try {
+    snap = await api("/api/conversations/" + enc(convId) + "/generation");
+  } catch (err) {
+    if (err instanceof AuthError) {
+      endGeneration(convId);
+      return;
+    }
+  }
+  // Stop, a delete or a fresh send may have replaced this generation meanwhile.
+  if (state.gens.get(convId) !== gen) return;
+  if (snap && !(snap.active || snap.status === "queued")) {
+    // The turn is over (or never started): rebuild from server rows so the
+    // optimistic user message gets its real id, then report the drop only when
+    // nothing landed for it.
+    endGeneration(convId);
+    const applied = await refreshCurrentConversation();
+    if (!applied) return;
+    const last = state.currentMessages[state.currentMessages.length - 1];
+    if (last && last.role === "user" && snap.status !== "stopped") {
+      const text = snap.error || "Connection interrupted";
+      if (isVisibleConv(convId)) showStreamError(ui, text);
+      else toast("Reply failed in " + convTitle(convId) + ": " + text);
+    }
+    return;
+  }
+  // Still running — or the server did not answer at all, in which case the poll
+  // retries and three misses in a row show the "connection lost" notice.
+  // pollGeneration applies the whole snapshot, agent step included, so the
+  // stream's progress timer must not run beside it (two timers = two GET/s).
+  if (gen.agentTimer) clearTimeout(gen.agentTimer);
+  gen.agentTimer = null;
+  gen.controller = null;
+  gen.status = snap && snap.status === "queued" ? "queued" : "running";
+  if (!snap) gen.snapFails = 1;
+  ui.reattaching = true;
+  if (snap) applySnapshot(ui, snap);
+  if (isVisibleConv(convId)) renderStream(ui, true);
+  schedulePoll(convId);
 }
 
 /* Drop a generation record and refresh the composer/indicators. */
@@ -4814,10 +4874,26 @@ async function pollGeneration(convId) {
   let snap;
   try {
     snap = await api("/api/conversations/" + enc(convId) + "/generation");
-  } catch {
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    // Three snapshot requests in a row with no answer means the server is down
+    // or restarting: stop polling and say so instead of spinning forever.
+    gen.snapFails = (gen.snapFails || 0) + 1;
+    if (gen.snapFails >= 3) {
+      const wasVisible = isVisibleConv(convId);
+      // Drop the caption first: "Reconnecting…" would contradict the notice.
+      gen.ui.reattaching = false;
+      if (gen.ui.agentEl) gen.ui.agentEl.remove();
+      endGeneration(convId);
+      const msg = "Connection lost — reload to resume";
+      if (wasVisible) showStreamError(gen.ui, msg);
+      else toast(convTitle(convId) + ": " + msg);
+      return;
+    }
     schedulePoll(convId);
     return;
   }
+  gen.snapFails = 0;
   if (!snap || !(snap.active || snap.status === "queued")) {
     const status = snap ? snap.status : "none";
     const wasVisible = isVisibleConv(convId);
@@ -4842,12 +4918,15 @@ async function pollGeneration(convId) {
    agent/queue fields are touched — never the streaming text buffers. */
 async function pollAgentProgress(convId) {
   const gen = state.gens.get(convId);
-  if (!gen || gen.ui.done || gen.ui.failed) return;
+  // Only the live-stream path needs this: after a reattach there is no stream
+  // (controller is null) and pollGeneration carries the agent fields, so a
+  // second timer would just double the request rate.
+  if (!gen || !gen.controller || gen.ui.done || gen.ui.failed) return;
   let snap;
   try {
     snap = await api("/api/conversations/" + enc(convId) + "/generation");
   } catch {
-    if (state.gens.get(convId) === gen) {
+    if (state.gens.get(convId) === gen && gen.controller) {
       gen.agentTimer = setTimeout(() => pollAgentProgress(convId), 1000);
     }
     return;
@@ -4858,7 +4937,7 @@ async function pollAgentProgress(convId) {
   const before = genSignature(gen.ui);
   applyAgentProgress(gen.ui, snap);
   if (isVisibleConv(convId) && genSignature(gen.ui) !== before) renderStream(gen.ui, true);
-  if (state.gens.get(convId) === gen && !gen.ui.done && !gen.ui.failed) {
+  if (state.gens.get(convId) === gen && gen.controller && !gen.ui.done && !gen.ui.failed) {
     gen.agentTimer = setTimeout(() => pollAgentProgress(convId), 1000);
   }
 }
