@@ -288,7 +288,9 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
   -run LiveSmoke -v`.
 - **Agent mode (5.12)** is implemented and unit-tested but **not deployed**: no
   live 60-minute agent run, no live Docker persistent-workspace test, and no
-  `GITHUB_TOKEN` support (private repos cannot be cloned).
+  `GITHUB_TOKEN` support (private repos cannot be cloned). A failed agent job now
+  persists its partial reply and logs one `WARN` line; a normal chat still
+  discards a failed reply.
 - **Usage/quota accounting** (2.11) is implemented: per-user token/cost view
   (`GET /api/me/usage`), admin all-users view, and optional admin quotas
   (`daily_token_limit` / `monthly_cost_limit`, 0 = off) with per-user overrides.

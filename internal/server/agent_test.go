@@ -1,12 +1,14 @@
 package server
 
 // Agent mode: per-conversation flag, one-per-user FIFO queue, snapshot progress,
-// partial persistence on stop, the disk pre-flight and workspace management.
+// partial persistence on stop and on failure, the disk pre-flight and workspace management.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -702,6 +704,107 @@ func TestDeleteConversationRemovesWorkspace(t *testing.T) {
 	// Another conversation's workspace is untouched.
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("unrelated workspace was removed: %v", err)
+	}
+}
+
+// TestAgentFailurePersistsPartial proves a terminal failure (not only a stop)
+// keeps an agent run's work: one assistant row with what it produced, the job
+// reported as failed, the caller still getting the real error, and one WARN.
+func TestAgentFailurePersistsPartial(t *testing.T) {
+	srv, st := newJobTestServer(t)
+	var logs bytes.Buffer
+	srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	u := seedKeyUser(t, st, "u1", "alice", "key")
+	mkAgentConv(t, st, u, "c1")
+
+	srv.streamAgentFn = fixedStream(
+		upstream.Event{Kind: upstream.EventText, Delta: "partial answer"},
+		upstream.Event{Kind: upstream.EventError, Err: errors.New("upstream exploded")},
+	)
+	rec := postMessage(srv, u, "c1", "hi")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("send status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: error") || !strings.Contains(body, "upstream exploded") {
+		t.Fatalf("response lost the error frame: %s", body)
+	}
+	if snap := getGeneration(t, srv, u, "c1"); snap.Status != jobError || snap.Error != "upstream exploded" {
+		t.Fatalf("snapshot = %+v, want status error with the real message", snap)
+	}
+
+	msgs, err := st.ListMessages(context.Background(), "c1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 2 || msgs[1].Role != "assistant" || msgs[1].Content != "partial answer" {
+		t.Fatalf("messages after failure = %+v, want user + partial assistant", msgs)
+	}
+	if msgs[1].PromptTokens != nil || msgs[1].CostMicros != nil {
+		t.Errorf("failed partial reply must not claim usage: %+v", msgs[1])
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "conversation=c1") {
+		t.Fatalf("no WARN for the failed agent job: %s", logs.String())
+	}
+}
+
+// TestNormalChatFailurePersistsNothing proves the partial persistence is scoped
+// to agent jobs: a failed normal reply stores no half-message but is logged.
+func TestNormalChatFailurePersistsNothing(t *testing.T) {
+	srv, st := newJobTestServer(t)
+	var logs bytes.Buffer
+	srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	u := seedKeyUser(t, st, "u1", "alice", "key")
+	mkConv(t, st, u, "c1")
+
+	srv.streamAgentFn = fixedStream(
+		upstream.Event{Kind: upstream.EventText, Delta: "half a reply"},
+		upstream.Event{Kind: upstream.EventError, Err: errors.New("upstream exploded")},
+	)
+	rec := postMessage(srv, u, "c1", "hi")
+	if !strings.Contains(rec.Body.String(), "upstream exploded") {
+		t.Fatalf("response lost the error frame: %s", rec.Body.String())
+	}
+	if snap := getGeneration(t, srv, u, "c1"); snap.Status != jobError {
+		t.Fatalf("snapshot = %+v, want status error", snap)
+	}
+
+	msgs, err := st.ListMessages(context.Background(), "c1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Role != "user" {
+		t.Fatalf("messages after a failed normal chat = %+v, want only the user message", msgs)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "agent=false") {
+		t.Fatalf("failed normal chat was not logged: %s", logs.String())
+	}
+}
+
+// TestAgentFailureWithoutOutputPersistsNothing proves an agent failure that
+// produced no text or reasoning stores no empty assistant row.
+func TestAgentFailureWithoutOutputPersistsNothing(t *testing.T) {
+	srv, st := newJobTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "key")
+	mkAgentConv(t, st, u, "c1")
+
+	srv.streamAgentFn = fixedStream(
+		upstream.Event{Kind: upstream.EventError, Err: errors.New("context deadline exceeded")},
+	)
+	rec := postMessage(srv, u, "c1", "hi")
+	if !strings.Contains(rec.Body.String(), "context deadline exceeded") {
+		t.Fatalf("response lost the error frame: %s", rec.Body.String())
+	}
+	if snap := getGeneration(t, srv, u, "c1"); snap.Status != jobError {
+		t.Fatalf("snapshot = %+v, want status error", snap)
+	}
+
+	msgs, err := st.ListMessages(context.Background(), "c1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Role != "user" {
+		t.Fatalf("messages after an empty failure = %+v, want only the user message", msgs)
 	}
 }
 
