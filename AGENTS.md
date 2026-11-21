@@ -21,7 +21,7 @@ pattern will do — and don't cut corners when the right fix is a few lines more
 - `main.go` — config, startup, retention janitor, graceful shutdown
 - `internal/models` — static model registry + cost calculation (tests here)
 - `internal/store` — SQLite persistence (modernc.org/sqlite, WAL)
-- `internal/upstream` — chat-completions + responses dialect adapters
+- `internal/upstream` — chat-completions, responses, anthropic and google dialect adapters
 - `internal/auth` — multi-user session-cookie auth (PBKDF2, stdlib)
 - `internal/server` — HTTP routes, SSE streaming, embedded SPA
 - `static/` — vanilla-JS PWA (no build step), embedded via `//go:embed all:static`
@@ -63,7 +63,8 @@ Internet access is via the Cloudflare Tunnel (public hostname → `http://raspbe
 - **Projects**: named containers with a system `instructions` prompt + optional
   `default_model`; chats belong to 0/1 project. Instructions are injected every
   turn (chat dialect → leading `system` message; responses dialect →
-  `instructions` field). Deleting a project unfiles its chats.
+  `instructions` field; anthropic → folded `system`; google →
+  `systemInstruction`). Deleting a project unfiles its chats.
 - **Thinking**: collapsible reasoning block with duration + reasoning-token
   count; `thinking` badge on models that surface reasoning. Cost/TPS fields:
   `messages.duration_ms`, `messages.reasoning_tokens`.

@@ -240,7 +240,7 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 			"input":             input,
 			"store":             false,
 			"stream":            true,
-			"max_output_tokens": 4096,
+			"max_output_tokens": p.budget(),
 			"reasoning":         map[string]any{"effort": effort, "summary": "auto"},
 		}
 		if p.Instructions != "" {

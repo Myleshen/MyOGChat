@@ -15,9 +15,6 @@ import (
 // POST {base}/models/{model}:streamGenerateContent?alt=sse (contract §4).
 const GoogleBaseURL = "https://opencode.ai/inference/go/google/v1beta"
 
-// googleMaxOutputTokens mirrors the responses dialect's output budget.
-const googleMaxOutputTokens = 4096
-
 // googlePart is one content part of a Google GenerateContent request/response.
 type googlePart struct {
 	Text             string                  `json:"text,omitempty"`
@@ -193,7 +190,7 @@ func googleGenerationConfig(p Params) map[string]any {
 		thinking["thinkingBudget"] = budget
 	}
 	return map[string]any{
-		"maxOutputTokens": googleMaxOutputTokens,
+		"maxOutputTokens": p.budget(),
 		"temperature":     1.0,
 		"thinkingConfig":  thinking,
 	}

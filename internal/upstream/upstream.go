@@ -399,11 +399,23 @@ type Params struct {
 	// Tools are exposed to the model for the agentic loop (Phase 2.4). Empty
 	// disables tool calling.
 	Tools []ToolSpec
-	// MaxTokens bounds the reply for dialects that require a budget (anthropic
-	// Messages). 0 lets the dialect choose its default.
+	// MaxTokens bounds the reply for the dialects that take an explicit output
+	// budget (responses, anthropic, google). 0 lets the dialect use its default.
 	MaxTokens int
 	// Temperature is sent only when non-nil.
 	Temperature *float64
+}
+
+// defaultMaxTokens is the output budget used when a caller sets none. The
+// server always sets Params.MaxTokens; this only serves direct callers/tests.
+const defaultMaxTokens = 4096
+
+// budget resolves the output budget for a dialect that takes one.
+func (p Params) budget() int {
+	if p.MaxTokens > 0 {
+		return p.MaxTokens
+	}
+	return defaultMaxTokens
 }
 
 // Client calls the OpenCode Go API. The bearer key is supplied per request
@@ -675,7 +687,7 @@ func (c *Client) streamResponses(ctx context.Context, p Params, send func(Event)
 		"input":             responsesInput(p),
 		"store":             false,
 		"stream":            true,
-		"max_output_tokens": 4096,
+		"max_output_tokens": p.budget(),
 		"reasoning":         map[string]any{"effort": effort, "summary": "auto"},
 	}
 	// Project instructions go in the responses API's dedicated field (§8.6).

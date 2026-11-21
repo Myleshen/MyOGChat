@@ -18,10 +18,6 @@ const AnthropicBaseURL = "https://opencode.ai/inference/go/anthropic/v1"
 // without it.
 const anthropicVersion = "2023-06-01"
 
-// anthropicMaxTokens is the default output budget. Messages requires
-// max_tokens, so a caller that sets none still gets a bounded reply.
-const anthropicMaxTokens = 4096
-
 // doAnthropic POSTs one Messages request. The gateway accepts the key in
 // either x-api-key or Authorization (probed anonymous, 2026-11-21), so both
 // are sent: x-api-key is what native Anthropic clients use, and Authorization
@@ -73,14 +69,10 @@ func anthropicSystem(p Params) string {
 
 // anthropicPayload builds one request body from the history accumulated so far.
 func anthropicPayload(p Params, msgs []any, useTools bool) map[string]any {
-	maxTokens := p.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = anthropicMaxTokens
-	}
 	payload := map[string]any{
 		"model":      p.Model,
 		"messages":   msgs,
-		"max_tokens": maxTokens,
+		"max_tokens": p.budget(),
 		"stream":     true,
 	}
 	if sys := anthropicSystem(p); sys != "" {

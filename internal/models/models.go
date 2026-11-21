@@ -43,12 +43,8 @@ type Model struct {
 }
 
 // Registry is the static model list from contract §5. Exactly these models —
-// the Go catalog over the chat-completions and responses dialects as of
-// 2026-11-21. Anthropic (/messages) and Google (generateContent/interactions)
-// models are omitted because neither dialect is implemented:
-//   - /messages: claude-haiku-5-5, minimax-m3, qwen3.7-plus, qwen3.8-flash,
-//     qwen3.8-max, qwen4-max
-//   - generate-content/interactions: gemini-4-argon
+// the Go catalog over all four dialects (chat completions, responses, Anthropic
+// messages and Google generate-content) as of 2026-11-21.
 //
 // iceman-contributor-free, muse-spark-1.2-contributor and
 // muse-spark-1.3-contributor are excluded outright: their catalog entry has
@@ -56,8 +52,13 @@ type Model struct {
 //
 // Thinking marks models that surface visible reasoning: a chat model whose
 // catalog entry declares a reasoning_field (otherwise reasoning stays hidden
-// upstream), or a responses model with reasoning.supported (it exposes the
-// effort control) — see contract §8.7.
+// upstream), or a responses/Google model with reasoning.supported (both expose
+// a reasoning control) — see contract §8.7. Anthropic models stay unmarked
+// because the adapter sends no thinking parameter.
+//
+// Gemini's catalog multiplier doubles prices from 2026-12-01 (a scheduled
+// change, not peak hours); it is not modelled in CostMicros, so its rows carry
+// no peak rates.
 var Registry = []Model{
 	{ID: "beam-free", Name: "Beam Free", Dialect: DialectChat, Thinking: true},
 	{ID: "longcat-2.5-free", Name: "LongCat 2.5 Free", Dialect: DialectChat, Thinking: true},
@@ -80,6 +81,18 @@ var Registry = []Model{
 	{ID: "gpt-6-luna", Name: "GPT 6 Luna", Dialect: DialectResponses, Effort: true, Thinking: true, Vision: true, InputPerM: 0.10, OutputPerM: 0.50, CacheReadPerM: 0.01, TierThreshold: 272000, TierInputPerM: 0.20, TierOutputPerM: 0.75, TierCachePerM: 0.02},
 	{ID: "gpt-5.6-luna", Name: "GPT 5.6 Luna", Dialect: DialectResponses, Effort: true, Thinking: true, Vision: true, InputPerM: 0.20, OutputPerM: 1.20, CacheReadPerM: 0.02, TierThreshold: 272000, TierInputPerM: 0.40, TierOutputPerM: 1.80, TierCachePerM: 0.04},
 	{ID: "grok-4.7", Name: "Grok 4.7", Dialect: DialectResponses, Effort: true, Thinking: true, Vision: true, InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.50, TierThreshold: 200000, TierInputPerM: 4.00, TierOutputPerM: 12.00, TierCachePerM: 1.00},
+
+	// Anthropic Messages dialect (§4). No thinking parameter is sent, so
+	// Thinking stays false until the adapter controls a reasoning budget.
+	{ID: "qwen3.8-flash", Name: "Qwen3.8 Flash", Dialect: DialectAnthropic, Vision: true, InputPerM: 0.15, OutputPerM: 0.47, CacheReadPerM: 0.016},
+	{ID: "claude-haiku-5-5", Name: "Claude Haiku 5.5", Dialect: DialectAnthropic, Vision: true, InputPerM: 0.10, OutputPerM: 0.50, CacheReadPerM: 0.01, TierThreshold: 100000, TierInputPerM: 0.50, TierOutputPerM: 2.50, TierCachePerM: 0.05},
+	{ID: "minimax-m3", Name: "MiniMax M3", Dialect: DialectAnthropic, Vision: true, InputPerM: 0.30, OutputPerM: 1.20, CacheReadPerM: 0.06, TierThreshold: 512000, TierInputPerM: 0.60, TierOutputPerM: 2.40, TierCachePerM: 0.12},
+	{ID: "qwen3.7-plus", Name: "Qwen3.7 Plus", Dialect: DialectAnthropic, Vision: true, InputPerM: 0.40, OutputPerM: 1.60, CacheReadPerM: 0.04, TierThreshold: 256000, TierInputPerM: 1.20, TierOutputPerM: 4.80, TierCachePerM: 0.12},
+	{ID: "qwen4-max", Name: "Qwen4 Max", Dialect: DialectAnthropic, Vision: true, InputPerM: 1.50, OutputPerM: 4.50, CacheReadPerM: 0.075},
+	{ID: "qwen3.8-max", Name: "Qwen3.8 Max", Dialect: DialectAnthropic, Vision: true, InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.25},
+
+	// Google generate-content dialect (§4).
+	{ID: "gemini-4-argon", Name: "Gemini 4 Argon", Dialect: DialectGoogle, Thinking: true, Vision: true, InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.10},
 }
 
 // legacy keeps retired model IDs resolvable so existing conversations still

@@ -264,15 +264,18 @@ Settings:
 
 ## 4. Upstream adapters (internal, `internal/upstream`)
 
-Both adapters emit a common channel of:
+Four adapters emit a common channel of:
 ```go
 type Event struct {
     Kind  string // "reasoning" | "text" | "usage" | "error"
     Delta string
-    Usage *Usage // prompt_tokens, completion_tokens, cached_tokens
+    Usage *Usage // prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens
     Err   error
 }
 ```
+
+The dialogs and their mapping gaps are described in
+[`docs/6.4-upstream-dialects.md`](docs/6.4-upstream-dialects.md).
 
 **chat dialect** → `POST https://opencode.ai/inference/go/openai/v1/chat/completions`:
 `{"model":…, "messages":[{"role","content"}…], "stream":true,
@@ -283,14 +286,53 @@ text; final chunk with empty `choices` carries `usage` (`prompt_tokens`,
 
 **responses dialect** → `POST https://opencode.ai/inference/go/openai/v1/responses`:
 `{"model":…, "input":[{"role","content"}…], "store":false, "stream":true,
-"max_output_tokens":4096, "reasoning":{"effort":<effort or "medium">,
+"max_output_tokens":<budget>, "reasoning":{"effort":<effort or "medium">,
 "summary":"auto"}}`. Parse SSE events: `response.output_text.delta` (`delta`
 field) → text; `response.reasoning_summary_text.delta` → reasoning (may never
 fire); `response.completed` → `response.usage` mapped as
 `prompt_tokens=input_tokens`, `completion_tokens=output_tokens`,
 `cached_tokens=input_tokens_details.cached_tokens`.
 
-Both: 5-minute overall timeout, non-2xx → `error` event with status + body snippet.
+**anthropic dialect** → `POST https://opencode.ai/inference/go/anthropic/v1/messages`.
+Headers: `x-api-key: <key>` **and** `Authorization: Bearer <key>` (the gateway
+accepts either; both are sent), `anthropic-version: 2023-06-01`,
+`Accept: text/event-stream`, plus the common `x-opencode-session` /
+`User-Agent`. Body:
+`{"model":…, "max_tokens":<budget>, "stream":true, "system":<context + project
+instructions>, "messages":[{"role","content":[blocks]}], "temperature":?,
+"tools":?}`. Content blocks are `text`, `image` (`{"source":{"type":"base64",
+"media_type","data"}}`) and `tool_use` (`{id,name,input}`); a stored tool round
+replays as the assistant's `tool_use` blocks followed by a **user** turn of
+`tool_result` blocks (`{tool_use_id, content}`). Tools are flat
+`{name, description, input_schema}`. Parse SSE: `message_start` (input/cache-read
+usage), `content_block_start` (first text/thinking chunk, `tool_use` id+name),
+`content_block_delta` (`text_delta`, `thinking_delta`, `input_json_delta`),
+`message_delta` (cumulative output tokens), `message_stop`, `error`; `ping` is
+ignored.
+
+**google dialect** → `POST https://opencode.ai/inference/go/google/v1beta/models/{model}:streamGenerateContent?alt=sse`.
+Headers: `Authorization: Bearer <key>` (the gateway also accepts
+`x-goog-api-key`), plus the common `x-opencode-session` / `User-Agent`. Body:
+`{"contents":[{"role":"user"|"model","parts":[…]}], "systemInstruction":{"parts":[{"text"}]},
+"generationConfig":{"maxOutputTokens":<budget>, "temperature":1.0,
+"thinkingConfig":{"includeThoughts":true,"thinkingBudget":?}},
+"tools":[{"functionDeclarations":[…]}]}`. Parts are `text`, `inlineData`
+(raw base64 + mimeType), `functionCall` (`{name,args}`) and `functionResponse`
+(`{name,response:{result}}`); Google matches responses by **name**, so call ids
+are synthesized locally. Parse either SSE `data:` objects or a chunked JSON
+array of `GenerateContentResponse`: `candidates[].content.parts[]` (`text`,
+`thought:true` → reasoning, `functionCall`), `usageMetadata`
+(`candidatesTokenCount + thoughtsTokenCount` → `completion_tokens`), and an
+`error` object mid-stream.
+
+**Output budget.** The server sends one budget for every turn
+(`turnMaxTokens = 8192`, `internal/server`) as `Params.MaxTokens`; the responses,
+anthropic and google adapters put it in `max_output_tokens` / `max_tokens` /
+`generationConfig.maxOutputTokens`. The chat-completions dialect sends no cap.
+Direct adapter callers that set none fall back to 4096
+(`defaultMaxTokens`).
+
+All four: 5-minute overall timeout, non-2xx → `error` event with status + body snippet.
 
 Endpoints and credentials (checked live 2026-11-01):
 
@@ -313,7 +355,7 @@ Endpoints and credentials (checked live 2026-11-01):
 use tier prices (tier_input/tier_output/tier_cache).
 
 Synced to `GET https://opencode.ai/inference/go/v1/models` on 2026-11-21
-(31 models live); the trimmed snapshot lives in
+(31 models live, 28 registered); the trimmed snapshot lives in
 `internal/models/testdata/catalog.json` and `TestRegistryMatchesCatalog` fails on
 any price, tier, peak, vision, thinking or dialect drift.
 
@@ -341,6 +383,27 @@ any price, tier, peak, vision, thinking or dialect drift.
 | kimi-k3.1-pro | Kimi K3.1 Pro | 2.00 | 10.00 | 0.20 | — | — | thinking, vision |
 | kimi-k3 | Kimi K3 | 3.00 | 15.00 | 0.30 | — | — | thinking, vision |
 
+The seven models reachable through the two dialects added in this revision
+(§4). All values below are derived from the same catalog fixture and checked by
+`TestRegistryMatchesCatalog`:
+
+| id | name | in | out | cache | tier_threshold | tier in/out/cache | notes |
+|---|---|---|---|---|---|---|---|
+| qwen3.8-flash | Qwen3.8 Flash | 0.15 | 0.47 | 0.016 | — | — | anthropic, vision |
+| claude-haiku-5-5 | Claude Haiku 5.5 | 0.10 | 0.50 | 0.01 | 100000 → 0.50/2.50/0.05 | | anthropic, vision |
+| minimax-m3 | MiniMax M3 | 0.30 | 1.20 | 0.06 | 512000 → 0.60/2.40/0.12 | | anthropic, vision |
+| qwen3.7-plus | Qwen3.7 Plus | 0.40 | 1.60 | 0.04 | 256000 → 1.20/4.80/0.12 | | anthropic, vision |
+| qwen4-max | Qwen4 Max | 1.50 | 4.50 | 0.075 | — | — | anthropic, vision |
+| qwen3.8-max | Qwen3.8 Max | 2.00 | 6.00 | 0.25 | — | — | anthropic, vision |
+| gemini-4-argon | Gemini 4 Argon | 2.00 | 10.00 | 0.10 | — | — | google, thinking, vision |
+
+Anthropic models carry **no thinking flag**: the adapter sends no thinking
+parameter, so reasoning is not requested and never displayed. Gemini is marked
+thinking because the adapter asks for thoughts (`includeThoughts`) and renders
+them. Gemini's catalog multiplier doubles prices from **2026-12-01**; that is a
+scheduled price change, not peak hours, so it is not modelled — the registry
+bills today's base rates.
+
 DeepSeek peak hours: 01:00–04:00 and 06:00–10:00 UTC, **Mon–Fri**; all other
 times use base prices.
 
@@ -355,10 +418,6 @@ still load and can be switched to a current model, but they never appear in
 `internal/models/models_test.go`, which also fails when a refreshed snapshot adds
 an undecided model):
 
-- Anthropic `/messages` dialect, no adapter: `claude-haiku-5-5`, `minimax-m3`,
-  `qwen3.7-plus`, `qwen3.8-flash`, `qwen3.8-max`, `qwen4-max`.
-- Google `generate-content`/`interactions` dialect, no adapter:
-  `gemini-4-argon`.
 - `go.training: true` — provider trains on prompts, excluded by policy:
   `iceman-contributor-free`, `muse-spark-1.2-contributor`,
   `muse-spark-1.3-contributor`.
@@ -371,7 +430,8 @@ models whose catalog entry accepts `image/*` input (feature 2.13):
 `deepseek-v4.1-flash`, `gpt-6-luna`, `gpt-5.6-luna`, `grok-4.7`,
 `glm-5.3-flash`, `mimo-v2.6-flash`, `minimax-m3.1-flash`, `mimo-v2.6-pro`,
 `step-5-preview`, `kimi-k3`, `kimi-k3.1-pro`, `kimi-k2.7-code`, `hy4`,
-`hy4-flash-free`.
+`hy4-flash-free`, `qwen3.8-flash`, `claude-haiku-5-5`, `minimax-m3`,
+`qwen3.7-plus`, `qwen4-max`, `qwen3.8-max`, `gemini-4-argon`.
 
 **Cost formula** (integer micros, `math.Round`):
 `cost_micros = (prompt−cached)·in_rate + cached·cache_rate + completion·out_rate`
@@ -532,12 +592,18 @@ nothing else; `updated_at` is bumped.
   - **chat dialect**: when non-empty, prepend `{"role":"system","content":Instructions}`
     to the messages array.
   - **responses dialect**: set top-level `"instructions": Instructions`.
+  - **anthropic dialect**: fold `Context` and `Instructions` into the
+    top-level `"system"` string (blank-line separated).
+  - **google dialect**: fold them into `"systemInstruction":{"parts":[{"text"}]}`.
   - Instructions come from the conversation's project: `projects.instructions`
     plus, when non-empty, a `## Project memory` block separated by a blank line
     (6.2). The server composes that one string; the dialect only passes it on.
 - `Usage` gains `ReasoningTokens`:
   - chat: `usage.completion_tokens_details.reasoning_tokens`
   - responses: `usage.output_tokens_details.reasoning_tokens`
+  - google: `usageMetadata.thoughtsTokenCount` (added into `completion_tokens`
+    as well, since thoughts are billed output)
+  - anthropic: never — Messages reports no thinking-token count
 
 ### 8.7 Model registry
 
@@ -545,9 +611,10 @@ nothing else; `updated_at` is bumped.
 **surfaces visible reasoning text** or exposes a reasoning-effort control. For
 chat models the catalog declares this per model as `reasoning_field`
 (e.g. `reasoning_content`); Hy3, Hy4 and Hy4 Flash reason internally but declare
-no field, so they stay `false`. Responses models are `true` whenever
-`capabilities.reasoning.supported`. The UI shows a "thinking" badge for `true`
-models.
+no field, so they stay `false`. Responses and Google models are `true` whenever
+`capabilities.reasoning.supported` (both expose a reasoning control). Anthropic
+models stay `false`: the adapter sends no thinking parameter, so nothing is
+requested or displayed. The UI shows a "thinking" badge for `true` models.
 
 ### 8.8 Frontend additions
 

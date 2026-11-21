@@ -58,13 +58,15 @@ in two independent ways.
    `longcat-2.5-preview-free`; when that model was retired every `PUT
    /api/me/key` returned `400 key check failed`. Now it is
    `GET /inference/go/v1/models` (401/403 → `invalid API key`).
-4. **Catalog churn.** Registry refreshed to the 21 current chat/responses
-   models (2026-11-21: added `hy4`, `longcat-2.5-free`, `hy4-flash-free`;
-   retired `glm-5.2`); 9 retired IDs stay resolvable (`models.legacy`) so old
-   conversations still load. Vision default is now `deepseek-v4.1-flash` (the
-   old `deepseek-v4-flash-vision-exp` was retired). The live catalog is pinned
-   as a test fixture (`internal/models/testdata/catalog.json`) so price, tier,
-   peak, vision and thinking drift fails a test.
+4. **Catalog churn.** Registry refreshed to the 28 current models across four
+   dialects (2026-11-21: added `hy4`, `longcat-2.5-free`, `hy4-flash-free`;
+   retired `glm-5.2`; the Anthropic `/messages` and Google `generateContent`
+   adapters now serve their seven models); 9 retired IDs stay resolvable
+   (`models.legacy`) so old conversations still load. Vision default is now
+   `deepseek-v4.1-flash` (the old `deepseek-v4-flash-vision-exp` was retired).
+   The live catalog is pinned as a test fixture
+   (`internal/models/testdata/catalog.json`) so price, tier, peak, vision and
+   thinking drift fails a test.
 5. **Auto-titles** run on the caller's own key with the cheap Go model
    `glm-5.3-flash` at 64 tokens, retrying once at 256 when the model returns no
    text, then keeping the truncated prompt as the title. Verified by probe:
@@ -84,7 +86,7 @@ internal/
   secret/     AES-256-GCM helper for encrypted secrets at rest
   store/      SQLite: users, settings, conversations, messages, projects, groups, attachments
   models/     static model registry + cost/peak/tier pricing + thinking flags
-  upstream/   OpenCode Go clients: chat + responses dialects, SSE parsing, agentic tool loop (agent.go)
+  upstream/   OpenCode Go clients: chat, responses, anthropic and google dialects, SSE parsing, agentic tool loop (agent.go)
   server/     HTTP routes, SSE streaming, auth middleware, per-user scoping
   tools/      tool registry + web_search (Tavily/Brave/DDG chain), fetch_url, Linkwarden, maps_* (OSM: Nominatim/OSRM/Photon+Overpass), run_bash/run_python
   sandbox/    hardened ephemeral Docker code sandbox runner (2.6/2.7)
@@ -117,6 +119,8 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-provid
   `5.12-agent-mode.md` (implemented, unit-tested, not deployed)
 - `docs/6.0-calendar-triggers.md` — Phase 6, design only (the calendar starts its
   own conversations)
+- `docs/6.4-upstream-dialects.md` — the four upstream dialects: what each
+  adapter maps, the event-model gaps, and the unverified-live caveats
 
 ## Conventions & hard constraints
 

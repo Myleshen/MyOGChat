@@ -21,11 +21,12 @@ docs under [`docs/`](docs/).
 - **Agent mode** — opt-in per conversation for long jobs: a persistent 5 GiB
   sandbox workspace, a 60-minute / 60-step budget and a per-user queue
   ([`docs/5.12-agent-mode.md`](docs/5.12-agent-mode.md))
-- **Two upstream dialects** — OpenAI-compatible `/chat/completions` (Hy, LongCat,
-  Kimi, GLM, DeepSeek, MiMo, MiniMax, Step, …) and the Responses API `/responses`
-  (GPT 6/5.6 Luna, Grok), with a reasoning-effort selector. The
-  Anthropic (`/messages`) and Google (`generateContent`) models in the live
-  catalog are not offered — those dialects are not implemented.
+- **Four upstream dialects** — OpenAI-compatible `/chat/completions` (Hy, LongCat,
+  Kimi, GLM, DeepSeek, MiMo, MiniMax, Step, …), the Responses API `/responses`
+  (GPT 6/5.6 Luna, Grok), Anthropic `/messages` (Claude Haiku 5.5, MiniMax M3,
+  Qwen3.7/3.8, Qwen4 Max) and Google `generateContent` (Gemini 4 Argon), with a
+  reasoning-effort selector. 28 models in total, all priced from the live catalog
+  ([`docs/6.4-upstream-dialects.md`](docs/6.4-upstream-dialects.md)).
 - Collapsible **thinking** blocks (duration + reasoning-token count) and a
   thinking badge on models that surface reasoning
 - Per-message **cost** and **tokens/sec**, plus a conversation running total
