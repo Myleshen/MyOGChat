@@ -267,6 +267,10 @@
           </button>
           <textarea id="input" rows="1" placeholder="Message MyOGChat…"
                     enterkeyhint="send" autocomplete="off"></textarea>
+          <!-- Phones only (CSS): one overflow menu for attach / image / agent /
+               voice, so the message field keeps most of the row (see app.js). -->
+          <button id="composer-menu-btn" class="icon-btn composer-menu-btn" type="button"
+                  aria-label="More actions" aria-haspopup="menu" aria-expanded="false"></button>
           <button id="mic-btn" class="icon-btn mic-btn" type="button" hidden
                   aria-label="Record voice message" title="Record voice message">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"

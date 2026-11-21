@@ -52,6 +52,12 @@ login() {
 }
 # jsval <js-expr> — evaluate and strip agent-browser's JSON quoting.
 jsval() { ab eval "String($1)" | tail -1 | tr -d '\r' | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//'; }
+# composer_menu <item label> — on a phone the secondary composer actions live
+# behind #composer-menu-btn, so open that menu and pick the item.
+composer_menu() {
+  ab click "#composer-menu-btn" >/dev/null 2>&1; sleep 0.5
+  ab find role menuitem click --name "$1" >/dev/null 2>&1; sleep 0.5
+}
 # new_scratch_chat — start a fresh chat through the real New-chat control.
 # The app reopens the last conversation on load, so a pass that skipped this
 # would append to (and edit) whatever chat the profile had open last run.
@@ -119,10 +125,17 @@ ab press Escape >/dev/null 2>&1; sleep 1
 ab click "#backdrop" >/dev/null 2>&1 || true; sleep 1
 
 echo "-- attachments (2.3) --"
+# On a phone the paperclip and the image button are behind the composer menu.
+# Stub the native file picker so the menu item's click is observable, then feed
+# the hidden input the way a real pick would.
+ab eval "(function(){window.__pickerClicks=0;document.getElementById('file-input').addEventListener('click',function(e){e.preventDefault();window.__pickerClicks++;},true);return 'ok';})()" >/dev/null 2>&1
+composer_menu "Attach files"
+composer_menu "Generate image"
 ab upload "#file-input" "$UPLOAD_FILE" >/dev/null 2>&1 || true
 sleep 2
-assert "attachment chip shown" "document.getElementById('attachments-bar').textContent.length > 0 && !document.getElementById('attachments-bar').hidden"
+assert "composer menu: attach + image + chip" "window.__pickerClicks === 1 && !document.getElementById('image-bar').hidden && !document.querySelector('.menu') && document.getElementById('attachments-bar').textContent.length > 0 && !document.getElementById('attachments-bar').hidden"
 shot 06-attachment.png
+ab click "#image-cancel" >/dev/null 2>&1 || true
 
 echo "-- settings page (#/settings) --"
 ab press Escape >/dev/null 2>&1; sleep 1

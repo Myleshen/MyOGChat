@@ -949,15 +949,37 @@ button { font: inherit; }
   color: var(--text-dim);
   font-size: 0.75rem;
 }
-/* Phones: the composer row is crowded, so the chip drops its label and becomes
-   a 44px icon button. The tighter gap + padding keep the message field usable
-   (412px viewport: 113px of field before, 156px after). */
+/* Phones: the composer row is crowded, so the secondary actions (attach, image,
+   agent, voice) collapse into one overflow menu button and the message field
+   gets most of the width. The buttons stay in the DOM — menu items click them. */
+.composer-menu-btn {
+  display: none;
+  position: relative;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+.composer-menu-btn svg { width: 20px; height: 20px; }
+/* Agent mode is on while its control is hidden: show a dot (the aria-label on
+   the button carries the same state, so this is not colour-only). */
+.composer-menu-btn.is-on::after {
+  content: "";
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg);
+}
 @media (max-width: 640px) {
   .composer { padding-left: 8px; padding-right: 8px; }
   .composer-row { gap: 4px; }
-  .agent-btn { padding: 8px; border-radius: 50%; }
-  .agent-btn-icon { display: block; }
-  .agent-btn-label { display: none; }
+  .attach-btn,
+  .image-btn,
+  .agent-btn,
+  .mic-btn { display: none; }
+  .composer-menu-btn { display: inline-flex; }
 }
 .agent-caption {
   margin: 0 0 8px;
