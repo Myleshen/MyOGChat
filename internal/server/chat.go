@@ -22,14 +22,16 @@ const (
 	// maxContentBytes caps a single user message at 100 KB (contract §3).
 	maxContentBytes = 100 * 1024
 	// Title model for the one-shot auto-title call: a cheap Go model, billed to
-	// the caller's own key (contract §3). It must not reason: reasoning tokens
-	// are billed inside max_tokens, so on a reasoning model (mimo-v2.6-flash)
-	// some calls spent the whole 64-token budget thinking and returned empty
-	// content.
-	titleModel = "hy3"
-	// titleMaxTokens is comfortable headroom for a short title on a
-	// non-reasoning model.
+	// the caller's own key (contract §3). Measured against the live API: this one
+	// returns a title at 64 tokens every time, while hy3 spent 256 tokens and
+	// returned finish_reason=length with no content and no reasoning, and
+	// longcat-2.0 emitted only reasoning.
+	titleModel = "glm-5.3-flash"
+	// titleMaxTokens is comfortable headroom for a short title.
 	titleMaxTokens = 64
+	// titleRetryTokens is the last attempt when a model returns finish_reason
+	// length with no text. Only a failing title pays for the second call.
+	titleRetryTokens = 256
 	// titleTimeout bounds the detached auto-title call. Nothing waits on it, so
 	// it only stops a stray call running on — it never caps the reply.
 	titleTimeout = 30 * time.Second
@@ -994,18 +996,26 @@ func (s *Server) autoTitle(ctx context.Context, convID, apiKey, firstUser string
 	defer cancel()
 	prompt := "Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\n" +
 		"User: " + truncateRunes(firstUser, 400)
-	// titleModel does not reason, so the whole budget is available to the title;
-	// switching it to a reasoning model would starve this budget (contract §3).
-	t, err := s.chatOnceFn(ctx, apiKey, convID, titleModel,
-		[]upstream.Message{{Role: "user", Content: prompt}}, titleMaxTokens)
-	if err != nil {
-		s.log.Warn("auto-title call failed, using fallback", "error", err)
-		return fallbackTitle(firstUser)
+	// Some models answer finish_reason=length with no text (their output lands in
+	// a field we do not surface), so a title gets one retry with a much larger
+	// budget before falling back to the truncated prompt.
+	var lastErr error
+	for _, mt := range []int{titleMaxTokens, titleRetryTokens} {
+		t, err := s.chatOnceFn(ctx, apiKey, convID, titleModel,
+			[]upstream.Message{{Role: "user", Content: prompt}}, mt)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if t = sanitizeTitle(t); t != "" {
+			return t
+		}
+		lastErr = errors.New("empty completion")
 	}
-	if t = sanitizeTitle(t); t == "" {
-		return fallbackTitle(firstUser)
+	if lastErr != nil {
+		s.log.Warn("auto-title call failed, using fallback", "error", lastErr)
 	}
-	return t
+	return fallbackTitle(firstUser)
 }
 
 // sanitizeTitle reduces an LLM title to one line of at most 80 chars.

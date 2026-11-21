@@ -30,13 +30,14 @@ browser (PWA) ──▶ Go binary :8787 ──▶ https://opencode.ai/inference/
 ```
 
 Title generation is the exception: it is a second, one-shot non-streaming call
-to the same Go base, using a cheap **non-reasoning** model (`hy3`) on the
-caller's key, a 64-token budget (a short title plus headroom) and only the first
-400 chars of the prompt, so a title costs a fraction of a cent. It is
-non-reasoning on purpose: reasoning tokens are billed inside `max_tokens`, so
-`mimo-v2.6-flash` sometimes spent the whole budget thinking and returned an
-empty title. It starts with the reply and runs in parallel, so a slow title
-never delays `done`.
+to the same Go base, using a cheap model (`glm-5.3-flash`) on the caller's key, a
+64-token budget (a short title plus headroom) and only the first 400 chars of
+the prompt, so a title costs a fraction of a cent. Small budgets are risky on
+this catalog: models either spend the budget on reasoning (billed inside
+`max_tokens`) or, like `hy3`, return `finish_reason=length` with no text at all.
+The title call therefore retries once with a 256-token budget when the first
+answer is empty, and only then falls back to the prompt text. It starts with the
+reply and runs in parallel, so a slow title never delays `done`.
 
 - **Backend**: Go, stdlib `net/http` only. SQLite via `modernc.org/sqlite`
   (pure Go, no cgo → trivial `GOARCH=arm64` cross-compile). Frontend embedded
@@ -110,7 +111,7 @@ points to `http://raspberrypi.local:8787`.
   from Go. Current free IDs include `mimo-v2.6-flash-free`,
   `deepseek-v4.1-flash-free`, `glm-5.3-flash-free`, `beam-free`. That quota is
   also exhaustible (`429 FreeUsageLimitError`) even with a key, so the app no
-  longer calls Zen: auto-titles use the cheap non-reasoning Go model `hy3` on
+  longer calls Zen: auto-titles use the cheap Go model `glm-5.3-flash` on
   the caller's own key and fall back to the prompt text if that fails.
 - **Keys are per console generation.** Keys issued by the old console were
   invalidated in the migration; an affected key fails every Go and Zen endpoint

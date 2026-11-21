@@ -13,7 +13,7 @@ import (
 )
 
 // TestAutoTitleRequestShape pins the one-shot title call: the caller's key and
-// conversation id, the non-reasoning Go model, a small token budget, and at
+// conversation id, the cheap Go model, a small token budget, and at
 // most 400 chars of the first user message.
 func TestAutoTitleRequestShape(t *testing.T) {
 	srv, _ := newJobTestServer(t)
@@ -30,8 +30,8 @@ func TestAutoTitleRequestShape(t *testing.T) {
 	if title != "Quarterly budget review" {
 		t.Fatalf("title = %q, want sanitized title", title)
 	}
-	if gotModel != "hy3" {
-		t.Fatalf("model = %q, want hy3", gotModel)
+	if gotModel != "glm-5.3-flash" {
+		t.Fatalf("model = %q, want glm-5.3-flash", gotModel)
 	}
 	if gotKey != "user-key" || gotSession != "conv-1" {
 		t.Fatalf("key/session = %q/%q, want the caller's", gotKey, gotSession)
@@ -312,4 +312,25 @@ func TestAutoTitleNeverOverwritesARename(t *testing.T) {
 		conv, err := st.GetConversation(context.Background(), "c1", u.ID)
 		return err == nil && conv.Title == "My title"
 	})
+}
+
+// A model can answer finish_reason=length with no text at all (hy3 does at any
+// budget), so a title retries once with a larger budget before falling back.
+func TestAutoTitleRetriesEmptyCompletion(t *testing.T) {
+	var budgets []int
+	srv, _ := newJobTestServer(t)
+	srv.chatOnceFn = func(_ context.Context, _, _, model string, _ []upstream.Message, maxTokens int) (string, error) {
+		budgets = append(budgets, maxTokens)
+		if maxTokens <= titleMaxTokens {
+			return "", nil // empty completion, exactly what hy3 returns
+		}
+		return "Retried Title", nil
+	}
+	title := srv.autoTitle(context.Background(), "conv-retry", "key", "some user message")
+	if title != "Retried Title" {
+		t.Fatalf("title = %q, want the retry's title", title)
+	}
+	if len(budgets) != 2 || budgets[0] != titleMaxTokens || budgets[1] != titleRetryTokens {
+		t.Fatalf("budgets = %v, want [%d %d]", budgets, titleMaxTokens, titleRetryTokens)
+	}
 }

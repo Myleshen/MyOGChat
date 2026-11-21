@@ -108,12 +108,14 @@ Server flow:
    bump conversation `updated_at`.
 6. **Auto-title**: when the conversation `title` is still empty, make ONE
    non-streaming chat-dialect call on the **caller's resolved key** to the cheap
-   **non-reasoning** Go model `hy3`. It starts as soon as the job's history is
+   Go model `glm-5.3-flash`. It starts as soon as the job's history is
    loaded and runs **in parallel with the reply**, so a slow title never delays
    `done`:
    messages = `[{"role":"user","content":"Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\nUser: <first user msg, truncated to 400 chars>"}]`,
    `max_tokens: 64` (a short title plus headroom), no tools, no streaming, on a
-   context detached from the job and bounded by a 30 s timeout. The model must
+   context detached from the job and bounded by a 30 s timeout. If the model
+   returns no text, the call is retried once with `max_tokens: 256` before the
+   truncated prompt is used. The model must
    not reason: reasoning tokens are billed inside `max_tokens`, which is how
    `mimo-v2.6-flash` sometimes spent the budget thinking and returned empty
    content. Sanitize to one line ≤80

@@ -65,11 +65,12 @@ in two independent ways.
    old `deepseek-v4-flash-vision-exp` was retired). The live catalog is pinned
    as a test fixture (`internal/models/testdata/catalog.json`) so price, tier,
    peak, vision and thinking drift fails a test.
-5. **Auto-titles** run on the caller's own key with the cheap **non-reasoning**
-   Go model `hy3` (the free Zen quota kept returning `429 FreeUsageLimitError`
-   with a key; `hy3` replaced `mimo-v2.6-flash`, whose reasoning tokens were
-   billed inside `max_tokens` and sometimes left an empty title). Any failure
-   keeps the truncated prompt as the title.
+5. **Auto-titles** run on the caller's own key with the cheap Go model
+   `glm-5.3-flash` at 64 tokens, retrying once at 256 when the model returns no
+   text, then keeping the truncated prompt as the title. Verified by probe:
+   `hy3` returns `finish_reason=length` with no content and no reasoning at any
+   budget, `longcat-2.0` emits only reasoning, and `mimo-v2.6-flash` sometimes
+   spends the budget thinking.
 
 A key is needed in **Settings → API key** (per-user, overrides the env key); the
 env `OPENCODE_API_KEY` remains the shared server key fallback.
@@ -320,7 +321,7 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
   `longcat-2.5-preview-free`, which was retired, making every save return 400).
 - **Free models are on Zen** (`https://opencode.ai/zen/v1`), a quota separate
   from Go — but that quota also runs out (`429 FreeUsageLimitError`), so the app
-  never calls it. Auto-titles use `hy3` (non-reasoning) on the caller's Go key.
+  never calls it. Auto-titles use `glm-5.3-flash` on the caller's Go key.
 - **Split-horizon DNS**: on the owner's LAN, `chat.example.com` resolves to
   `raspberrypi.local` (the Pi), not Cloudflare. Off-LAN it goes through the tunnel.
 - The **`rpi`** shell alias (`ssh pi@raspberrypi.local`) exists on the owner's
