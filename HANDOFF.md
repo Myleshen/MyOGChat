@@ -177,7 +177,9 @@ deploy/deploy-release.sh pi v1.2.3         # pipes deploy/install-release.sh ove
   swaps the binary, restarts, then polls for HTTP 200.
 - First deploy only: `docker login ghcr.io` on the Pi (packages are private by
   default; PAT with `read:packages`).
-- Rollback: `deploy/deploy-release.sh pi <previous-tag>`.
+- Rollback: `deploy/deploy-release.sh pi <tag>` — only the newest image version
+  is retained per package, so an older tag must be re-tagged first, and that
+  re-runs the workflow and rebuilds its images.
 - Details, verification and rollback: `docs/6.1-release-ci.md`.
 
 ## Testing (UI/UX is a gate — use agent-browser)
