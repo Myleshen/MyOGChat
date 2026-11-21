@@ -31,6 +31,17 @@ const (
 	// it only stops a stray call running on — it never caps the reply.
 	titleTimeout = 30 * time.Second
 
+	// Rolling project memory (6.2): the same cheap model as auto-title, on a
+	// detached, non-streaming call of its own. The token budget fits the model's
+	// reasoning plus an ≤32000-character memory.
+	memoryModel     = "mimo-v2.6-flash"
+	memoryMaxTokens = 4000
+	memoryTimeout   = 30 * time.Second
+	// User turn and reply are truncated to these byte caps before they go into
+	// the memory prompt, so one long turn cannot dominate the call.
+	memoryUserBytes  = 2048
+	memoryReplyBytes = 6144
+
 	// Vision image input (Phase 5.1): the SPA sends up to a few inline image
 	// data URIs with a message when the conversation's model can see images.
 	// The caps bound the request body and the upstream payload.
@@ -664,6 +675,19 @@ stream:
 		s.log.Error("bump conversation updated_at", "error", err)
 	}
 
+	// Rolling project memory (6.2) runs off the reply's critical path, exactly
+	// like the title: nothing below waits on it, so it can never delay or fail
+	// `done`. Only a successful reply in a project chat is worth remembering.
+	if conv.ProjectID != nil {
+		userTurn := spec.userContent
+		if strings.TrimSpace(userTurn) == "" {
+			userTurn = lastUserMessage(history)
+		}
+		if strings.TrimSpace(userTurn) != "" {
+			go s.updateProjectMemory(ctx, u.ID, conv.ID, *conv.ProjectID, apiKey, userTurn, asstMsg.Content)
+		}
+	}
+
 	// Reap the title if it beat the reply. Otherwise `done` goes out now and the
 	// goroutine's SetTitle lands in the background; the next list refresh shows
 	// it. Either way nothing here waits on the title.
@@ -687,6 +711,74 @@ func firstUserMessage(history []store.Message) string {
 		}
 	}
 	return ""
+}
+
+// lastUserMessage returns a conversation's most recent user message, the turn
+// that a regenerate reply belongs to (a post carries its own userContent).
+func lastUserMessage(history []store.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			return history[i].Content
+		}
+	}
+	return ""
+}
+
+// updateProjectMemory asks the cheap model to merge this turn into the project's
+// durable memory and stores the result. It is best effort by design: every
+// failure is logged and dropped, and a compare-and-set write means a memory the
+// user edited during the call is never clobbered.
+func (s *Server) updateProjectMemory(ctx context.Context, userID, convID, projectID, apiKey, userTurn, reply string) {
+	ctx = context.WithoutCancel(ctx)
+	if s.chatOnceFn == nil {
+		return
+	}
+	p, err := s.st.GetProject(ctx, projectID, userID)
+	if err != nil {
+		s.log.Warn("project memory unavailable", "project", projectID, "error", err)
+		return
+	}
+	if !p.MemoryAuto {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, memoryTimeout)
+	defer cancel()
+	out, err := s.chatOnceFn(ctx, apiKey, convID, memoryModel,
+		[]upstream.Message{{Role: "user", Content: memoryPrompt(p.Memory, userTurn, reply)}}, memoryMaxTokens)
+	if err != nil {
+		s.log.Warn("project memory call failed", "project", projectID, "error", err)
+		return
+	}
+	memory := truncateRunes(strings.TrimSpace(out), maxProjectMemoryRunes)
+	if memory == "" {
+		return
+	}
+	wrote, err := s.st.SetProjectMemoryIfUnchanged(ctx, projectID, userID, p.Memory, memory)
+	if err != nil {
+		s.log.Error("persist project memory", "project", projectID, "error", err)
+		return
+	}
+	if !wrote {
+		// The user edited the memory while the call ran; their text wins.
+		s.log.Debug("project memory changed by user, dropping update", "project", projectID)
+	}
+}
+
+// memoryPrompt is the single memory-merge prompt: current memory plus the
+// truncated exchange, asking for the updated memory alone.
+func memoryPrompt(memory, userTurn, reply string) string {
+	if strings.TrimSpace(memory) == "" {
+		memory = "(empty)"
+	}
+	return "You maintain the durable memory of a project workspace. Merge this exchange into the existing memory.\n\n" +
+		"Rules:\n" +
+		"- Keep only durable facts that will still matter in future chats: decisions, preferences, names, versions, constraints and ongoing work.\n" +
+		"- Merge duplicates and compress older detail first, rather than dropping structure; drop pleasantries and one-off details.\n" +
+		"- Reply with the updated memory only: plain text, no preamble, no code fences.\n" +
+		fmt.Sprintf("- Keep it under %d characters.\n\n", maxProjectMemoryRunes) +
+		"Existing memory:\n" + memory + "\n\n" +
+		"Exchange:\nUser:\n" + firstNBytes(userTurn, memoryUserBytes) +
+		"\n\nAssistant:\n" + firstNBytes(reply, memoryReplyBytes)
 }
 
 // generateTitle runs the one-shot auto-title call off the reply's critical path
@@ -867,8 +959,9 @@ func nonImageAttachments(atts []store.Attachment) []store.Attachment {
 	return out
 }
 
-// projectInstructions returns the system prompt of a conversation's project, or
-// "" when the chat is unfiled (§8.6).
+// projectInstructions returns the system prompt of a conversation's project:
+// the user-authored instructions plus, when set, the rolling memory block, or
+// "" when the chat is unfiled (§8.6). Both dialects take this one string.
 func (s *Server) projectInstructions(ctx context.Context, projectID *string, userID string) string {
 	if projectID == nil {
 		return ""
@@ -879,7 +972,10 @@ func (s *Server) projectInstructions(ctx context.Context, projectID *string, use
 		s.log.Warn("project instructions unavailable", "project", *projectID, "error", err)
 		return ""
 	}
-	return p.Instructions
+	if strings.TrimSpace(p.Memory) == "" {
+		return p.Instructions
+	}
+	return joinSystem(p.Instructions, "## Project memory\n"+p.Memory)
 }
 
 // autoTitle makes one non-streaming call on the caller's key to generate a short

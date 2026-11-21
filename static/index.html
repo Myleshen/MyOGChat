@@ -872,6 +872,28 @@
           <textarea id="project-instructions" rows="5" maxlength="8000"
                     placeholder="System prompt used for chats in this project"></textarea>
         </label>
+        <details id="project-memory-block" class="memory-block">
+          <summary class="memory-summary">Memory</summary>
+          <div class="memory-body">
+            <div class="field-head">
+              <label class="field-label" for="project-memory">Memory notes</label>
+              <button type="button" id="project-memory-clear" class="btn btn-ghost memory-clear">Clear</button>
+            </div>
+            <textarea id="project-memory" rows="4" maxlength="32000"
+                      aria-describedby="project-memory-hint project-memory-count"
+                      placeholder="Anything the assistant should remember about this project"></textarea>
+            <div class="field-meta">
+              <p id="project-memory-hint" class="field-hint">Sent with every turn in this project, so focused beats long: keep it short to save tokens. Updated automatically after each reply unless turned off.</p>
+              <span id="project-memory-count" class="field-count">0 / 32000</span>
+            </div>
+            <label class="setting-toggle">
+              <span>Update memory automatically</span>
+              <input id="project-memory-auto" type="checkbox" checked>
+            </label>
+            <p id="project-memory-error" class="field-error" role="alert" hidden></p>
+            <p id="project-memory-status" class="field-status" aria-live="polite" hidden></p>
+          </div>
+        </details>
         <label class="field">
           <span class="field-label">Default model</span>
           <select id="project-model" class="select"></select>

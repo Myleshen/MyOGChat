@@ -16,7 +16,9 @@ and Cloudflare Tunnel.
 
 - Multi-user accounts, file uploads, RAG, tools/function-calling, voice
 - React Native / native apps (PWA covers mobile)
-- Anthropic `/messages` dialect models (Claude Haiku, MiniMax, Qwen) — excluded
+- Anthropic `/messages` dialect models (Claude Haiku 5.5, MiniMax M3, Qwen 3.7
+  Plus / 3.8 Flash / 3.8 Max / Qwen4 Max) and Google `generateContent` models
+  (Gemini 4 Argon) — excluded; those dialects are not implemented
 
 ## Architecture
 

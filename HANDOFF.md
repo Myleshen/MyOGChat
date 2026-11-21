@@ -58,10 +58,13 @@ in two independent ways.
    `longcat-2.5-preview-free`; when that model was retired every `PUT
    /api/me/key` returned `400 key check failed`. Now it is
    `GET /inference/go/v1/models` (401/403 → `invalid API key`).
-4. **Catalog churn.** Registry refreshed to the 19 current chat/responses
-   models; 8 retired IDs stay resolvable (`models.legacy`) so old conversations
-   still load. Vision default is now `deepseek-v4.1-flash` (the old
-   `deepseek-v4-flash-vision-exp` was retired).
+4. **Catalog churn.** Registry refreshed to the 21 current chat/responses
+   models (2026-11-21: added `hy4`, `longcat-2.5-free`, `hy4-flash-free`;
+   retired `glm-5.2`); 9 retired IDs stay resolvable (`models.legacy`) so old
+   conversations still load. Vision default is now `deepseek-v4.1-flash` (the
+   old `deepseek-v4-flash-vision-exp` was retired). The live catalog is pinned
+   as a test fixture (`internal/models/testdata/catalog.json`) so price, tier,
+   peak, vision and thinking drift fails a test.
 5. **Auto-titles** run on the caller's own key with the cheap Go model
    `mimo-v2.6-flash` (the free Zen quota kept returning `429 FreeUsageLimitError`
    with a key). Any failure keeps the truncated prompt as the title.
@@ -88,7 +91,7 @@ internal/
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
 deploy/       systemd unit + deploy.sh + sandbox-setup.sh + ocr-setup.sh + ocr/ (Dockerfile) + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-providers.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.10-2.11-tool-activity-usage.md, 2.13-vision-ocr.md, 3.1-imagegen.md, 3.2-imap.md, 3.3-calendar.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, SCOPING.md, 5-vision.md, 5-search-pin.md, 5-export-edit.md, 5.7-background-generation.md, 5.8-sandbox-artifacts.md, 5.9-email-digest.md, 5.10-reuse-draft.md, 5.11-multi-mailbox.md, 5-hardening.md, 5.12-agent-mode.md, 6.0-calendar-triggers.md, research/phase4/
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-providers.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.10-2.11-tool-activity-usage.md, 2.13-vision-ocr.md, 3.1-imagegen.md, 3.2-imap.md, 3.3-calendar.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, SCOPING.md, 5-vision.md, 5-search-pin.md, 5-export-edit.md, 5.7-background-generation.md, 5.8-sandbox-artifacts.md, 5.9-email-digest.md, 5.10-reuse-draft.md, 5.11-multi-mailbox.md, 5-hardening.md, 5.12-agent-mode.md, 6.0-calendar-triggers.md, 6.2-project-memory.md, research/phase4/
 ```
 
 ## Docs index
