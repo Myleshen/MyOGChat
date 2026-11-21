@@ -53,7 +53,7 @@ echo "== [3/3] images =="
 # tools.list must reach the images without anyone remembering to rebuild.
 echo "   pulling base images"
 "$DOCKER" pull bash:5.3
-"$DOCKER" pull python:3.14-slim
+"$DOCKER" pull python:3.15-slim
 
 echo "   building $BASH_IMAGE from Dockerfile.bash"
 "$DOCKER" build -t "$BASH_IMAGE" -f "$IMAGE_DIR/Dockerfile.bash" "$IMAGE_DIR"
