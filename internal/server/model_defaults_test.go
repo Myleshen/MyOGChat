@@ -19,4 +19,9 @@ func TestFeatureModelDefaultsAreRegistered(t *testing.T) {
 			t.Errorf("%s = %q is not a registered model", name, id)
 		}
 	}
+	// The title call must not reason: reasoning tokens are billed inside
+	// max_tokens, and a model that spends the budget thinking returns no title.
+	if m, _ := models.ByID(titleModel); m.Thinking {
+		t.Errorf("titleModel = %q reasons; use a non-reasoning model", titleModel)
+	}
 }

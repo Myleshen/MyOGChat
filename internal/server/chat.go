@@ -21,11 +21,14 @@ import (
 const (
 	// maxContentBytes caps a single user message at 100 KB (contract §3).
 	maxContentBytes = 100 * 1024
-	// Title model for the one-shot auto-title call: the cheapest Go model,
-	// billed to the caller's own key (contract §3).
-	titleModel = "mimo-v2.6-flash"
-	// titleMaxTokens covers the model's reasoning plus a short title. At 24 the
-	// reasoning tokens used the whole budget and the content came back empty.
+	// Title model for the one-shot auto-title call: a cheap Go model, billed to
+	// the caller's own key (contract §3). It must not reason: reasoning tokens
+	// are billed inside max_tokens, so on a reasoning model (mimo-v2.6-flash)
+	// some calls spent the whole 64-token budget thinking and returned empty
+	// content.
+	titleModel = "hy3"
+	// titleMaxTokens is comfortable headroom for a short title on a
+	// non-reasoning model.
 	titleMaxTokens = 64
 	// titleTimeout bounds the detached auto-title call. Nothing waits on it, so
 	// it only stops a stray call running on — it never caps the reply.
@@ -991,8 +994,8 @@ func (s *Server) autoTitle(ctx context.Context, convID, apiKey, firstUser string
 	defer cancel()
 	prompt := "Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\n" +
 		"User: " + truncateRunes(firstUser, 400)
-	// The model reasons before it answers and those tokens share the budget:
-	// at 24 it spent all of them thinking and returned empty content.
+	// titleModel does not reason, so the whole budget is available to the title;
+	// switching it to a reasoning model would starve this budget (contract §3).
 	t, err := s.chatOnceFn(ctx, apiKey, convID, titleModel,
 		[]upstream.Message{{Role: "user", Content: prompt}}, titleMaxTokens)
 	if err != nil {
