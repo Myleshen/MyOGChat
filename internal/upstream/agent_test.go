@@ -208,6 +208,60 @@ func TestStreamAgentChatLoop(t *testing.T) {
 	}
 }
 
+// TestStreamAgentReasoningSeparated covers reasoning across tool rounds: the
+// second round's reasoning must not glue onto the first ("Let's run it.Report
+// every line…").
+func TestStreamAgentReasoningSeparated(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			writeSSE(w,
+				"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"first\"}}]}\n\n",
+				"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"run_bash\",\"arguments\":\"{}\"}}]}}]}\n\n",
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+				"data: [DONE]\n\n",
+			)
+			return
+		}
+		writeSSE(w,
+			"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"second\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n",
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+			"data: [DONE]\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	c := &Client{hc: srv.Client(), baseURL: srv.URL}
+	exec := func(context.Context, ToolCall) (string, string, error) { return "ok", "ok", nil }
+	events := collectEvents(t, c.StreamAgent(context.Background(), Params{
+		Dialect:  "chat",
+		Model:    "test",
+		APIKey:   "k",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Tools:    []ToolSpec{{Type: "function", Function: ToolFunctionSpec{Name: "run_bash"}}},
+	}, exec, AgentOptions{}))
+
+	var reasoning, text strings.Builder
+	for _, ev := range events {
+		switch ev.Kind {
+		case EventReasoning:
+			reasoning.WriteString(ev.Delta)
+		case EventText:
+			text.WriteString(ev.Delta)
+		case EventError:
+			t.Fatalf("unexpected error event: %v", ev.Err)
+		}
+	}
+	if got := reasoning.String(); got != "first\n\nsecond" {
+		t.Errorf("reasoning = %q, want %q", got, "first\n\nsecond")
+	}
+	if got := text.String(); got != "done" {
+		t.Errorf("text = %q, want done", got)
+	}
+}
+
 func TestStreamAgentResponsesLoop(t *testing.T) {
 	var calls int32
 	var mu sync.Mutex

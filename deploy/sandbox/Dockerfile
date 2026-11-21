@@ -35,6 +35,7 @@ RUN pip install --no-cache-dir \
 # Sanity check at build time so a broken wheel fails the build, not a user run.
 RUN python -c "import reportlab, openpyxl, docx, PIL, matplotlib; print('sandbox libs ok')"
 
-# Runs as the unprivileged sandbox user (65534:65534) on a read-only rootfs with
-# a host workspace bind-mounted at /work; no writable layer is needed.
+# Never run as root: the server passes --user <service uid>:<gid> (or nobody
+# when it runs as root) on every `docker run`; a read-only rootfs needs no
+# writable layer and a host workspace is bind-mounted at /work.
 CMD ["python", "-"]

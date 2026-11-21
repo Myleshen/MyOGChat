@@ -472,6 +472,11 @@ button { font: inherit; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Vertical scrolling only. `overflow-y: auto` promotes the other axis to a
+     scroll container, and a text selection dragged sideways then pans the whole
+     thread instead of a selection handle moving. Individual code blocks and
+     tables keep their own `overflow-x: auto`. */
+  overflow-x: clip;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding: 16px 12px;
@@ -489,11 +494,16 @@ button { font: inherit; }
 .welcome h2 { color: var(--text); margin: 12px 0 8px; }
 .welcome p { margin: 0; line-height: 1.7; }
 
-.msg { display: flex; }
+/* Message rows are flex containers: without `min-width: 0` their automatic
+   minimum size is content-based, so one wide child (a URL, a table, a code
+   line) can force the row wider than the thread and the whole layout stretches
+   sideways. Wide content must scroll inside its own box instead. */
+.msg { display: flex; min-width: 0; }
 .msg-user { justify-content: flex-end; }
 
 .msg-bubble {
   max-width: 92%;
+  min-width: 0;
   padding: 10px 14px;
   border-radius: var(--radius);
   overflow-wrap: break-word;
@@ -528,6 +538,9 @@ button { font: inherit; }
   display: inline-flex;
   gap: 4px;
   margin-left: auto;
+  /* Long-press on an action must not start a text selection. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .msg-action {
   min-height: 28px;
@@ -541,9 +554,15 @@ button { font: inherit; }
   cursor: pointer;
 }
 .msg-action:hover { color: var(--text); border-color: var(--text-dim); }
+/* On the accent user bubble `--text-dim` is ~1.7:1; white is 4.7:1 (dark) and
+   5.2:1 (light), so the action labels stay legible where the bubble sits. */
+.msg-user .msg-action { color: #fff; border-color: rgba(255, 255, 255, 0.55); }
+.msg-user .msg-action:hover { color: #fff; border-color: #fff; }
 
-/* Inline user-message edit (feature 5). */
-.msg-text { white-space: pre-wrap; }
+/* Inline user-message edit (feature 5). `anywhere` (not only `break-word`)
+   also shrinks the text's intrinsic width, so a pasted 1000px URL can never
+   force the bubble — and with it the whole row — wider than the thread. */
+.msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg-edit-input {
   display: block;
   width: 100%;

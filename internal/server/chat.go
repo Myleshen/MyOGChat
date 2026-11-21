@@ -21,9 +21,11 @@ import (
 const (
 	// maxContentBytes caps a single user message at 100 KB (contract §3).
 	maxContentBytes = 100 * 1024
-	// titleModel is used for the one-shot auto-title call (contract §3). It is a
-	// free Zen model, so titles never spend Go quota (separate allowance).
-	titleModel = "mimo-v2.6-flash-free"
+	// Title model for the one-shot auto-title call: the cheapest non-reasoning
+	// Go model, billed to the caller's own key (contract §3).
+	titleModel = "mimo-v2.6-flash"
+	// titleTimeout bounds the title call so it can never outlive the reply job.
+	titleTimeout = 8 * time.Second
 
 	// Vision image input (Phase 5.1): the SPA sends up to a few inline image
 	// data URIs with a message when the conversation's model can see images.
@@ -633,7 +635,7 @@ stream:
 				break
 			}
 		}
-		title = s.autoTitle(ctx, conv.ID, apiKey, firstUser, content.String())
+		title = s.autoTitle(ctx, conv.ID, apiKey, firstUser)
 		if title != "" {
 			if err := s.st.SetTitle(ctx, conv.ID, title); err != nil {
 				s.log.Error("persist auto-title", "error", err)
@@ -816,16 +818,21 @@ func (s *Server) projectInstructions(ctx context.Context, projectID *string, use
 	return p.Instructions
 }
 
-// autoTitle makes one non-streaming call to generate a short title, falling
-// back to the first 40 chars of the first user message on any failure.
-func (s *Server) autoTitle(ctx context.Context, convID, apiKey, firstUser, firstAssistant string) string {
+// autoTitle makes one non-streaming call on the caller's key to generate a short
+// title, falling back to the first 40 chars of the first user message on any
+// failure. Only the first 400 chars of that message are sent, so a title costs a
+// fraction of a cent.
+func (s *Server) autoTitle(ctx context.Context, convID, apiKey, firstUser string) string {
+	if s.chatOnceFn == nil {
+		// Tests may build a Server without New; a title is never worth a panic.
+		return fallbackTitle(firstUser)
+	}
+	ctx, cancel := context.WithTimeout(ctx, titleTimeout)
+	defer cancel()
 	prompt := "Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\n" +
-		"User: " + truncateRunes(firstUser, 500) + "\n" +
-		"Assistant: " + truncateRunes(firstAssistant, 500)
-	// 200 tokens is ample for a short title; the prompt keeps the model from
-	// spending the budget on preamble. Zen free models bill a separate quota.
-	t, err := s.up.ZenChatOnce(ctx, apiKey, convID, titleModel,
-		[]upstream.Message{{Role: "user", Content: prompt}}, 200)
+		"User: " + truncateRunes(firstUser, 400)
+	t, err := s.chatOnceFn(ctx, apiKey, convID, titleModel,
+		[]upstream.Message{{Role: "user", Content: prompt}}, 24)
 	if err != nil {
 		s.log.Warn("auto-title call failed, using fallback", "error", err)
 		return fallbackTitle(firstUser)

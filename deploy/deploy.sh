@@ -29,13 +29,14 @@ echo "==> building linux/arm64"
 (cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 "${GO[@]}" build -trimpath -ldflags="-s -w" -o "$BIN" .)
 
 echo "==> installing on $HOST"
-ssh "$HOST" 'mkdir -p ~/.local/bin ~/.config/systemd/user'
-scp -q "$BIN" "$HOST:~/.local/bin/myogchat.new"
+ssh "$HOST" 'mkdir -p ~/.local/bin ~/softwares/MyOGChat ~/.config/systemd/user'
+scp -q "$BIN" "$HOST:~/softwares/MyOGChat/myogchat.new"
 scp -q "$ROOT/deploy/myogchat.service" "$HOST:~/.config/systemd/user/myogchat.service"
 ssh "$HOST" '
   set -e
-  mv ~/.local/bin/myogchat.new ~/.local/bin/myogchat
-  chmod 755 ~/.local/bin/myogchat
+  mv ~/softwares/MyOGChat/myogchat.new ~/softwares/MyOGChat/myogchat
+  chmod 755 ~/softwares/MyOGChat/myogchat
+  ln -sfn ~/softwares/MyOGChat/myogchat ~/.local/bin/myogchat
   systemctl --user daemon-reload
   systemctl --user enable --now myogchat
   systemctl --user restart myogchat

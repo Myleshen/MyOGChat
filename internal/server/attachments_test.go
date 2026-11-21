@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -121,5 +123,60 @@ func TestAttachmentNotReadyRejected(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "still being transcribed") {
 		t.Errorf("body = %s", rr.Body.String())
+	}
+}
+
+// cancelAfterEOF cancels the request context as soon as the body starts
+// arriving, standing in for a browser tab closed mid-upload.
+type cancelAfterEOF struct {
+	rc     io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterEOF) Read(p []byte) (int, error) {
+	n, err := c.rc.Read(p)
+	if n > 0 {
+		c.cancel()
+	}
+	return n, err
+}
+
+func (c *cancelAfterEOF) Close() error { return c.rc.Close() }
+
+// TestCancelledUploadIsNot500 verifies a client that disappears during an
+// upload gets 499 (nobody is left to read a 500) and no error-level log.
+func TestCancelledUploadIsNot500(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	srv, st := newImageTestServer(t, "")
+	seedActiveUser(t, st, "u-a", "alice", false)
+	h := srv.Handler()
+	cookie := login(t, h, "alice")
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "notes.txt")
+	_, _ = fw.Write([]byte("hello"))
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/attachments", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.AddCookie(cookie)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req = req.WithContext(ctx)
+	req.Body = &cancelAfterEOF{rc: req.Body, cancel: cancel}
+	logs.Reset() // drop the login request log
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != statusClientClosedRequest {
+		t.Fatalf("status = %d, want 499 (body %s)", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("cancelled upload logged at error level:\n%s", logs.String())
 	}
 }

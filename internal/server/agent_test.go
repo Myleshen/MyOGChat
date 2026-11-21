@@ -662,5 +662,48 @@ func TestAgentWorkspaceEndpoints(t *testing.T) {
 	}
 }
 
+// TestDeleteConversationRemovesWorkspace covers deleting a conversation: its
+// agent workspace becomes unreachable once the row is gone (the workspace
+// endpoint needs the conversation), so the delete must remove it too.
+func TestDeleteConversationRemovesWorkspace(t *testing.T) {
+	srv, st := newImageTestServer(t, "")
+	seedActiveUser(t, st, "u-alice", "alice", false)
+	root := t.TempDir()
+	srv.sbx = sandbox.NewRunner(sandbox.Config{WorkDir: root})
+
+	alice := store.User{ID: "u-alice"}
+	mkAgentConv(t, st, alice, "c1")
+	mkAgentConv(t, st, alice, "c2")
+
+	userDir := filepath.Join(root, sandbox.AgentWorkspaceDirName, "u-alice")
+	dir := filepath.Join(userDir, "c1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+	keep := filepath.Join(userDir, "c2")
+	if err := os.MkdirAll(keep, 0o755); err != nil {
+		t.Fatalf("mkdir c2: %v", err)
+	}
+
+	h := srv.Handler()
+	cookie := login(t, h, "alice")
+	if rr := doJSON(t, h, cookie, http.MethodDelete, "/api/conversations/c1", nil); rr.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204 (body %s)", rr.Code, rr.Body.String())
+	}
+	if _, err := st.GetConversation(context.Background(), "c1", "u-alice"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("conversation row still exists: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("workspace still exists after delete: %v", err)
+	}
+	// Another conversation's workspace is untouched.
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("unrelated workspace was removed: %v", err)
+	}
+}
+
 // ptr returns a pointer to v.
 func ptr[T any](v T) *T { return &v }

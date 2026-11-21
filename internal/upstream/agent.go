@@ -69,7 +69,8 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, opts
 
 	maxIter := opts.iterations()
 	var total Usage
-	var streamed strings.Builder // text emitted this turn, across rounds
+	var streamed strings.Builder  // text emitted this turn, across rounds
+	var reasoning strings.Builder // reasoning emitted this turn, across rounds
 	for iter := 0; iter < maxIter; iter++ {
 		if opts.OnStep != nil {
 			opts.OnStep(iter+1, maxIter)
@@ -105,6 +106,7 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, opts
 		var acc chatToolAccumulator
 		dsml := &DSMLFilter{}
 		roundText := false
+		roundReasoning := false
 		var round Usage
 		var hasRound bool
 		err = scanSSE(resp.Body, func(_, data string) (bool, error) {
@@ -119,7 +121,13 @@ func (c *Client) agentChat(ctx context.Context, p Params, exec ExecuteTool, opts
 			if len(chunk.Choices) > 0 {
 				delta := chunk.Choices[0].Delta
 				if delta.ReasoningContent != "" {
-					if !send(Event{Kind: EventReasoning, Delta: delta.ReasoningContent}) {
+					safe := delta.ReasoningContent
+					if !roundReasoning {
+						safe = roundSeparator(reasoning.String()) + safe
+						roundReasoning = true
+					}
+					reasoning.WriteString(safe)
+					if !send(Event{Kind: EventReasoning, Delta: safe}) {
 						return true, nil
 					}
 				}
@@ -214,6 +222,7 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 	}
 
 	var total Usage
+	var reasoning strings.Builder // reasoning emitted this turn, across rounds
 	maxIter := opts.iterations()
 	for iter := 0; iter < maxIter; iter++ {
 		if opts.OnStep != nil {
@@ -248,6 +257,7 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 		}
 
 		var acc responsesToolAccumulator
+		roundReasoning := false
 		var round Usage
 		var hasRound bool
 		err = scanSSE(resp.Body, func(event, data string) (bool, error) {
@@ -277,7 +287,13 @@ func (c *Client) agentResponses(ctx context.Context, p Params, exec ExecuteTool,
 					Delta string `json:"delta"`
 				}
 				if err := json.Unmarshal([]byte(data), &d); err == nil && d.Delta != "" {
-					if !send(Event{Kind: EventReasoning, Delta: d.Delta}) {
+					safe := d.Delta
+					if !roundReasoning {
+						safe = roundSeparator(reasoning.String()) + safe
+						roundReasoning = true
+					}
+					reasoning.WriteString(safe)
+					if !send(Event{Kind: EventReasoning, Delta: safe}) {
 						return true, nil
 					}
 				}

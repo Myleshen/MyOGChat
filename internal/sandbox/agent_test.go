@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -306,8 +307,8 @@ func TestSpecTimeoutOverridesConfig(t *testing.T) {
 // --ulimit fsize values.
 func TestFileSizeLimitByMode(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.FileSizeLimit = "1m:1m"
-	cfg.AgentFileSizeLimit = "2g:2g"
+	cfg.FileSizeLimit = "10485760:10485760"
+	cfg.AgentFileSizeLimit = "2147483648:2147483648"
 	f := &fakeExec{}
 	r := newTestRunner(cfg, f)
 
@@ -322,11 +323,69 @@ func TestFileSizeLimitByMode(t *testing.T) {
 	if len(runs) != 2 {
 		t.Fatalf("run calls = %d, want 2", len(runs))
 	}
-	if got := ulimitValue(runs[0].args, "fsize"); got != "1m:1m" {
-		t.Errorf("ephemeral fsize = %q, want 1m:1m", got)
+	if got := ulimitValue(runs[0].args, "fsize"); got != "10485760:10485760" {
+		t.Errorf("ephemeral fsize = %q, want 10485760:10485760", got)
 	}
-	if got := ulimitValue(runs[1].args, "fsize"); got != "2g:2g" {
-		t.Errorf("agent fsize = %q, want 2g:2g", got)
+	if got := ulimitValue(runs[1].args, "fsize"); got != "2147483648:2147483648" {
+		t.Errorf("agent fsize = %q, want 2147483648:2147483648", got)
+	}
+}
+
+// TestAgentFileSizeLimitIsNumeric checks the effective agent --ulimit fsize is
+// plain soft:hard byte counts. Docker's --ulimit parser takes integers only, so
+// a suffixed value like "2g:2g" makes every agent call fail with exit 125.
+func TestAgentFileSizeLimitIsNumeric(t *testing.T) {
+	f := &fakeExec{}
+	r := newTestRunner(testConfig(t), f)
+	ws := filepath.Join(t.TempDir(), "ws")
+	if _, err := r.Run(context.Background(), Spec{Language: LanguageBash, Code: "x", Workspace: ws}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	runs := f.find("run")
+	if len(runs) != 1 {
+		t.Fatalf("run calls = %d, want 1", len(runs))
+	}
+	soft, hard, ok := strings.Cut(ulimitValue(runs[0].args, "fsize"), ":")
+	if !ok {
+		t.Fatalf("fsize = %q, want soft:hard", ulimitValue(runs[0].args, "fsize"))
+	}
+	for _, half := range []string{soft, hard} {
+		if _, err := strconv.ParseInt(half, 10, 64); err != nil {
+			t.Errorf("fsize half %q is not an integer: %v", half, err)
+		}
+	}
+}
+
+// TestInvalidFileSizeLimitCorrected checks a suffixed fsize value is replaced by
+// its default (with a warning) rather than reaching docker and breaking calls.
+func TestInvalidFileSizeLimitCorrected(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.FileSizeLimit = "10m:10m"
+	cfg.AgentFileSizeLimit = "2g:2g"
+	f := &fakeExec{}
+	r := newTestRunner(cfg, f)
+
+	if got := r.Config().FileSizeLimit; got != DefaultFileSizeLimit {
+		t.Errorf("ephemeral fsize = %q, want default %q", got, DefaultFileSizeLimit)
+	}
+	if got := r.Config().AgentFileSizeLimit; got != DefaultAgentFileSizeLimit {
+		t.Errorf("agent fsize = %q, want default %q", got, DefaultAgentFileSizeLimit)
+	}
+	// The corrected values are what actually reach docker.
+	if _, err := r.Run(context.Background(), Spec{Language: LanguageBash, Code: "x"}); err != nil {
+		t.Fatalf("ephemeral run: %v", err)
+	}
+	if _, err := r.Run(context.Background(), Spec{Language: LanguageBash, Code: "x", Workspace: filepath.Join(t.TempDir(), "ws")}); err != nil {
+		t.Fatalf("agent run: %v", err)
+	}
+	runs := f.find("run")
+	if len(runs) != 2 {
+		t.Fatalf("run calls = %d, want 2", len(runs))
+	}
+	for i, want := range []string{DefaultFileSizeLimit, DefaultAgentFileSizeLimit} {
+		if got := ulimitValue(runs[i].args, "fsize"); got != want {
+			t.Errorf("run %d fsize = %q, want %q", i, got, want)
+		}
 	}
 }
 

@@ -107,12 +107,14 @@ Server flow:
 5. On completion: insert assistant message (content, reasoning, usage, cost_micros),
    bump conversation `updated_at`.
 6. **Auto-title**: if conversation `title` is still empty after the first assistant
-   reply, make ONE non-streaming chat-dialect call to `mimo-v2.6-flash-free` on
-   the **free Zen catalog** (`POST https://opencode.ai/zen/v1/chat/completions`,
-   a quota separate from Go, so titles never spend the subscription):
-   messages = `[{"role":"user","content":"Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\nUser: <first user msg, truncated to 500 chars>\nAssistant: <first assistant reply, truncated to 500 chars>"}]`,
-   `max_tokens: 20`. Sanitize to one line ≤80 chars. On any failure use the first
-   40 chars of the first user message. Persist title and include it in `done`.
+   reply, make ONE non-streaming chat-dialect call on the **caller's resolved key**
+   to the cheap non-reasoning Go model `mimo-v2.6-flash`:
+   messages = `[{"role":"user","content":"Write a 3-6 word chat title for this conversation. Reply with the title only, no quotes, no punctuation at the end.\n\nUser: <first user msg, truncated to 400 chars>"}]`,
+   `max_tokens: 24`, no tools, no streaming, bounded by an 8 s timeout so it can
+   never outlive the job. Sanitize to one line ≤80 chars. On any failure (no key,
+   non-2xx, timeout, empty reply) use the first 40 chars of the first user
+   message — a title failure never fails the reply. Persist title and include it
+   in `done`.
 
 **SSE wire format** (`Content-Type: text/event-stream`, `Cache-Control: no-cache`);
 each event is `event: <type>\ndata: <json>\n\n`, plus `: keepalive\n\n` comment
@@ -231,7 +233,8 @@ Workspace on the host:
 `agent/<userID>` tree (`MYOGCHAT_AGENT_QUOTA_BYTES`, `0` disables); over quota a
 tool call is refused before running with an `ErrQuotaExceeded` message. The
 quota measurement is cached for 60 s. A conversation workspace idle for 7 days
-is removed by the hourly janitor. Artifact caps are unchanged (10 MB per file,
+is removed by the hourly janitor, and deleting the conversation removes its
+workspace with it. Artifact caps are unchanged (10 MB per file,
 25 MB total, 20 files per call); only files produced by each call are harvested
 and byte-identical content in the same conversation reuses the existing
 artifact (SHA-256).
@@ -284,9 +287,10 @@ Endpoints and credentials (checked live 2026-11-01):
   key as `Bearer`. Public without auth; `401 Invalid credential` for an unknown
   key. Deliberately not a completion — model retirements must not break key
   saving.
-- **Free helper calls**: `https://opencode.ai/zen/v1` is the free model catalog
-  on a quota separate from Go. `ZenChatOnce` targets it; auto-titles use
-  `mimo-v2.6-flash-free` there so they cost nothing and never touch Go usage.
+- **Free helper calls**: none. `https://opencode.ai/zen/v1` is the free model
+  catalog on a quota separate from Go, but the app never calls it — a free key
+  is required there too and exhausts its own quota, so auto-titles run on the
+  caller's Go key instead.
 
 ## 5. Model registry (`internal/models`) — static, exactly these
 
@@ -326,8 +330,7 @@ still load and can be switched to a current model, but they never appear in
 `deepseek-v4-flash-vision-exp`, `kimi-k2.6`, `grok-4.6`.
 
 The free Zen catalog (`https://opencode.ai/zen/v1`) is a separate quota and is
-**not** part of this registry; the app only uses `mimo-v2.6-flash-free` there
-for auto-titles.
+**not** part of this registry; the app does not use it (§4).
 
 `Model` also carries `vision bool` (exposed in `/api/models`), true for the
 models that accept image input (feature 2.13): `deepseek-v4.1-flash`,
@@ -850,9 +853,13 @@ container and return stdout/stderr. Full design: `docs/2.6-2.7-sandbox.md`.
   it is never interpolated into the command line.
 - Hardening: dedicated user-defined bridge network (no published ports → no
   inbound path), `--cap-drop ALL`, `--security-opt no-new-privileges`,
-  `--user 65534:65534`, `--read-only`, `/tmp` tmpfs + `--ulimit fsize` per-file
-  cap, `--memory 256m --memory-swap 256m --cpus 1 --pids-limit 128
-  --ulimit nofile=256:256`, `--stop-timeout 2`, `--pull never`.
+  `--user <host uid>:<host gid>` (the service's own user, so it can delete what
+  the container writes; `65534:65534` only when the service runs as root),
+  `--read-only`, `/tmp` tmpfs + `--ulimit fsize` per-file
+  cap (`10485760:10485760` ephemeral, `2147483648:2147483648` in agent mode —
+  plain bytes only, docker rejects `2g`-style suffixes), `--memory 256m
+  --memory-swap 256m --cpus 1 --pids-limit 128 --ulimit nofile=256:256`,
+  `--stop-timeout 2`, `--pull never`.
 - Outbound network is available (the owner's choice). Optional LAN-egress
   hardening is applied by `sudo deploy/sandbox-setup.sh --harden`
   (`DOCKER-USER` DROPs to RFC1918 / link-local / loopback / CGNAT).
@@ -1482,11 +1489,13 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts(conversation_id);
 - Workspace root: `MYOGCHAT_SANDBOX_WORKDIR` (default
   `~/.local/share/myogchat/sandbox`; **never `/tmp`** — the unit sets
   `PrivateTmp=true`). Parent `0700`; each run gets a `0777` subdir so the
-  container user `65534` can write. The dir is `os.RemoveAll`'d on completion; a
+  container user (the service's uid by default, `nobody` if the service is
+  root) can write. The dir is `os.RemoveAll`'d on completion; a
   startup/hourly janitor sweep removes crash leftovers older than 1 h.
 - The container keeps `--read-only`, `--cap-drop ALL`, `no-new-privileges`,
-  `--user 65534:65534`, mem/cpu/pids caps, a 30 s timeout, a `/tmp` tmpfs, and
-  gains `--ulimit fsize=10485760:10485760` (hard per-file cap).
+  `--user <host uid>:<host gid>` (never root; `nobody` only when the service
+  is root), mem/cpu/pids caps, a 30 s timeout, a `/tmp` tmpfs, and gains
+  `--ulimit fsize=10485760:10485760` (hard per-file cap).
 - Harvest keeps **regular files only**, skips symlinks (opened `O_NOFOLLOW`,
   re-checked regular) so a container cannot link to a host file; names are
   sanitized to a base name; caps: **10 MB per file, 25 MB total, 20 files**.
