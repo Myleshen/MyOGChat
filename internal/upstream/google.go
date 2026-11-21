@@ -16,9 +16,12 @@ import (
 const GoogleBaseURL = "https://opencode.ai/inference/go/google/v1beta"
 
 // googlePart is one content part of a Google GenerateContent request/response.
+// ThoughtSignature is Gemini's opaque signature for the part; a functionCall
+// part must carry it back on every later request or tool calling fails.
 type googlePart struct {
 	Text             string                  `json:"text,omitempty"`
 	Thought          bool                    `json:"thought,omitempty"`
+	ThoughtSignature string                  `json:"thoughtSignature,omitempty"`
 	FunctionCall     *googleFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *googleFunctionResponse `json:"functionResponse,omitempty"`
 	InlineData       *googleInlineData       `json:"inlineData,omitempty"`
@@ -99,9 +102,10 @@ func googleContents(msgs []Message) []googleContent {
 		parts := googleMessageParts(m)
 		calls := replayCalls(m)
 		for _, c := range calls {
-			parts = append(parts, googlePart{FunctionCall: &googleFunctionCall{
-				Name: c.name, Args: googleCallArgs(c.arguments),
-			}})
+			parts = append(parts, googlePart{
+				FunctionCall:     &googleFunctionCall{Name: c.name, Args: googleCallArgs(c.arguments)},
+				ThoughtSignature: c.thoughtSignature,
+			})
 		}
 		if len(parts) > 0 {
 			out = append(out, googleContent{Role: role, Parts: parts})
@@ -471,12 +475,20 @@ func (c *Client) agentGoogle(ctx context.Context, p Params, exec ExecuteTool, op
 					switch {
 					case part.FunctionCall != nil:
 						calls = append(calls, ToolCall{
-							ID:        fmt.Sprintf("google_%d_%d", iter, len(calls)),
-							Name:      part.FunctionCall.Name,
-							Arguments: googleCallArgsString(part.FunctionCall.Args),
+							ID:               fmt.Sprintf("google_%d_%d", iter, len(calls)),
+							Name:             part.FunctionCall.Name,
+							Arguments:        googleCallArgsString(part.FunctionCall.Args),
+							ThoughtSignature: part.ThoughtSignature,
 						})
-						modelParts = append(modelParts, part)
+						modelParts = append(modelParts, googlePart{
+							FunctionCall:     part.FunctionCall,
+							ThoughtSignature: part.ThoughtSignature,
+						})
 					case part.Text == "":
+						// Some streams deliver the signature in a part of its own.
+						if part.ThoughtSignature != "" {
+							googleAttachSignature(modelParts, calls, part.ThoughtSignature)
+						}
 					case part.Thought:
 						safe := part.Text
 						if !roundReasoning {
@@ -488,7 +500,9 @@ func (c *Client) agentGoogle(ctx context.Context, p Params, exec ExecuteTool, op
 							return true, nil
 						}
 					default:
-						modelParts = append(modelParts, googlePart{Text: part.Text})
+						modelParts = append(modelParts, googlePart{
+							Text: part.Text, ThoughtSignature: part.ThoughtSignature,
+						})
 						if !send(Event{Kind: EventText, Delta: part.Text}) {
 							return true, nil
 						}
@@ -523,6 +537,28 @@ func (c *Client) agentGoogle(ctx context.Context, p Params, exec ExecuteTool, op
 	}
 	send(Event{Kind: EventUsage, Usage: &total})
 	return nil
+}
+
+// googleAttachSignature puts a signature delivered in a part of its own onto
+// the most recent functionCall part without one, which is where Google expects
+// it back.
+func googleAttachSignature(parts []googlePart, calls []ToolCall, sig string) {
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i].FunctionCall == nil || parts[i].ThoughtSignature != "" {
+			continue
+		}
+		parts[i].ThoughtSignature = sig
+		call := 0
+		for j := 0; j <= i; j++ {
+			if parts[j].FunctionCall != nil {
+				call++
+			}
+		}
+		if call > 0 && call <= len(calls) {
+			calls[call-1].ThoughtSignature = sig
+		}
+		return
+	}
 }
 
 // googleCallArgsString renders decoded call args back as our Arguments string.

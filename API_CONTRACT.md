@@ -318,8 +318,11 @@ Headers: `Authorization: Bearer <key>` (the gateway also accepts
 "thinkingConfig":{"includeThoughts":true,"thinkingBudget":?}},
 "tools":[{"functionDeclarations":[…]}]}`. Parts are `text`, `inlineData`
 (raw base64 + mimeType), `functionCall` (`{name,args}`) and `functionResponse`
-(`{name,response:{result}}`); Google matches responses by **name**, so call ids
-are synthesized locally. Parse either SSE `data:` objects or a chunked JSON
+(`{name,response:{result}}`); a `functionCall` part also carries the opaque
+`thoughtSignature` Gemini returned with it, echoed back on the same part in every
+follow-up and replayed request (Google rejects a tool turn without it). Google
+matches responses by **name**, so call ids are synthesized locally. Parse either
+SSE `data:` objects or a chunked JSON
 array of `GenerateContentResponse`: `candidates[].content.parts[]` (`text`,
 `thought:true` → reasoning, `functionCall`), `usageMetadata`
 (`candidatesTokenCount + thoughtsTokenCount` → `completion_tokens`), and an
@@ -568,13 +571,16 @@ empty:
   Since Phase 5.1 an image whose OCR is unavailable or fails is still stored
   (`"ready"`, empty text) rather than rejected, because a vision-capable model
   can read it directly (§8.12); see §8.10 for the OCR behavior.
-- `tools` — assistant messages: `[{name,status,summary,args,output,error,duration_ms,truncated}]`
+- `tools` — assistant messages: `[{name,status,summary,args,output,error,duration_ms,truncated,thought_signature?}]`
   tool activity (`status` ∈ `running` | `done` | `error`), so the inline tool block
   survives a reload. The server collects `event: tool` frames during a reply and
   collapses each `running`→terminal pair (see §3). Since Phase 4.1 each entry also
   stores the call's `args`, its `output`/`error`, its `duration_ms`, and a
   `truncated` flag (the persisted fields are size-capped at 16 KB args / 64 KB
   output / 4 KB error, UTF-8-safe; the model still receives the full result).
+  `thought_signature` is opaque Google-only provider metadata, kept so a reloaded
+  Gemini conversation can echo it back with the call; no other dialect reads it
+  and the SPA ignores it.
   The UI renders this as a collapsed `<details>` per message that expands to
   per-tool Input/Output blocks.
 

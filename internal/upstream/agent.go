@@ -413,6 +413,7 @@ type functionCallItem struct {
 func runTool(ctx context.Context, exec ExecuteTool, send func(Event) bool, call ToolCall) string {
 	send(Event{Kind: EventTool, Tool: &ToolActivity{
 		Name: call.Name, Status: ToolRunning, Args: call.Arguments,
+		ThoughtSignature: call.ThoughtSignature,
 	}})
 	start := time.Now()
 	result, summary, err := exec(ctx, call)
@@ -421,12 +422,14 @@ func runTool(ctx context.Context, exec ExecuteTool, send func(Event) bool, call 
 		send(Event{Kind: EventTool, Tool: &ToolActivity{
 			Name: call.Name, Status: ToolError, Summary: firstN(err.Error(), 200),
 			Error: err.Error(), DurationMs: elapsed,
+			ThoughtSignature: call.ThoughtSignature,
 		}})
 		return "Tool error: " + err.Error()
 	}
 	send(Event{Kind: EventTool, Tool: &ToolActivity{
 		Name: call.Name, Status: ToolDone, Summary: summary,
 		Output: result, DurationMs: elapsed,
+		ThoughtSignature: call.ThoughtSignature,
 	}})
 	return result
 }

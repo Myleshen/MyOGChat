@@ -463,11 +463,12 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 		m := upstream.Message{ID: hm.ID, Role: hm.Role, Content: hm.Content}
 		for _, t := range hm.Tools {
 			m.Tools = append(m.Tools, upstream.ToolResult{
-				Name:      t.Name,
-				Arguments: t.Args,
-				Output:    t.Output,
-				Error:     t.Error,
-				Status:    t.Status,
+				Name:             t.Name,
+				Arguments:        t.Args,
+				Output:           t.Output,
+				Error:            t.Error,
+				Status:           t.Status,
+				ThoughtSignature: t.ThoughtSignature,
 			})
 		}
 		msgs = append(msgs, m)
@@ -1058,14 +1059,15 @@ func cappedTool(t *upstream.ToolActivity) store.ToolActivity {
 	args, argsTrunc := truncateToolField(t.Args, maxToolArgsBytes)
 	output, outTrunc := truncateToolField(t.Output, maxToolOutputBytes)
 	return store.ToolActivity{
-		Name:       t.Name,
-		Status:     t.Status,
-		Summary:    t.Summary,
-		Args:       args,
-		Output:     output,
-		Error:      firstNBytes(t.Error, maxToolErrorBytes),
-		DurationMs: t.DurationMs,
-		Truncated:  argsTrunc || outTrunc,
+		Name:             t.Name,
+		Status:           t.Status,
+		Summary:          t.Summary,
+		Args:             args,
+		Output:           output,
+		Error:            firstNBytes(t.Error, maxToolErrorBytes),
+		DurationMs:       t.DurationMs,
+		Truncated:        argsTrunc || outTrunc,
+		ThoughtSignature: t.ThoughtSignature,
 	}
 }
 
@@ -1108,9 +1110,13 @@ func mergeToolEvent(list []store.ToolActivity, t *upstream.ToolActivity) []store
 	for i := 0; i < len(list); i++ {
 		if list[i].Name == entry.Name && list[i].Status == upstream.ToolRunning {
 			// Keep the args captured when the call started if the terminal
-			// event omits them, and carry the truncation flag forward.
+			// event omits them, carry the truncation flag forward, and keep
+			// Google's provider metadata for the history replay.
 			if entry.Args == "" {
 				entry.Args = list[i].Args
+			}
+			if entry.ThoughtSignature == "" {
+				entry.ThoughtSignature = list[i].ThoughtSignature
 			}
 			entry.Truncated = entry.Truncated || list[i].Truncated
 			list[i] = entry
