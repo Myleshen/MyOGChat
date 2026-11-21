@@ -1,19 +1,19 @@
 /* MyOGChat service worker.
-   Cache-first for the static shell only; /api/* is always network-only.
+   The shell (/, index.html) is network-first so a deploy's fresh HTML — and
+   therefore its ?v=<hash> asset URLs — always wins; the cached copy is only the
+   offline fallback. Hashed assets are cache-first keyed by the exact URL, so a
+   new hash is a cache miss by construction and an old body can never shadow a
+   new one. /api/* is always network-only.
 
-   The cache name and every shell URL are keyed by the version in this script's
-   own URL (sw.js?v=<hash>, injected per build). A deploy therefore installs a
-   fresh worker that fetches the shell with the same ?v=<hash> cache-buster —
-   bypassing any edge/CDN cache that caches .js/.css — while storing under the
-   plain URLs the app requests (matched with ignoreSearch). */
+   The cache name is keyed by the version in this script's own URL
+   (sw.js?v=<hash>, injected per build), so a deploy installs a fresh worker,
+   replaces the cache, and claims the open pages. */
 "use strict";
 
 const VERSION = new URL(self.location.href).searchParams.get("v") || "0";
-const CACHE = "myogchat-shell-" + VERSION;
+const CACHE = "myogchat-shell-v2-" + VERSION;
 
 const ASSETS = [
-  "./",
-  "index.html",
   "app.js",
   "style.css",
   "manifest.webmanifest",
@@ -26,22 +26,38 @@ const ASSETS = [
 
 const withV = (u) => u + (u.indexOf("?") >= 0 ? "&" : "?") + "v=" + VERSION;
 
+/* Fetch a shell URL past the HTTP cache and any CDN cache (?v=), so what is
+   stored is what this build shipped, not a stale edge copy. */
+async function fetchFresh(url) {
+  try {
+    const res = await fetch(new Request(url, { cache: "reload" }));
+    return res.ok ? res : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
       .then(async (cache) => {
         await Promise.all(
-          ASSETS.map(async (u) => {
-            try {
-              // cache: "reload" skips the browser HTTP cache; ?v= skips any CDN
-              // cache — the response is stored under the plain URL.
-              const res = await fetch(new Request(withV(u), { cache: "reload" }));
-              if (res.ok) await cache.put(u, res);
-            } catch (e) {
-              /* best effort; the network fallback still applies */
-            }
-          })
+          [
+            // The offline shell, under the exact keys a navigation asks for.
+            (async () => {
+              const res = await fetchFresh(withV("./"));
+              if (res) {
+                await cache.put("./", res.clone());
+                await cache.put("index.html", res.clone());
+              }
+            })(),
+            // Assets under the hashed URL this build's index.html points at.
+            ...ASSETS.map(async (u) => {
+              const res = await fetchFresh(withV(u));
+              if (res) await cache.put(withV(u), res);
+            }),
+          ].map((p) => p.catch(() => {}))
         );
       })
       .then(() => self.skipWaiting())
@@ -62,41 +78,57 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
+  // Range requests (audio/export downloads) go straight to the network.
+  if (request.headers.has("range")) return;
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // API: network-only, never cached.
+  // API: network-only, never cached or wrapped.
   if (url.pathname === "/api" || url.pathname.startsWith("/api/")) return;
 
-  // Navigations: network-first so a fresh index.html (with the current
-  // ?v=<hash> asset URLs) always wins; fall back to the cached shell offline.
   if (request.mode === "navigate") {
-    event.respondWith(
-      fetch(request)
-        .then((res) => {
-          if (res.ok) {
-            const clone = res.clone();
-            caches.open(CACHE).then((cache) => cache.put("index.html", clone));
-          }
-          return res;
-        })
-        .catch(() => caches.match("index.html"))
-    );
+    event.respondWith(networkFirstShell(request));
     return;
   }
 
-  // Static shell: cache-first (ignoring the ?v= query), then network.
-  event.respondWith(
-    caches.match(request, { ignoreSearch: true }).then((cached) => {
-      if (cached) return cached;
-      return fetch(request).then((res) => {
-        if (res.ok) {
-          const clone = res.clone();
-          caches.open(CACHE).then((cache) => cache.put(request, clone));
-        }
-        return res;
-      });
-    })
-  );
+  // A non-navigation request for the bare shell is the app checking for a
+  // deploy: always fresh, never cached (navigations get the offline copy).
+  if (url.pathname === "/" || url.pathname === "/index.html") {
+    event.respondWith(fetch(request));
+    return;
+  }
+
+  event.respondWith(cacheFirstExact(request));
 });
+
+/* Fresh HTML whenever the network answers; the cached shell only when it does
+   not (offline, or a server that is down). */
+async function networkFirstShell(request) {
+  const cache = await caches.open(CACHE);
+  try {
+    const res = await fetch(request);
+    if (res && res.ok) {
+      const copy = res.clone();
+      cache.put("index.html", copy.clone()).catch(() => {});
+      cache.put("./", copy).catch(() => {});
+    }
+    return res;
+  } catch (err) {
+    const cached = (await cache.match("index.html")) || (await cache.match("./"));
+    if (cached) return cached;
+    throw err;
+  }
+}
+
+/* Exact-URL matching: app.js?v=<hash> is a distinct cache entry per deploy. */
+async function cacheFirstExact(request) {
+  const cache = await caches.open(CACHE);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  const res = await fetch(request);
+  if (res && res.ok && res.type === "basic") {
+    await cache.put(request, res.clone()).catch(() => {});
+  }
+  return res;
+}
