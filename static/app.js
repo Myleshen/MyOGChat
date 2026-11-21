@@ -264,6 +264,13 @@ const projectModalTitle = document.getElementById("project-modal-title");
 const projectName = document.getElementById("project-name");
 const projectInstructions = document.getElementById("project-instructions");
 const projectModel = document.getElementById("project-model");
+const projectMemoryBlock = document.getElementById("project-memory-block");
+const projectMemory = document.getElementById("project-memory");
+const projectMemoryAuto = document.getElementById("project-memory-auto");
+const projectMemoryCount = document.getElementById("project-memory-count");
+const projectMemoryClear = document.getElementById("project-memory-clear");
+const projectMemoryError = document.getElementById("project-memory-error");
+const projectMemoryStatus = document.getElementById("project-memory-status");
 const projectClose = document.getElementById("project-close");
 const projectCancel = document.getElementById("project-cancel");
 
@@ -3208,9 +3215,37 @@ function openProjectEditor(project) {
   projectModalTitle.textContent = project ? "Edit project" : "New project";
   projectName.value = project ? project.name : "";
   projectInstructions.value = project ? project.instructions || "" : "";
+  projectMemory.value = project ? project.memory || "" : "";
+  projectMemoryAuto.checked = !project || project.memory_auto !== false;
+  // Collapsed for a fresh project on a phone; open when there is memory to
+  // review or the dialog has room.
+  projectMemoryBlock.open = projectMemory.value !== "" || window.innerWidth >= 640;
+  projectMemoryError.hidden = true;
+  projectMemoryStatus.hidden = true;
+  syncProjectMemoryCount();
   renderProjectModelOptions(project ? project.default_model : "");
   openModal(projectModal);
   setTimeout(() => projectName.focus(), 0);
+}
+
+function syncProjectMemoryCount() {
+  const n = projectMemory.value.length;
+  projectMemoryCount.textContent = n + " / 32000";
+  projectMemoryCount.classList.toggle("over", n > 32000);
+}
+
+function clearProjectMemory() {
+  if (!projectMemory.value) {
+    projectMemory.focus();
+    return;
+  }
+  if (!window.confirm("Clear this project's memory? Save to apply the change.")) return;
+  projectMemory.value = "";
+  syncProjectMemoryCount();
+  projectMemoryError.hidden = true;
+  projectMemoryStatus.textContent = "Memory cleared — Save to apply.";
+  projectMemoryStatus.hidden = false;
+  projectMemory.focus();
 }
 
 async function saveProject() {
@@ -3222,6 +3257,8 @@ async function saveProject() {
   const body = {
     name: name.slice(0, 120),
     instructions: projectInstructions.value.slice(0, 8000),
+    memory: projectMemory.value,
+    memory_auto: projectMemoryAuto.checked,
   };
   if (projectModel.value) {
     body.default_model = projectModel.value;
@@ -3253,7 +3290,16 @@ async function saveProject() {
     updateNewChatLabel();
     toast(editing ? "Project updated" : "Project created");
   } catch (err) {
-    if (!(err instanceof AuthError)) toast(err.message);
+    if (err instanceof AuthError) return;
+    if (err.status === 400) {
+      projectMemoryBlock.open = true;
+      projectMemoryStatus.hidden = true;
+      projectMemoryError.textContent = err.message;
+      projectMemoryError.hidden = false;
+      projectMemory.focus();
+      return;
+    }
+    toast(err.message);
   }
 }
 
@@ -6218,6 +6264,12 @@ function wireEvents() {
   projectForm.addEventListener("submit", (e) => {
     e.preventDefault();
     saveProject();
+  });
+  projectMemoryClear.addEventListener("click", clearProjectMemory);
+  projectMemory.addEventListener("input", () => {
+    syncProjectMemoryCount();
+    projectMemoryError.hidden = true;
+    projectMemoryStatus.hidden = true;
   });
 
   newChatBtn.addEventListener("click", async () => {
