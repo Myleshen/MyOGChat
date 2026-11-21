@@ -1,0 +1,142 @@
+name: release
+
+# Tag-only: a release exists only for `vMAJOR.MINOR.PATCH` tags, nothing else.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      # Fail closed before anything is built or published.
+      - name: tag is semver-like
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$GITHUB_REF_NAME' is not semver-like (expected vMAJOR.MINOR.PATCH)"
+            exit 1
+          fi
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      - name: frontend syntax
+        run: node --check static/app.js
+
+  binary:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build linux/arm64
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -trimpath -ldflags="-s -w" -o myogchat-linux-arm64 .
+          sha256sum myogchat-linux-arm64 > SHA256SUMS
+          cat SHA256SUMS
+      - name: create release
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            myogchat-linux-arm64 SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: myogchat-linux-arm64
+
+  images:
+    needs: test
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    environment: release
+    permissions:
+      contents: write # to upload images.txt to the release
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REGISTRY: ghcr.io
+      OWNER: myleshen
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: buildx
+        run: |
+          set -euo pipefail
+          docker buildx create --name myogchat --driver docker-container --use
+          docker buildx inspect --bootstrap
+      - name: log in to ghcr.io
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login "$REGISTRY" --username "${{ github.actor }}" --password-stdin
+      # Native arm64 runner: no QEMU, no cross-compilation of the base images.
+      - name: build and push images
+        run: |
+          set -euo pipefail
+          build() { # <dockerfile> <image> <metadata-file>
+            docker buildx build \
+              --builder myogchat \
+              --platform linux/arm64 \
+              --provenance=mode=max --sbom=true \
+              --file "deploy/sandbox/$1" \
+              --tag "$REGISTRY/$OWNER/$2:$GITHUB_REF_NAME" \
+              --tag "$REGISTRY/$OWNER/$2:latest" \
+              --metadata-file "$3" \
+              --push \
+              deploy/sandbox
+          }
+          build Dockerfile myogchat-sandbox-python /tmp/python.json
+          build Dockerfile.bash myogchat-sandbox-bash /tmp/bash.json
+      - name: write images.txt
+        run: |
+          set -euo pipefail
+          : > images.txt
+          for pair in python:/tmp/python.json bash:/tmp/bash.json; do
+            name="myogchat-sandbox-${pair%%:*}"
+            digest=$(jq -r '."containerimage.digest" // ""' "${pair#*:}")
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::no manifest digest for $name"; exit 1
+            fi
+            echo "$REGISTRY/$OWNER/$name@$digest" >> images.txt
+          done
+          cat images.txt
+      - name: upload images.txt to the release
+        run: |
+          set -euo pipefail
+          # The `binary` job creates the release; wait for it instead of racing it.
+          for _ in $(seq 1 60); do
+            gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break
+            sleep 5
+          done
+          gh release upload "$GITHUB_REF_NAME" images.txt --clobber

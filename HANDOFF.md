@@ -26,7 +26,7 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 | Thing | Value |
 |---|---|
 | Host | Raspberry Pi 4B (Ubuntu, aarch64), SSH `pi@raspberrypi.local` (alias `rpi` on the owner's machine) |
-| Service | systemd **user** service `myogchat` → `~/softwares/MyOGChat/myogchat` (symlinked from `~/.local/bin/myogchat`) |
+| Service | systemd **user** service `myogchat` → `ExecStart=%h/softwares/MyOGChat/myogchat` |
 | DB | `~/.local/share/myogchat/chat.db` (SQLite, WAL) |
 | Env | `~/.config/myogchat/env` (chmod 600): `OPENCODE_API_KEY`, `MYOGCHAT_PORT=8787`, `MYOGCHAT_RETENTION_DAYS=30`. **`MYOGCHAT_AUTH_TOKEN` is obsolete** (multi-user auth replaced it). |
 | Tunnel | Cloudflare Tunnel (docker container `cloudflaretunnel`, dashboard-managed) → `http://raspberrypi.local:8787`. Owner manages the CF dashboard. |
@@ -140,7 +140,7 @@ mise exec -- go test ./...            # auth, secret, store, models, extract, to
 # run locally
 OPENCODE_API_KEY=... MYOGCHAT_PORT=8787 MYOGCHAT_DB=/tmp/m.db mise exec -- go run .
 
-# cross-compile + deploy to the Pi (scp .new + mv, git pull, restart)
+# offline / fallback: cross-compile + deploy to the Pi (scp .new + mv, restart)
 mise exec -- bash deploy/deploy.sh pi@raspberrypi.local
 # or manually:
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 mise exec -- go build -trimpath -ldflags="-s -w" -o /tmp/myogchat-arm64 .
@@ -156,6 +156,28 @@ scripts/test-user.sh list
 #   myogchat user setkey --username <name> [--serper <key>] \
 #     [--linkwarden-url <url>] [--linkwarden-token <token>]
 ```
+
+### Releasing
+
+Primary path: tag → GitHub Actions builds and publishes → Pi installs artifacts.
+
+```sh
+git tag v1.2.3 && git push origin v1.2.3   # triggers .github/workflows/release.yml
+deploy/deploy-release.sh pi v1.2.3         # pipes deploy/install-release.sh over ssh
+```
+
+- `release.yml` runs on `v*` tags only; a non-semver tag fails on the first step.
+  `test` → then `binary` (Release + `SHA256SUMS` + build-provenance attestation)
+  and `images` (both sandbox images to GHCR, native arm64 runner) in parallel.
+  Both publishing jobs sit behind the `release` environment — add required
+  reviewers there to make that a real gate.
+- The Pi never builds: it verifies `SHA256SUMS`, pulls the images **by digest**
+  from `images.txt`, `docker tag`s them to the local names the app expects,
+  swaps the binary, restarts, then polls for HTTP 200.
+- First deploy only: `docker login ghcr.io` on the Pi (packages are private by
+  default; PAT with `read:packages`).
+- Rollback: `deploy/deploy-release.sh pi <previous-tag>`.
+- Details, verification and rollback: `docs/6.1-release-ci.md`.
 
 ## Testing (UI/UX is a gate — use agent-browser)
 
@@ -315,10 +337,9 @@ After each merge: `go build/vet/test` + `node --check static/app.js` + run
    DuckDuckGo backend. `TAVILY_API_KEY`, `BRAVE_API_KEY` / a per-user Serper key
    only improve result quality — see `docs/2.4-search-providers.md`.
 2. (Done) **2.5 OCR** — run `bash deploy/ocr-setup.sh` on the Pi (Docker) and restart.
-3. (Done) **2.7 bash sandbox** + **2.6 python sandbox** — run
-   `deploy/sandbox-setup.sh` on the Pi to create the network and build the local
-   `myogchat-sandbox-bash` / `myogchat-sandbox-python` images (the `bash:5.3` /
-   `python:3.14-slim` bases are pulled; it always rebuilds); optional
-   `sudo … --harden` blocks LAN egress.
+3. (Done) **2.7 bash sandbox** + **2.6 python sandbox** — releases now pull both
+   images by digest from GHCR (`deploy/deploy-release.sh`); `deploy/sandbox-setup.sh`
+   remains the offline fallback that builds them locally (it also creates the
+   sandbox network; optional `sudo … --harden` blocks LAN egress).
 4. (Done) **2.9 settings page** — `#/settings` replaces the modal.
 5. Keep `API_CONTRACT.md` / `TODO.md` current; add a `docs/2.x-*.md` per feature.

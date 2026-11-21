@@ -68,12 +68,36 @@ OPENCODE_API_KEY=… go run .
 
 ## Deploy
 
-The target host needs **no Go toolchain** — the binary is cross-compiled on the
-workstation and installed as a systemd *user* service.
+The target host needs **no Go toolchain**. Releases are cut by pushing a
+`vMAJOR.MINOR.PATCH` tag; GitHub Actions runs the tests, builds the static
+`linux/arm64` binary, builds and pushes both sandbox images to GHCR, and
+publishes them on a GitHub Release with `SHA256SUMS` and `images.txt`. The Pi
+installs nothing but those artifacts, and pulls the sandbox images **by digest**
+(never by mutable tag) so a deploy is reproducible.
 
 ```sh
-cp deploy/env.example ~/.config/myogchat/env   # on the target; then fill it in
+# 1. on the workstation: tag a commit on main and push it
+git tag v1.2.3 && git push origin v1.2.3
+
+# 2. install that release on the target (no checkout, no Go on the Pi)
+deploy/deploy-release.sh pi v1.2.3
+```
+
+Prerequisites on the target (once):
+
+```sh
+cp deploy/env.example ~/.config/myogchat/env   # then fill it in
 chmod 600 ~/.config/myogchat/env
+# GHCR images are private by default: log docker in once (PAT with read:packages)
+ssh pi 'docker login ghcr.io -u <github-user>'
+```
+
+### Offline / fallback build
+
+When GitHub is unreachable or you need to test an uncommitted tree, build
+locally and scp the binary. Same service, no release artifacts:
+
+```sh
 deploy/deploy.sh pi@raspberrypi.local   # cross-compile arm64 + install
 ```
 
