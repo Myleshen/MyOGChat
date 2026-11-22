@@ -41,7 +41,7 @@ func newLinkwardenTestServer(t *testing.T, envURL, envToken string) (*Server, *s
 	a := auth.New(st, []byte("test-session-secret"))
 	srv := New(st, upstream.NewClient(), a, nil, slog.Default(), testEncKey(), "",
 		SearchDefaults{}, GeoDefaults{}, nil, nil, "", false, SpeechDefaults{},
-		"", "", envURL, envToken)
+		"", "", envURL, envToken, GoogleCalendar{})
 	return srv, st
 }
 

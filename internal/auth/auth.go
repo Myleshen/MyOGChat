@@ -53,6 +53,10 @@ func New(st *store.Store, secret []byte) *Auth {
 	return &Auth{st: st, secret: secret}
 }
 
+// SigningKey returns the session cookie signing secret. It also signs stateless
+// OAuth state (feature 3.3 Google Calendar), which must not be forgeable.
+func (a *Auth) SigningKey() []byte { return a.secret }
+
 // ---------- password hashing ----------
 
 // HashPassword derives a versioned PBKDF2-HMAC-SHA256 hash (§9.2).

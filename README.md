@@ -40,12 +40,12 @@ docs under [`docs/`](docs/).
   `maps_*`, and `run_bash` / `run_python` in a hardened Docker sandbox
 - **Email (read-only)** — IMAP search/read across one or more mailboxes, with no
   send path ([`docs/3.2-imap.md`](docs/3.2-imap.md))
-- **Calendar** — CalDAV read/write plus read-only ICS, exposed as
-  `calendar_list`/`_create`/`_update`/`_delete`
+- **Calendar** — CalDAV read/write plus read-only Google (OAuth, Calendar API)
+  and ICS, exposed as `calendar_list`/`_create`/`_update`/`_delete`
   ([`docs/3.3-calendar.md`](docs/3.3-calendar.md))
-- **Calendar triggers** — opt-in: 15 minutes before each CalDAV event the app
-  opens and runs an agent conversation for it, with quiet hours, a dedupe ledger
-  and quota/busy/late skips
+- **Calendar triggers** — opt-in: 15 minutes before each CalDAV or Google event
+  the app opens and runs an agent conversation for it, with quiet hours, a dedupe
+  ledger and quota/busy/late skips
   ([`docs/6.0-calendar-triggers.md`](docs/6.0-calendar-triggers.md))
 - **Image generation** — `generate_image` tool and a prompt-enhance step against
   a self-hosted ComfyUI backend ([`docs/3.1-imagegen.md`](docs/3.1-imagegen.md))

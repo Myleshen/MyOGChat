@@ -138,9 +138,9 @@ func (s *Server) calendarTriggerTick(ctx context.Context) {
 // runCalendarTrigger evaluates one user's trigger: one calendar read, then one
 // decision per event in the window.
 func (s *Server) runCalendarTrigger(ctx context.Context, tr store.CalendarTrigger, now time.Time) {
-	// Only CalDAV is a trigger source: an ICS feed has no time filter, no
+	// CalDAV and Google are trigger sources. An ICS feed has no time filter, no
 	// incremental sync and can lag by a day, so it cannot fire on time.
-	if tr.Account == nil || tr.Account.Kind != string(calendar.KindCalDAV) {
+	if tr.Account == nil || !triggerCalendarKind(tr.Account.Kind) {
 		return
 	}
 	// An admin turning agent mode off is a kill switch for this feature too: a
@@ -153,7 +153,7 @@ func (s *Server) runCalendarTrigger(ctx context.Context, tr store.CalendarTrigge
 		s.noteTriggerFetchError(tr.UserID, "the calendar credential could not be read")
 		return
 	}
-	cfg, ok := calendarConfigFor(*tr.Account, raw)
+	cfg, ok := s.calendarConfigFor(ctx, *tr.Account, raw)
 	if !ok {
 		return
 	}
@@ -366,14 +366,20 @@ func clockMinutes(v string) (int, bool) {
 	return h*60 + m, true
 }
 
-// caldavConnected reports whether the user has a usable CalDAV account (the
-// only kind triggers can read).
-func (s *Server) caldavConnected(ctx context.Context, userID string) bool {
+// triggerCalendarKind reports whether a calendar kind can drive triggers:
+// CalDAV and Google are live, ICS is not.
+func triggerCalendarKind(kind string) bool {
+	return kind == string(calendar.KindCalDAV) || kind == string(calendar.KindGoogle)
+}
+
+// triggerCalendarConnected reports whether the user has a usable calendar for
+// triggers (CalDAV or Google).
+func (s *Server) triggerCalendarConnected(ctx context.Context, userID string) bool {
 	acc, err := s.st.GetCalendarAccount(ctx, userID)
 	if err != nil {
 		return false
 	}
-	return acc.Kind == string(calendar.KindCalDAV) && acc.CredentialEnc != ""
+	return triggerCalendarKind(acc.Kind) && acc.CredentialEnc != ""
 }
 
 // calendarTriggerJSON is the trigger resource's client shape (contract §23).
@@ -410,7 +416,7 @@ func (s *Server) calendarTriggerView(ctx context.Context, u store.User) (calenda
 		QuietStart:     tr.QuietStart,
 		QuietEnd:       tr.QuietEnd,
 		LeadMinutes:    int(triggerLead / time.Minute),
-		Connected:      s.caldavConnected(ctx, u.ID),
+		Connected:      s.triggerCalendarConnected(ctx, u.ID),
 		LastError:      s.triggerLastError(u.ID),
 	}, nil
 }
@@ -521,8 +527,8 @@ func (s *Server) handlePutCalendarTrigger(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if req.Enabled != nil {
-		if *req.Enabled && !s.caldavConnected(ctx, u.ID) {
-			writeError(w, http.StatusBadRequest, "connect a CalDAV calendar before enabling triggers")
+		if *req.Enabled && !s.triggerCalendarConnected(ctx, u.ID) {
+			writeError(w, http.StatusBadRequest, "connect a CalDAV or Google calendar before enabling triggers")
 			return
 		}
 		cur.Enabled = *req.Enabled
@@ -633,8 +639,8 @@ func (s *Server) handlePreviewCalendarTrigger(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "failed to load the calendar")
 		return
 	}
-	if acc.Kind != string(calendar.KindCalDAV) {
-		writeError(w, http.StatusBadRequest, "calendar triggers need a CalDAV calendar")
+	if !triggerCalendarKind(acc.Kind) {
+		writeError(w, http.StatusBadRequest, "calendar triggers need a CalDAV or Google calendar")
 		return
 	}
 	raw, err := secret.Decrypt(s.encKey, acc.CredentialEnc)
@@ -642,7 +648,7 @@ func (s *Server) handlePreviewCalendarTrigger(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadGateway, "could not read the calendar credential")
 		return
 	}
-	cfg, ok := calendarConfigFor(acc, raw)
+	cfg, ok := s.calendarConfigFor(ctx, acc, raw)
 	if !ok {
 		writeError(w, http.StatusBadGateway, "could not build the calendar backend")
 		return

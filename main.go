@@ -91,6 +91,12 @@ type config struct {
 	// Per-user Linkwarden (2.8) optional env fallback (both required to apply).
 	linkwardenURL   string
 	linkwardenToken string
+
+	// Read-only Google Calendar (3.3). Both credentials are required; when
+	// either is empty the feature is off.
+	googleClientID     string
+	googleClientSecret string
+	publicURL          string // optional OAuth redirect base override
 }
 
 func main() {
@@ -395,6 +401,11 @@ func loadConfig() (config, error) {
 		// Per-user Linkwarden (2.8) env fallback; each user can store their own.
 		linkwardenURL:   os.Getenv("LINKWARDEN_URL"),
 		linkwardenToken: os.Getenv("LINKWARDEN_TOKEN"),
+		// Read-only Google Calendar (3.3). Empty by default: the feature stays
+		// off until an OAuth client is configured.
+		googleClientID:     envOr("MYOGCHAT_GOOGLE_CLIENT_ID", ""),
+		googleClientSecret: envOr("MYOGCHAT_GOOGLE_CLIENT_SECRET", ""),
+		publicURL:          envOr("MYOGCHAT_PUBLIC_URL", ""),
 	}
 	if v := os.Getenv("MYOGCHAT_OCR_TIMEOUT"); v != "" {
 		d, err := parseOCRDuration(v)
@@ -718,7 +729,11 @@ func run(cfg config, log *slog.Logger) error {
 		Units:    cfg.mapsUnits,
 		Limit:    cfg.mapsLimit,
 	}, sbx, ocrEngine, ocrEngineName, vision != nil, cfg.speech, cfg.imagegenURL, cfg.imagegenToken,
-		cfg.linkwardenURL, cfg.linkwardenToken)
+		cfg.linkwardenURL, cfg.linkwardenToken, server.GoogleCalendar{
+			ClientID:     cfg.googleClientID,
+			ClientSecret: cfg.googleClientSecret,
+			PublicURL:    cfg.publicURL,
+		})
 
 	go janitor(ctx, st, cfg.retentionDays, sbx, log)
 
@@ -761,6 +776,8 @@ func run(cfg config, log *slog.Logger) error {
 		"imagegen_url", cfg.imagegenURL,
 		"linkwarden_url", cfg.linkwardenURL,
 		"linkwarden_token", cfg.linkwardenToken != "",
+		"google_calendar", cfg.googleClientID != "" && cfg.googleClientSecret != "",
+		"public_url", cfg.publicURL,
 	)
 
 	errc := make(chan error, 1)

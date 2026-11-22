@@ -1,11 +1,13 @@
 // Package calendar provides a provider-agnostic calendar backend for feature
-// 3.3. It normalizes two very different wire protocols behind one Event model:
+// 3.3. It normalizes three very different wire protocols behind one Event model:
 //
 //   - CalDAV (Apple/iCloud, Zoho, self-hosted Radicale/Nextcloud) via
 //     github.com/emersion/go-webdav + github.com/emersion/go-ical, using HTTP
 //     Basic auth with an app-specific password. Read/write.
 //   - Google's per-calendar "secret address" ICS URL — a plain unauthenticated
-//     GET of an iCalendar feed. Read-only (owner decision: no OAuth/consent).
+//     GET of an iCalendar feed. Read-only.
+//   - Google Calendar via OAuth (Calendar v3 API, calendar.readonly scope).
+//     Read-only.
 //
 // The package is deliberately free of server/store types so it can be unit
 // tested in isolation, exactly like internal/tools.
@@ -15,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -27,10 +30,12 @@ const (
 	KindCalDAV Kind = "caldav"
 	// KindICS is a read-only iCalendar feed URL (Google secret address).
 	KindICS Kind = "ics"
+	// KindGoogle is a read-only Google Calendar account (OAuth, Calendar v3).
+	KindGoogle Kind = "google"
 )
 
 // ErrReadOnly is returned by write operations on a read-only backend.
-var ErrReadOnly = errors.New("this calendar is read-only (ICS feed) — creating, updating and deleting events is not supported")
+var ErrReadOnly = errors.New("this calendar is read-only — creating, updating and deleting events is not supported")
 
 // Reminder is a normalized VALARM: minutes before the event start, plus the
 // alarm action (e.g. DISPLAY).
@@ -122,11 +127,22 @@ type Config struct {
 	Endpoint     string // server base URL, e.g. https://caldav.icloud.com
 	Username     string // Apple ID / Zoho email (not secret)
 	Password     string // app-specific password (secret)
-	CalendarPath string // default collection path (optional; discovered if empty)
+	CalendarPath string // collection path (CalDAV) or calendar id (Google); overrides CalendarID, discovered if empty
 	HomeSet      string // cached calendar-home-set (optional)
 
 	// ICS.
 	URL string // secret ICS feed URL (secret)
+
+	// Google (OAuth, read-only).
+	ClientID     string
+	ClientSecret string
+	Token        Token
+	SaveToken    func(Token) error // persists a refreshed token (may be nil)
+	// Overridable endpoints, so tests can point at httptest servers. Empty
+	// means Google's.
+	TokenURL   string
+	APIBase    string
+	HTTPClient *http.Client
 
 	// Shared.
 	CalendarID string // default calendar id/name for tools
@@ -139,6 +155,8 @@ func New(cfg Config) (Backend, error) {
 		return newCalDAV(cfg)
 	case KindICS:
 		return newICS(cfg)
+	case KindGoogle:
+		return newGoogle(cfg)
 	default:
 		return nil, fmt.Errorf("unknown calendar kind %q", cfg.Kind)
 	}
@@ -173,6 +191,12 @@ func Discover(ctx context.Context, cfg Config) (Discovery, error) {
 		// A cheap read validates that the feed parses.
 		now := time.Now()
 		if _, err := v.List(ctx, ListQuery{From: now.AddDate(0, -1, 0), To: now.AddDate(0, 1, 0)}); err != nil {
+			return Discovery{}, err
+		}
+		return Discovery{CalendarID: v.calendarID, Calendars: cals}, nil
+	case *googleBackend:
+		cals, err := v.Calendars(ctx)
+		if err != nil {
 			return Discovery{}, err
 		}
 		return Discovery{CalendarID: v.calendarID, Calendars: cals}, nil

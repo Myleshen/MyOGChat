@@ -24,9 +24,15 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
   endpoint (e.g. NVIDIA NIM) with their own key; its models join the picker,
   chat-completions only, prices untracked (`docs/6.5-custom-providers.md`).
 - **Calendar triggers** (2026-11-22): an opt-in per-user config starts an agent
-  conversation 15 minutes before each CalDAV event — 120 s scheduler tick, a
-  dedupe ledger, quiet hours and quota/busy/late skips
-  (`docs/6.0-calendar-triggers.md`). API + scheduler shipped; no Settings UI yet.
+  conversation 15 minutes before each CalDAV or Google event — 120 s scheduler
+  tick, a dedupe ledger, quiet hours and quota/busy/late skips
+  (`docs/6.0-calendar-triggers.md`).
+- **Google Calendar (read-only OAuth)** (2026-11-22): a per-user Google account
+  via the Calendar v3 API with the `calendar.readonly` scope, alongside CalDAV and
+  the legacy secret ICS URL. Needs `MYOGCHAT_GOOGLE_CLIENT_ID` +
+  `MYOGCHAT_GOOGLE_CLIENT_SECRET` (off when unset); tokens are refreshed in place
+  and revoked on disconnect (`docs/3.3-calendar.md`). **Not yet clicked through
+  the real consent screen, not committed, not deployed.**
 
 ## Live deployment
 

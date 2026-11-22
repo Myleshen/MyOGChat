@@ -1767,6 +1767,10 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
   overflow-wrap: anywhere;
 }
 
+/* ---------- Settings: Google Calendar sign-in (feature 3.3) ---------- */
+/* A linked button, so it keeps the .btn look without an underline. */
+#calendar-google-connect { text-decoration: none; }
+
 /* ---------- Settings: scheduled prompts (calendar-triggered chats) ---------- */
 /* Self-contained block; all selectors are prefixed calendar-trigger. */
 

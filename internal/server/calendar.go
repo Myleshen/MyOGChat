@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -28,7 +29,7 @@ func (s *Server) calendarAccountConfig(ctx context.Context, userID string) (cale
 		s.log.Warn("calendar credential could not be decrypted", "error", err)
 		return calendar.Config{}, store.CalendarAccount{}, false
 	}
-	cfg, ok := calendarConfigFor(acc, raw)
+	cfg, ok := s.calendarConfigFor(ctx, acc, raw)
 	if !ok {
 		return calendar.Config{}, store.CalendarAccount{}, false
 	}
@@ -39,7 +40,7 @@ func (s *Server) calendarAccountConfig(ctx context.Context, userID string) (cale
 // decrypted credential. It is split out so a caller holding an
 // already-joined account row (the calendar-trigger scheduler) needs no second
 // query. ok is false for an unknown kind.
-func calendarConfigFor(acc store.CalendarAccount, raw []byte) (calendar.Config, bool) {
+func (s *Server) calendarConfigFor(ctx context.Context, acc store.CalendarAccount, raw []byte) (calendar.Config, bool) {
 	cfg := calendar.Config{
 		Kind:       calendar.Kind(acc.Kind),
 		CalendarID: acc.CalendarID,
@@ -55,6 +56,24 @@ func calendarConfigFor(acc store.CalendarAccount, raw []byte) (calendar.Config, 
 		cfg.Password = string(raw)
 	case calendar.KindICS:
 		cfg.URL = string(raw)
+	case calendar.KindGoogle:
+		var tok calendar.Token
+		if err := json.Unmarshal(raw, &tok); err != nil {
+			s.log.Warn("google calendar token could not be decoded", "error", err)
+			return calendar.Config{}, false
+		}
+		g := s.google.withDefaults()
+		cfg.ClientID = g.ClientID
+		cfg.ClientSecret = g.ClientSecret
+		cfg.Token = tok
+		cfg.TokenURL = g.tokenURL
+		cfg.APIBase = g.apiBase
+		cfg.HTTPClient = g.hc
+		// Keep the row current when the backend refreshes the access token.
+		accID := acc.ID
+		cfg.SaveToken = func(t calendar.Token) error {
+			return s.saveGoogleToken(ctx, acc.UserID, accID, t)
+		}
 	default:
 		return calendar.Config{}, false
 	}
@@ -97,7 +116,10 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.st.GetCalendarAccount(r.Context(), u.ID)
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusOK, map[string]any{"connected": false})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"connected":        false,
+			"google_available": s.google.Available(),
+		})
 		return
 	}
 	if err != nil {
@@ -105,7 +127,9 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load calendar")
 		return
 	}
-	writeJSON(w, http.StatusOK, calendarStatusJSON(acc))
+	out := calendarStatusJSON(acc)
+	out["google_available"] = s.google.Available()
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handlePutCalendar connects or replaces the caller's calendar after validating
@@ -159,6 +183,11 @@ func (s *Server) handlePutCalendar(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		credential = cfg.URL
+	case calendar.KindGoogle:
+		// Google accounts are created only by the OAuth callback: the client
+		// never holds a token to PUT.
+		writeError(w, http.StatusBadRequest, "Google Calendar is connected with its own sign-in, not with a credential")
+		return
 	default:
 		writeError(w, http.StatusBadRequest, "kind must be 'caldav' or 'ics'")
 		return
@@ -298,11 +327,15 @@ func (s *Server) handlePatchCalendar(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, calendarStatusJSON(acc))
 }
 
-// handleDeleteCalendar disconnects the caller's calendar (3.3).
+// handleDeleteCalendar disconnects the caller's calendar (3.3). A Google token
+// is revoked first, best-effort.
 func (s *Server) handleDeleteCalendar(w http.ResponseWriter, r *http.Request) {
 	u, ok := currentUser(w, r)
 	if !ok {
 		return
+	}
+	if acc, err := s.st.GetCalendarAccount(r.Context(), u.ID); err == nil && acc.Kind == string(calendar.KindGoogle) {
+		s.revokeGoogleToken(r.Context(), acc)
 	}
 	if _, err := s.st.DeleteCalendarAccount(r.Context(), u.ID); err != nil {
 		s.log.Error("delete calendar account", "error", err)

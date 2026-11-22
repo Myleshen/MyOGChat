@@ -1128,9 +1128,11 @@ billing. Full design: `docs/3.4-maps.md`.
 ## 13. Calendar (3.3)
 
 Per-user calendar connection: **Apple/iCloud + Zoho via CalDAV** (read/write,
-HTTP Basic with an app-specific password) and **Google via the per-calendar
-"secret address" ICS URL** (read-only, no OAuth). Full design:
-`docs/3.3-calendar.md`.
+HTTP Basic with an app-specific password), **Google via OAuth** (read-only,
+`calendar.readonly`, Calendar v3) and **Google via the per-calendar "secret
+address" ICS URL** (read-only, no OAuth). Google OAuth is enabled only when the
+server has `MYOGCHAT_GOOGLE_CLIENT_ID` + `MYOGCHAT_GOOGLE_CLIENT_SECRET`. Full
+design: `docs/3.3-calendar.md`.
 
 ### 13.1 Schema (additive)
 
@@ -1138,11 +1140,11 @@ HTTP Basic with an app-specific password) and **Google via the per-calendar
 CREATE TABLE IF NOT EXISTS calendar_accounts (
   id           TEXT PRIMARY KEY,
   user_id      TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-  kind         TEXT NOT NULL,      -- caldav | ics
+  kind         TEXT NOT NULL,      -- caldav | ics | google
   provider     TEXT,               -- apple | zoho | google | custom
-  calendar_id  TEXT,               -- default CalDAV collection path / ICS label
+  calendar_id  TEXT,               -- default collection path / ICS label / Google id
   username     TEXT,               -- CalDAV username (not secret)
-  credential   TEXT,               -- AES-256-GCM: CalDAV password / ICS URL
+  credential   TEXT,               -- AES-256-GCM: CalDAV password / ICS URL / OAuth token JSON
   endpoint     TEXT,               -- resolved CalDAV server URL
   home_set     TEXT,               -- cached CalDAV calendar-home-set
   created_at   INTEGER NOT NULL,
@@ -1152,15 +1154,22 @@ CREATE TABLE IF NOT EXISTS calendar_accounts (
 
 One account per user. `credential` is encrypted with `internal/secret` and never
 returned to the client. `calendar_id` is the **default collection** (a CalDAV
-collection path, or an ICS display label): every tool call without an explicit
-`calendar_id` operates on it, and because `home_set` + `endpoint` are cached a
-routine CalDAV call performs no discovery.
+collection path, an ICS display label, or a Google calendar id — `primary` for
+the primary calendar): every tool call without an explicit `calendar_id` operates
+on it, and because `home_set` + `endpoint` are cached a routine CalDAV call
+performs no discovery.
+
+`kind = "google"` stores the OAuth token JSON (`access_token`, `refresh_token`,
+`expiry` RFC3339, `token_type`, `scope`) encrypted in `credential`;
+`endpoint`/`username`/`home_set` stay empty. No migration was needed for it.
 
 ### 13.2 Endpoints (session required, per-user)
 
-- `GET /api/me/calendar` → `200 {"connected":false}` or
-  `{"connected":true,"kind":"caldav"|"ics","provider":string,
-   "calendar_id":string,"username":string,"endpoint":string,"can_write":bool}`.
+- `GET /api/me/calendar` → `200 {"connected":false,"google_available":bool}` or
+  `{"connected":true,"kind":"caldav"|"ics"|"google","provider":string,
+   "calendar_id":string,"username":string,"endpoint":string,"can_write":bool,
+   "google_available":bool}`. `google_available` is true only when the server has
+  both Google OAuth credentials.
 - `PUT /api/me/calendar`:
   - CalDAV: `{"kind":"caldav","provider"?,"endpoint","username","password","calendar_id"?}`
   - ICS: `{"kind":"ics","provider"?:"google","url","calendar_id"?}`
@@ -1183,7 +1192,22 @@ routine CalDAV call performs no discovery.
   when the collection is not on the server, `400 {"error":"ICS feeds expose a
   single calendar"}` for ICS accounts, `404 {"error":"no calendar connected"}`
   when nothing is connected.
-- `DELETE /api/me/calendar` → `204` (disconnect).
+- `GET /api/me/calendar/google/start` → `302` to
+  `https://accounts.google.com/o/oauth2/v2/auth` with `client_id`,
+  `redirect_uri` (`<public base>/api/me/calendar/google/callback`),
+  `response_type=code`, `scope=https://www.googleapis.com/auth/calendar.readonly`,
+  `access_type=offline`, `prompt=consent`, `include_granted_scopes=true` and a
+  signed `state` (`base64url(userID|unixExpiry|nonce).HMAC-SHA256`, 10 min).
+  `404 {"error":"Google Calendar is not configured on this server"}` when the
+  server has no OAuth client.
+- `GET /api/me/calendar/google/callback?code=…&state=…` → verifies the state
+  (bad/expired/other-user → `400` HTML page), exchanges the code, lists calendars,
+  stores the account and `302`s to `/#/settings`. Failures render a small HTML
+  page with the plain reason and a link back — never JSON, because this is a
+  browser navigation.
+- `DELETE /api/me/calendar` → `204` (disconnect). A Google token is revoked at
+  `https://oauth2.googleapis.com/revoke` first (best-effort; the row is deleted
+  either way).
 
 ### 13.3 Tools (registered per request only when the user has a connected calendar)
 
@@ -1194,7 +1218,7 @@ routine CalDAV call performs no discovery.
 | `calendar_update` | `uid` (req) + any `calendar_create` field (partial; edits the whole series) |
 | `calendar_delete` | `uid` (req), `calendar_id?` |
 
-Write tools return a clear read-only error on an ICS backend. Recurrence is
+Write tools return a clear read-only error on an ICS or Google backend. Recurrence is
 expanded server-side on CalDAV (`<C:expand>`) and client-side for ICS feeds;
 v1 edits whole series only.
 
