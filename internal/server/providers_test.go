@@ -81,6 +81,7 @@ func providerMux(srv *Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/me/providers", srv.handleListProviders)
 	mux.HandleFunc("POST /api/me/providers", srv.handleCreateProvider)
+	mux.HandleFunc("PATCH /api/me/providers/{id}", srv.handleUpdateProvider)
 	mux.HandleFunc("POST /api/me/providers/{id}/models", srv.handleRefreshProviderModels)
 	mux.HandleFunc("DELETE /api/me/providers/{id}", srv.handleDeleteProvider)
 	return mux
@@ -276,6 +277,154 @@ func TestProviderRefreshKeepsOldListOn502(t *testing.T) {
 	}
 	if len(got.Models) != 1 || got.Models[0].ID != "meta/llama-3.1-8b" {
 		t.Errorf("models after failed refresh = %+v, want the old list", got.Models)
+	}
+}
+
+// TestProviderPatchNameKeepsSlugAndModels: a name-only edit changes the display
+// name, keeps the slug (model ids stay valid) and the cached models, and never
+// calls the upstream.
+func TestProviderPatchNameKeepsSlugAndModels(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "")
+	ts, log := newFakeProviderServer(t, "")
+	log.modelsStatus = http.StatusOK
+	log.modelsBody = `{"data":[{"id":"meta/llama-3.1-8b","name":"Llama 3.1 8B"}]}`
+	p := seedProvider(t, st, u, "nvidia-nim", ts.URL+"/v1", "nvapi-key")
+
+	rec := providerRequest(t, srv, u, http.MethodPatch, "/api/me/providers/"+p.ID, `{"name":"NVIDIA renamed"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	got := decodeProvider(t, rec)
+	if got.Name != "NVIDIA renamed" || got.Slug != "nvidia-nim" {
+		t.Errorf("name/slug = %q/%q, want the new name and the old slug", got.Name, got.Slug)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "meta/llama-3.1-8b" {
+		t.Errorf("models = %+v, want the cached list untouched", got.Models)
+	}
+	log.mu.Lock()
+	n := len(log.reqs)
+	log.mu.Unlock()
+	if n != 0 {
+		t.Errorf("upstream requests = %d, want 0 for a name-only edit", n)
+	}
+
+	row, err := st.GetUserProvider(context.Background(), p.ID, u.ID)
+	if err != nil || row.Name != "NVIDIA renamed" || row.Slug != "nvidia-nim" {
+		t.Errorf("stored row = %+v, %v", row, err)
+	}
+	// The model selector keeps working: the slug prefix still resolves.
+	if _, prov, err := srv.resolveModel(context.Background(), u, "nvidia-nim/meta/llama-3.1-8b"); err != nil || prov == nil {
+		t.Errorf("resolveModel after rename = %v, %v; want the provider", prov, err)
+	}
+}
+
+// TestProviderPatchKeyRefreshesModels: a new key re-validates against the
+// upstream, swaps the model list and keeps the slug.
+func TestProviderPatchKeyRefreshesModels(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "")
+	ts, log := newFakeProviderServer(t, "")
+	log.modelsStatus = http.StatusOK
+	log.modelsBody = `{"data":[{"id":"meta/llama-3.1-8b","name":"Llama 3.1 8B"}]}`
+	p := seedProvider(t, st, u, "nvidia-nim", ts.URL+"/v1", "old-key")
+
+	log.modelsBody = `{"data":[{"id":"nvidia/nemotron"},{"id":"meta/llama-3.1-8b"}]}`
+	rec := providerRequest(t, srv, u, http.MethodPatch, "/api/me/providers/"+p.ID, `{"api_key":"new-key"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	got := decodeProvider(t, rec)
+	if got.Slug != "nvidia-nim" {
+		t.Errorf("slug = %q, want it unchanged", got.Slug)
+	}
+	if len(got.Models) != 2 || got.Models[0].ID != "nvidia/nemotron" {
+		t.Errorf("models = %+v, want the fresh list", got.Models)
+	}
+	last := log.last(t)
+	if last.Path != "/v1/models" || last.Header.Get("Authorization") != "Bearer new-key" {
+		t.Errorf("fetch = %s with %q, want /v1/models with the new key", last.Path, last.Header.Get("Authorization"))
+	}
+	row, err := st.GetUserProvider(context.Background(), p.ID, u.ID)
+	if err != nil {
+		t.Fatalf("GetUserProvider: %v", err)
+	}
+	raw, err := secret.Decrypt(testEncKey(), row.KeyEnc)
+	if err != nil || string(raw) != "new-key" {
+		t.Errorf("stored key = %q, %v; want new-key", raw, err)
+	}
+}
+
+// TestProviderPatchBadBaseURLKeepsRow: a base URL that does not answer /models
+// returns the upstream message with 400 and changes nothing.
+func TestProviderPatchBadBaseURLKeepsRow(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "")
+	ts, log := newFakeProviderServer(t, "")
+	log.modelsStatus = http.StatusOK
+	log.modelsBody = `{"data":[{"id":"meta/llama-3.1-8b","name":"Llama 3.1 8B"}]}`
+	p := seedProvider(t, st, u, "nvidia-nim", ts.URL+"/v1", "nvapi-key")
+
+	rec := providerRequest(t, srv, u, http.MethodPatch, "/api/me/providers/"+p.ID,
+		`{"name":"Should not stick","base_url":"`+ts.URL+`/dead"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("patch = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "could not list models") || !strings.Contains(rec.Body.String(), "404") {
+		t.Errorf("error = %s, want the upstream message", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "nvapi-key") {
+		t.Errorf("error leaked the key: %s", rec.Body.String())
+	}
+	row, err := st.GetUserProvider(context.Background(), p.ID, u.ID)
+	if err != nil {
+		t.Fatalf("GetUserProvider: %v", err)
+	}
+	if row.Name != p.Name || row.BaseURL != p.BaseURL {
+		t.Errorf("row name/base_url = %q/%q, want the old values", row.Name, row.BaseURL)
+	}
+	if len(row.Models) != 1 || row.Models[0].ID != "meta/llama-3.1-8b" {
+		t.Errorf("models = %+v, want the old list", row.Models)
+	}
+	raw, err := secret.Decrypt(testEncKey(), row.KeyEnc)
+	if err != nil || string(raw) != "nvapi-key" {
+		t.Errorf("stored key = %q, %v; want the old key", raw, err)
+	}
+}
+
+// TestProviderPatchValidation covers empty bodies, empty strings, and foreign or
+// unknown ids.
+func TestProviderPatchValidation(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "")
+	other := seedKeyUser(t, st, "u2", "bob", "")
+	p := seedProvider(t, st, u, "nvidia-nim", "https://integrate.api.nvidia.com/v1", "k")
+
+	cases := []struct{ label, body string }{
+		{"empty object", `{}`},
+		{"empty name", `{"name":""}`},
+		{"long name", `{"name":"` + strings.Repeat("a", maxProviderNameRunes+1) + `"}`},
+		{"empty base_url", `{"base_url":""}`},
+		{"empty api_key", `{"api_key":""}`},
+		{"relative base_url", `{"base_url":"/v1"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			rec := providerRequest(t, srv, u, http.MethodPatch, "/api/me/providers/"+p.ID, tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if rec := providerRequest(t, srv, other, http.MethodPatch, "/api/me/providers/"+p.ID, `{"name":"mine now"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("foreign patch = %d, want 404", rec.Code)
+	}
+	if rec := providerRequest(t, srv, u, http.MethodPatch, "/api/me/providers/nope", `{"name":"x"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown patch = %d, want 404", rec.Code)
+	}
+	row, err := st.GetUserProvider(context.Background(), p.ID, u.ID)
+	if err != nil || row.Name != p.Name || row.BaseURL != p.BaseURL {
+		t.Errorf("row = %+v, %v; want it untouched by rejected patches", row, err)
 	}
 }
 

@@ -1705,7 +1705,8 @@ CREATE INDEX IF NOT EXISTS idx_user_providers_user ON user_providers(user_id);
 returned. `models` is the cached `GET <base_url>/models` list.
 
 `slug` is the lowercased name with runs of non-alphanumerics collapsed to one
-`-` and trimmed; it is unique per user (`-2`, `-3`, … are appended on collision).
+`-` and trimmed; it is unique per user (`-2`, `-3`, … are appended on collision)
+and **fixed at creation** — renaming a provider never changes it (§22.2 PATCH).
 
 ### 22.2 Endpoints (session required, per-user)
 
@@ -1727,6 +1728,18 @@ returned. `models` is the cached `GET <base_url>/models` list.
 - `POST /api/me/providers/{id}/models` → re-fetch and replace the cached list,
   `200 {"models":[…]}`. On failure `502
   {"error":"could not list models: …"}` and the old list is kept.
+- `PATCH /api/me/providers/{id}` `{"name"?,"base_url"?,"api_key"?}` → `200` with
+  the updated provider object. Every field is optional and at least one is
+  required (`400 {"error":"name, base_url or api_key is required"}`); an empty
+  string is `400` for each of them, so "unchanged" is expressed by omitting the
+  field. `name` follows the create rules (1..64 runes) and is saved without an
+  upstream call. A `base_url` and/or `api_key` is re-validated with the same
+  `GET <base_url>/models` fetch as create (same headers, same 10 s timeout): on
+  success the new endpoint, the new key and the fresh `models` list are stored
+  together, on failure `400 {"error":"could not list models: …"}` and **nothing**
+  in the row changes, including a `name` sent alongside. The `slug` and
+  `created_at` are never written: model ids are `"<slug>/<vendor-id>"` and
+  conversations store them, so a slug change would orphan every pinned chat.
 - `DELETE /api/me/providers/{id}` → `204`. Unknown or foreign ids → `404` (the
   same as every other provider route).
 

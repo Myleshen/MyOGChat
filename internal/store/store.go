@@ -1588,6 +1588,35 @@ func (s *Store) UpdateUserProviderModels(ctx context.Context, id, userID string,
 	return nil
 }
 
+// UpdateUserProvider rewrites the editable fields of one owned provider: name,
+// base URL, key and cached models. Slug and CreatedAt are never touched, because
+// model ids are "<slug>/<vendor-id>". Else ErrNotFound.
+func (s *Store) UpdateUserProvider(ctx context.Context, p Provider) error {
+	models := p.Models
+	if models == nil {
+		models = []ProviderModel{}
+	}
+	blob, err := json.Marshal(models)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE user_providers SET name = ?, base_url = ?, key_enc = ?, models = ?
+		 WHERE id = ? AND user_id = ?`,
+		p.Name, p.BaseURL, p.KeyEnc, string(blob), p.ID, p.UserID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteUserProvider removes one owned provider, else ErrNotFound.
 func (s *Store) DeleteUserProvider(ctx context.Context, id, userID string) error {
 	res, err := s.db.ExecContext(ctx,
