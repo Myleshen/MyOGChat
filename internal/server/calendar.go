@@ -28,6 +28,18 @@ func (s *Server) calendarAccountConfig(ctx context.Context, userID string) (cale
 		s.log.Warn("calendar credential could not be decrypted", "error", err)
 		return calendar.Config{}, store.CalendarAccount{}, false
 	}
+	cfg, ok := calendarConfigFor(acc, raw)
+	if !ok {
+		return calendar.Config{}, store.CalendarAccount{}, false
+	}
+	return cfg, acc, true
+}
+
+// calendarConfigFor builds a backend config from a stored account and its
+// decrypted credential. It is split out so a caller holding an
+// already-joined account row (the calendar-trigger scheduler) needs no second
+// query. ok is false for an unknown kind.
+func calendarConfigFor(acc store.CalendarAccount, raw []byte) (calendar.Config, bool) {
 	cfg := calendar.Config{
 		Kind:       calendar.Kind(acc.Kind),
 		CalendarID: acc.CalendarID,
@@ -44,9 +56,9 @@ func (s *Server) calendarAccountConfig(ctx context.Context, userID string) (cale
 	case calendar.KindICS:
 		cfg.URL = string(raw)
 	default:
-		return calendar.Config{}, store.CalendarAccount{}, false
+		return calendar.Config{}, false
 	}
-	return cfg, acc, true
+	return cfg, true
 }
 
 // calendarBackend builds the caller's calendar backend from their stored

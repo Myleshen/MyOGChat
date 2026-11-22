@@ -1767,3 +1767,91 @@ ids never contain `/` and resolve through the static registry as before.
 Custom models report `cost_tracked:false` and `cost_micros:0` because no price is
 known — the SPA renders "not tracked". Token counts are still recorded. `GET
 /api/me/usage` therefore counts their tokens and their cost as 0.
+
+## 23. Calendar triggers (6.0)
+
+Opt-in, per-user automatic conversations started shortly before a calendar event.
+Only a **CalDAV** account is read; an ICS feed is never a trigger source.
+Behaviour and rationale: [`docs/6.0-calendar-triggers.md`](docs/6.0-calendar-triggers.md).
+
+### 23.1 Schema (additive)
+
+```sql
+CREATE TABLE IF NOT EXISTS calendar_triggers (
+  user_id         TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  enabled         INTEGER NOT NULL DEFAULT 0,
+  project_id      TEXT,
+  model           TEXT NOT NULL,
+  prompt_template TEXT NOT NULL,
+  quiet_start     TEXT,            -- "HH:MM" local, optional
+  quiet_end       TEXT,            -- "HH:MM" local, optional
+  updated_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trigger_runs (
+  id              TEXT PRIMARY KEY,
+  user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  conversation_id TEXT,
+  event_uid       TEXT NOT NULL,
+  event_start     INTEGER NOT NULL,
+  summary         TEXT NOT NULL,
+  status          TEXT NOT NULL,   -- fired | skipped_late | skipped_quiet | skipped_busy | skipped_quota | failed
+  reason          TEXT NOT NULL DEFAULT '',
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trigger_runs_user ON trigger_runs(user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trigger_runs_dedupe ON trigger_runs(user_id, event_uid, event_start);
+```
+
+The unique index is the dedupe key: one run row per `(user, event instance)`
+across ticks and restarts. `trigger_runs` is pruned after 90 days.
+
+### 23.2 Endpoints (session required, per-user)
+
+The trigger is a singular sub-resource of the calendar; history and dry-run are
+sub-collections of it.
+
+- `GET /api/me/calendar/trigger` → `200`
+  `{"enabled":false,"project_id":null,"model":"deepseek-v4.1-flash",
+  "prompt_template":"…","quiet_start":null,"quiet_end":null,
+  "lead_minutes":15,"connected":true,"last_error":""}`.
+  Defaults are filled in for a user who never saved a config; `prompt_template`
+  is the built-in default when the stored one is empty. `connected` reports a
+  usable CalDAV account. `last_error` is the last calendar read error seen by the
+  running scheduler (empty when healthy; resets on restart).
+- `PUT /api/me/calendar/trigger` — any subset of
+  `{enabled, project_id, model, prompt_template, quiet_start, quiet_end}`;
+  `{"enabled":true}` alone is valid. `project_id:""` clears the project;
+  `quiet_start:""` + `quiet_end:""` clears the quiet window. Response `200` with
+  the same shape as `GET`. `400 {"error":…}` for an unknown model (resolved like
+  any other model, so custom providers work), a project that is not the caller's,
+  a quiet value that is not strict `HH:MM`, `quiet_start` without `quiet_end` (or
+  the reverse), or `enabled:true` with no CalDAV calendar connected.
+- `DELETE /api/me/calendar/trigger` → `204`, idempotent. Removes the config **and
+  that user's run rows**.
+- `GET /api/me/calendar/trigger/runs?limit=20` →
+  `200 {"runs":[{"id","conversation_id","summary","start","status","reason","created_at"}]}`,
+  newest first, `limit` clamped to `1..50` (a non-integer is `400`). Owner-scoped:
+  another user's runs are never returned; `conversation_id` is `null` when no
+  conversation was created.
+- `POST /api/me/calendar/trigger/preview` → `200`
+  `{"prompt":"…","events":[{"uid","summary","start"}],"skipped":0}`. Renders the
+  template for the next matching event(s) in the scheduler's window; writes
+  nothing. `skipped` counts in-window events that will produce no conversation
+  (already started, quiet at fire time, or already in the ledger). `400` when no
+  CalDAV calendar is connected; `502 {"error":"could not read the calendar: …"}`
+  when the fetch fails.
+
+### 23.3 Semantics
+
+- Fire window: `fire_at = start − 15 min`; fire while `fire_at <= now < start`
+  and `now − fire_at <= 10 min`, else record `skipped_late` once.
+- The scheduler ticks every 120 s, one serial loop, and never joins the per-user
+  agent queue: a busy user yields `skipped_busy`. `ShutdownJobs` refuses new jobs
+  (`503` for API sends), so a tick cannot start work during shutdown.
+- The created conversation is an ordinary agent chat (`agent_mode=1`, title
+  `Calendar: <summary>`) with the rendered prompt written as the user message
+  before the job starts.
+- Template tokens: `{{summary}}`, `{{start}}`, `{{end}}`, `{{location}}`,
+  `{{description}}`; dates are RFC 3339 local time; unknown tokens are left as-is.
+- A triggered reply omits `list_chats` / `read_chat` and never writes project
+  memory. It still counts toward the caller's usage and quota.

@@ -768,6 +768,10 @@ func run(cfg config, log *slog.Logger) error {
 		errc <- httpSrv.ListenAndServe()
 	}()
 
+	// Calendar-triggered conversations (6.0) run on their own 120 s ticker once
+	// the server is up: each tick reads the enabled users' calendar collections.
+	go srv.RunCalendarTriggers(ctx)
+
 	select {
 	case err := <-errc:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -855,6 +859,13 @@ func janitor(ctx context.Context, st *store.Store, retentionDays int, sbx *sandb
 			log.Error("retention janitor", "error", err)
 		} else if art > 0 {
 			log.Info("retention janitor purged artifacts", "count", art, "cutoff", cutoff)
+		}
+		// The calendar-trigger ledger only feeds the "recent triggers" list, so
+		// it gets a fixed 90-day window instead of the chat retention window.
+		if tr, err := st.DeleteTriggerRunsOlderThan(ctx, time.Now().Add(-90*24*time.Hour).UnixMilli()); err != nil {
+			log.Error("retention janitor", "error", err)
+		} else if tr > 0 {
+			log.Info("retention janitor purged trigger runs", "count", tr)
 		}
 		// A crash mid-run can leave a workspace behind; sweep stale ones (5.8).
 		if sbx != nil {

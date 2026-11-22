@@ -479,17 +479,25 @@ merges sequentially and resolves the small additive conflicts in shared files
   (a context/attention trade-off: ~8k tokens of extra input per turn in that
   project, ~$0.0012/turn uncached and cached after the first turn).
 
-### 6.0 Calendar triggers — 📝 design only, not implemented ([`docs/6.0-calendar-triggers.md`](6.0-calendar-triggers.md))
-- Let a connected calendar start conversations on its own: one per event
-  instance (30 min before, default) or one morning digest, run as an **agent
-  reply** (`AgentMode` + the agent job path, 60 min / 60 tool rounds) so the
-  agent has every tool. Includes the durable `calendar_trigger_runs` dedupe
-  ledger keyed on `calendar_id + uid + start` with the conversation UUID
-  pre-allocated for crash-safe recovery, a 120 s scheduler tick beside the
-  retention janitor with its own drain guard, a 10-minute late window
-  (`skipped_late` rather than a stale reminder), quiet hours + a daily cap, and
-  the Settings → Integrations → Calendar UI. **Design only — nothing is built.**
-  Its CalDAV-collection prerequisite (the backend ignoring the stored
-  `calendar_id`) has since shipped, so it is no longer blocked on that; the
-  `startAgentNow` refusal, the scheduler's drain guard and the `last_error`
-  column are still missing.
+### 6.0 Calendar triggers — ✅ shipped (backend) ([`docs/6.0-calendar-triggers.md`](6.0-calendar-triggers.md))
+- An opt-in per-user config starts an **agent conversation** 15 minutes before
+  each CalDAV event: the event is rendered into the prompt
+  (`{{summary}}`/`{{start}}`/`{{end}}`/`{{location}}`/`{{description}}`, with a
+  built-in default) and the reply runs on the normal agent budget.
+- `internal/server/calendar_triggers.go` runs a serial 120 s tick from `main.go`
+  (after the HTTP server): one `List` per enabled CalDAV account, no queue — a
+  busy agent slot, a quota, quiet hours, lateness or shutdown all record
+  `skipped_busy`/`skipped_quota`/`skipped_quiet`/`skipped_late` instead of
+  delivering a stale reminder. The `trigger_runs` unique index on
+  `(user_id, event_uid, event_start)` is the dedupe key; rows are inserted
+  before anything is created, and conversation + user message exist before the
+  job starts, so a triggered chat is never empty.
+- Triggered replies lose `list_chats`/`read_chat` and never write project memory
+  (event text is third-party data). Two pre-existing job bugs were fixed for
+  every caller: `startLocked` refuses once the hub is draining (API sends get
+  `503`), and `startAgentExclusive` refuses instead of queueing.
+- Endpoints: `GET|PUT|DELETE /api/me/calendar/trigger`,
+  `GET /api/me/calendar/trigger/runs`, `POST /api/me/calendar/trigger/preview`
+  (`API_CONTRACT.md` §23). Ledger pruned after 90 days by the janitor.
+- **Not built:** the Settings UI (config is API-only) and any verification
+  against a real iCloud/Zoho account; no daily cap, no per-trigger timezone.

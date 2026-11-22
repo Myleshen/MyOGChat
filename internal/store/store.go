@@ -166,7 +166,36 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_user ON artifacts(user_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts(conversation_id);
-` + userProvidersSchema
+` + userProvidersSchema + calendarTriggersSchema
+
+// calendarTriggersSchema is the per-user calendar-trigger config plus its run
+// ledger (6.0). It is kept in its own constant because it is applied twice: by
+// the base schema on a fresh database and by migrate() on an existing one.
+const calendarTriggersSchema = `
+CREATE TABLE IF NOT EXISTS calendar_triggers (
+  user_id         TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  enabled         INTEGER NOT NULL DEFAULT 0,
+  project_id      TEXT,
+  model           TEXT NOT NULL,
+  prompt_template TEXT NOT NULL,
+  quiet_start     TEXT,
+  quiet_end       TEXT,
+  updated_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trigger_runs (
+  id              TEXT PRIMARY KEY,
+  user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  conversation_id TEXT,
+  event_uid       TEXT NOT NULL,
+  event_start     INTEGER NOT NULL,
+  summary         TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  reason          TEXT NOT NULL DEFAULT '',
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trigger_runs_user ON trigger_runs(user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trigger_runs_dedupe ON trigger_runs(user_id, event_uid, event_start);
+`
 
 // userProvidersSchema is the per-user custom upstream provider table (§22).
 // It is kept in its own constant because it is applied twice: by the base
@@ -473,6 +502,10 @@ func (s *Store) migrate() error {
 	// Custom upstream providers (§22): a new table, so an existing database
 	// gains it without touching any other row.
 	if _, err := s.db.Exec(userProvidersSchema); err != nil {
+		return err
+	}
+	// Calendar triggers (6.0): two new tables plus their indexes.
+	if _, err := s.db.Exec(calendarTriggersSchema); err != nil {
 		return err
 	}
 	steps := []struct {
@@ -2423,6 +2456,250 @@ func (s *Store) DeleteCalendarAccount(ctx context.Context, userID string) (int64
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// ---------- calendar triggers (6.0) ----------
+
+// CalendarTrigger is one user's automatic-conversation config. A model id is
+// always stored; PromptTemplate may be empty (the server then renders its
+// built-in default). Quiet bounds are "HH:MM" local clock times; both set or
+// both nil.
+type CalendarTrigger struct {
+	UserID         string  `json:"user_id"`
+	Enabled        bool    `json:"enabled"`
+	ProjectID      *string `json:"project_id"`
+	Model          string  `json:"model"`
+	PromptTemplate string  `json:"prompt_template"`
+	QuietStart     *string `json:"quiet_start"`
+	QuietEnd       *string `json:"quiet_end"`
+	UpdatedAt      int64   `json:"updated_at"`
+	// Account is the user's connected calendar, filled in by
+	// ListEnabledTriggers so the scheduler needs no second query per user.
+	Account *CalendarAccount `json:"-"`
+}
+
+// TriggerRun is one ledger row: what the scheduler did for one event instance.
+// The unique index on (user_id, event_uid, event_start) is the dedupe key.
+type TriggerRun struct {
+	ID             string  `json:"id"`
+	UserID         string  `json:"-"`
+	ConversationID *string `json:"conversation_id"`
+	EventUID       string  `json:"event_uid"`
+	EventStart     int64   `json:"event_start"` // unix ms
+	Summary        string  `json:"summary"`
+	Status         string  `json:"status"` // fired | skipped_late | skipped_quiet | skipped_busy | skipped_quota | failed
+	Reason         string  `json:"reason"`
+	CreatedAt      int64   `json:"created_at"`
+}
+
+const calendarTriggerCols = "user_id, enabled, project_id, model, prompt_template, quiet_start, quiet_end, updated_at"
+
+func scanCalendarTrigger(sc scanner) (CalendarTrigger, error) {
+	var t CalendarTrigger
+	var enabled int
+	var projectID, quietStart, quietEnd sql.NullString
+	if err := sc.Scan(&t.UserID, &enabled, &projectID, &t.Model, &t.PromptTemplate,
+		&quietStart, &quietEnd, &t.UpdatedAt); err != nil {
+		return CalendarTrigger{}, err
+	}
+	t.Enabled = enabled != 0
+	if projectID.Valid {
+		t.ProjectID = &projectID.String
+	}
+	if quietStart.Valid {
+		t.QuietStart = &quietStart.String
+	}
+	if quietEnd.Valid {
+		t.QuietEnd = &quietEnd.String
+	}
+	return t, nil
+}
+
+// GetCalendarTrigger loads one user's trigger config, else ErrNotFound.
+func (s *Store) GetCalendarTrigger(ctx context.Context, userID string) (CalendarTrigger, error) {
+	t, err := scanCalendarTrigger(s.db.QueryRowContext(ctx,
+		`SELECT `+calendarTriggerCols+` FROM calendar_triggers WHERE user_id = ?`, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return CalendarTrigger{}, ErrNotFound
+	}
+	return t, err
+}
+
+// UpsertCalendarTrigger inserts or replaces a user's trigger config.
+func (s *Store) UpsertCalendarTrigger(ctx context.Context, t *CalendarTrigger) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO calendar_triggers (`+calendarTriggerCols+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+		   enabled = excluded.enabled,
+		   project_id = excluded.project_id,
+		   model = excluded.model,
+		   prompt_template = excluded.prompt_template,
+		   quiet_start = excluded.quiet_start,
+		   quiet_end = excluded.quiet_end,
+		   updated_at = excluded.updated_at`,
+		t.UserID, boolToInt(t.Enabled), nullString(t.ProjectID), t.Model,
+		t.PromptTemplate, nullString(t.QuietStart), nullString(t.QuietEnd), t.UpdatedAt)
+	return err
+}
+
+// DeleteCalendarTrigger removes a user's config and its run ledger in one
+// transaction. Returns the number of trigger rows removed (0 when none), so the
+// endpoint stays idempotent.
+func (s *Store) DeleteCalendarTrigger(ctx context.Context, userID string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM calendar_triggers WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM trigger_runs WHERE user_id = ?`, userID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// HasTriggerRun reports whether a user already has a run row for this event
+// instance (the dedupe key).
+func (s *Store) HasTriggerRun(ctx context.Context, userID, eventUID string, eventStart int64) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM trigger_runs WHERE user_id = ? AND event_uid = ? AND event_start = ?`,
+		userID, eventUID, eventStart).Scan(&n)
+	return n > 0, err
+}
+
+// InsertTriggerRun reserves an event instance. It reports false (and no error)
+// when the dedupe key already exists: the caller has already acted on it.
+func (s *Store) InsertTriggerRun(ctx context.Context, r *TriggerRun) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO trigger_runs (id, user_id, conversation_id, event_uid, event_start, summary, status, reason, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id, event_uid, event_start) DO NOTHING`,
+		r.ID, r.UserID, nullString(r.ConversationID), r.EventUID, r.EventStart,
+		r.Summary, r.Status, r.Reason, r.CreatedAt)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// UpdateTriggerRun records the outcome of a reserved run.
+func (s *Store) UpdateTriggerRun(ctx context.Context, id, status, reason, conversationID string) error {
+	var conv any
+	if conversationID != "" {
+		conv = conversationID
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE trigger_runs SET status = ?, reason = ?, conversation_id = ? WHERE id = ?`,
+		status, reason, conv, id)
+	return err
+}
+
+// ListTriggerRuns returns a user's most recent runs, newest first.
+func (s *Store) ListTriggerRuns(ctx context.Context, userID string, limit int) ([]TriggerRun, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, conversation_id, event_uid, event_start, summary, status, reason, created_at
+		   FROM trigger_runs WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TriggerRun
+	for rows.Next() {
+		var r TriggerRun
+		var conv sql.NullString
+		if err := rows.Scan(&r.ID, &r.UserID, &conv, &r.EventUID, &r.EventStart,
+			&r.Summary, &r.Status, &r.Reason, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		if conv.Valid {
+			r.ConversationID = &conv.String
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteTriggerRunsOlderThan purges run rows created before cutoff (unix ms).
+func (s *Store) DeleteTriggerRunsOlderThan(ctx context.Context, cutoff int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM trigger_runs WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ListEnabledTriggers returns every enabled trigger config joined with its
+// owner's calendar account (nil when none is connected), so one scheduler tick
+// costs one query instead of a lookup per user.
+func (s *Store) ListEnabledTriggers(ctx context.Context) ([]CalendarTrigger, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT t.user_id, t.enabled, t.project_id, t.model, t.prompt_template, t.quiet_start, t.quiet_end, t.updated_at,
+		        a.id, a.kind, a.provider, a.calendar_id, a.username, a.credential, a.endpoint, a.home_set, a.created_at, a.updated_at
+		   FROM calendar_triggers t
+		   LEFT JOIN calendar_accounts a ON a.user_id = t.user_id
+		  WHERE t.enabled = 1
+		  ORDER BY t.user_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CalendarTrigger
+	for rows.Next() {
+		t, acc, err := scanTriggerWithAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		t.Account = acc
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// scanTriggerWithAccount reads the joined trigger+account row of
+// ListEnabledTriggers; the account columns are NULL when no calendar is connected.
+func scanTriggerWithAccount(sc scanner) (CalendarTrigger, *CalendarAccount, error) {
+	var (
+		t                                             CalendarTrigger
+		enabled                                       int
+		projectID, quietStart, quietEnd               sql.NullString
+		accID, kind, provider, calendarID, user, cred sql.NullString
+		endpoint, homeSet                             sql.NullString
+		accCreated, accUpdated                        sql.NullInt64
+	)
+	if err := sc.Scan(&t.UserID, &enabled, &projectID, &t.Model, &t.PromptTemplate,
+		&quietStart, &quietEnd, &t.UpdatedAt,
+		&accID, &kind, &provider, &calendarID, &user, &cred, &endpoint, &homeSet, &accCreated, &accUpdated); err != nil {
+		return CalendarTrigger{}, nil, err
+	}
+	t.Enabled = enabled != 0
+	if projectID.Valid {
+		t.ProjectID = &projectID.String
+	}
+	if quietStart.Valid {
+		t.QuietStart = &quietStart.String
+	}
+	if quietEnd.Valid {
+		t.QuietEnd = &quietEnd.String
+	}
+	if !accID.Valid {
+		return t, nil, nil
+	}
+	acc := &CalendarAccount{
+		ID: accID.String, UserID: t.UserID, Kind: strOr(kind), Provider: strOr(provider),
+		CalendarID: strOr(calendarID), Username: strOr(user), CredentialEnc: strOr(cred),
+		Endpoint: strOr(endpoint), HomeSet: strOr(homeSet),
+		CreatedAt: accCreated.Int64, UpdatedAt: accUpdated.Int64,
+	}
+	return t, acc, nil
 }
 
 // DeleteImagesOlderThan purges images created before cutoff (unix ms) across

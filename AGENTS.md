@@ -90,3 +90,11 @@ Internet access is via the Cloudflare Tunnel (public hostname → `http://raspbe
   on first run). `MYOGCHAT_AUTH_TOKEN` is no longer used.
 - All conversations/projects are scoped to their owner (`user_id`); cross-user
   access returns 404.
+
+## v6 features
+
+- **Calendar triggers** (`docs/6.0-calendar-triggers.md`): an opt-in per-user
+  config starts an agent conversation 15 minutes before each CalDAV event
+  (120 s scheduler tick, dedupe ledger on `(user_id, event_uid, event_start)`,
+  quiet hours, quota/busy/late skips). Triggered replies lose `list_chats` /
+  `read_chat` and never write project memory.
