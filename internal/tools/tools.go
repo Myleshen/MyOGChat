@@ -66,6 +66,21 @@ func (r *Registry) Get(name string) (Tool, bool) {
 // Len reports how many tools are registered.
 func (r *Registry) Len() int { return len(r.order) }
 
+// Remove unregisters the tool named name. It is a no-op when absent, so a
+// caller can narrow a shared registry without probing first.
+func (r *Registry) Remove(name string) {
+	if _, ok := r.byName[name]; !ok {
+		return
+	}
+	delete(r.byName, name)
+	for i, n := range r.order {
+		if n == name {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+			return
+		}
+	}
+}
+
 // Specs returns the tools in registration order.
 func (r *Registry) Specs() []Spec {
 	specs := make([]Spec, 0, len(r.order))

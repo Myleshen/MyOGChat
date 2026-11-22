@@ -23,6 +23,10 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
 - **Custom providers** (2026-11-21): each user can add an OpenAI-compatible
   endpoint (e.g. NVIDIA NIM) with their own key; its models join the picker,
   chat-completions only, prices untracked (`docs/6.5-custom-providers.md`).
+- **Calendar triggers** (2026-11-22): an opt-in per-user config starts an agent
+  conversation 15 minutes before each CalDAV event — 120 s scheduler tick, a
+  dedupe ledger, quiet hours and quota/busy/late skips
+  (`docs/6.0-calendar-triggers.md`). API + scheduler shipped; no Settings UI yet.
 
 ## Live deployment
 
@@ -121,8 +125,9 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-provid
   `5.7-background-generation.md`, `5.8-sandbox-artifacts.md`, `5.9-email-digest.md`,
   `5.10-reuse-draft.md`, `5.11-multi-mailbox.md`, `5-hardening.md` (shipped),
   `5.12-agent-mode.md` (shipped, verified live)
-- `docs/6.0-calendar-triggers.md` — Phase 6, design only (the calendar starts its
-  own conversations)
+- `docs/6.0-calendar-triggers.md` — Phase 6, shipped (the calendar starts its
+  own conversations; API + 120 s scheduler, no Settings UI yet)
+- `docs/6.2-project-memory.md` — Phase 6, shipped (rolling project memory)
 - `docs/6.4-upstream-dialects.md` — the four upstream dialects: what each
   adapter maps, the event-model gaps, and the unverified-live caveats
 
@@ -315,6 +320,13 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
   exact; monthly exact only when retention ≥ the window). **Tool activity**
   (2.10) is now persisted on assistant messages (`messages.tools`) and survives a
   reload.
+- **Calendar triggers (6.0)** are unit-tested end to end against a fake CalDAV
+  server (fire once + dedupe, late/quiet/quota/busy skips, preview, endpoints,
+  the no-chat-tools / no-memory exceptions). **Not verified against a real
+  iCloud/Zoho account**, and there is **no Settings UI**: the config is
+  API-only (`GET/PUT/DELETE /api/me/calendar/trigger`). Quiet hours use the
+  server's local clock, there is no daily cap and no per-trigger timezone; the
+  existing quota is the only hard spend stop.
 
 ## Gotchas / tips
 

@@ -91,6 +91,11 @@ type Server struct {
 	// chatOnceFn makes the one-shot auto-title call. A field for the same
 	// reason; production uses up.ChatOnce.
 	chatOnceFn func(ctx context.Context, apiKey, sessionID, model string, msgs []upstream.Message, maxTokens int) (string, error)
+
+	// Calendar triggers (6.0): the scheduler's in-memory calendar health per
+	// user — the last fetch error and when it was last logged.
+	triggerMu     sync.Mutex
+	triggerStates map[string]triggerState
 }
 
 // hub returns the reply-job hub, creating it on first use.
@@ -225,6 +230,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/me/calendar", s.handlePatchCalendar)
 	mux.HandleFunc("GET /api/me/calendar/calendars", s.handleListCalendars)
 	mux.HandleFunc("DELETE /api/me/calendar", s.handleDeleteCalendar)
+	// Calendar-triggered conversations (per-user, 6.0).
+	mux.HandleFunc("GET /api/me/calendar/trigger", s.handleGetCalendarTrigger)
+	mux.HandleFunc("PUT /api/me/calendar/trigger", s.handlePutCalendarTrigger)
+	mux.HandleFunc("DELETE /api/me/calendar/trigger", s.handleDeleteCalendarTrigger)
+	mux.HandleFunc("GET /api/me/calendar/trigger/runs", s.handleListCalendarTriggerRuns)
+	mux.HandleFunc("POST /api/me/calendar/trigger/preview", s.handlePreviewCalendarTrigger)
 	// Groups & shared keys (§2.2).
 	mux.HandleFunc("GET /api/groups", s.handleListGroups)
 	mux.HandleFunc("POST /api/groups", s.handleCreateGroup)

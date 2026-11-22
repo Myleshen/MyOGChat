@@ -121,6 +121,9 @@ type replySpec struct {
 	// userSaved marks a message already persisted by the caller (agent sends
 	// insert before queueing, so a queued message is visible immediately).
 	userSaved bool
+	// triggered marks a reply started by the calendar scheduler (6.0): it gets
+	// no chat-reference tools and never writes project memory.
+	triggered bool
 }
 
 // agentWorkspaceMinFree is the free-disk headroom required to start an agent job.
@@ -212,6 +215,9 @@ func (s *Server) startReply(w http.ResponseWriter, r *http.Request, spec replySp
 		if errors.Is(err, errJobRunning) {
 			status = http.StatusConflict
 		}
+		if errors.Is(err, errShuttingDown) {
+			status = http.StatusServiceUnavailable
+		}
 		writeError(w, status, err.Error())
 		return
 	}
@@ -243,6 +249,9 @@ func (s *Server) startAgentReply(w http.ResponseWriter, r *http.Request, spec re
 		status := http.StatusTooManyRequests
 		if errors.Is(err, errJobRunning) {
 			status = http.StatusConflict
+		}
+		if errors.Is(err, errShuttingDown) {
+			status = http.StatusServiceUnavailable
 		}
 		writeError(w, status, err.Error())
 		return
@@ -536,6 +545,12 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 		}
 		generatedArtifacts = append(generatedArtifacts, ref)
 	}, ws)
+	// A calendar-triggered reply is sandboxed away from the owner's other
+	// chats: the event text is third-party data, so it cannot browse them.
+	if spec.triggered {
+		reg.Remove("list_chats")
+		reg.Remove("read_chat")
+	}
 	if _, ok := reg.Get("email_digest"); ok {
 		instructions = joinSystem(instructions, emailDigestStandardWithDate(time.Now(), time.Local))
 	}
@@ -726,8 +741,9 @@ stream:
 
 	// Rolling project memory (6.2) runs off the reply's critical path, exactly
 	// like the title: nothing below waits on it, so it can never delay or fail
-	// `done`. Only a successful reply in a project chat is worth remembering.
-	if conv.ProjectID != nil {
+	// `done`. Only a successful reply in a project chat is worth remembering —
+	// and a calendar-triggered reply is event data, not the owner's own turn.
+	if conv.ProjectID != nil && !spec.triggered {
 		userTurn := spec.userContent
 		if strings.TrimSpace(userTurn) == "" {
 			userTurn = lastUserMessage(history)

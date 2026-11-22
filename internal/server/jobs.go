@@ -53,6 +53,12 @@ const (
 var (
 	errJobRunning  = errors.New("a reply is already generating in this conversation")
 	errTooManyJobs = errors.New("too many replies generating — wait for one to finish")
+	// errShuttingDown is returned once the hub is draining: a job started now
+	// would never be covered by ShutdownJobs' cancellation.
+	errShuttingDown = errors.New("server is shutting down")
+	// errAgentBusy is returned by startAgentExclusive when the user already has
+	// an agent job. The calendar scheduler skips rather than queueing.
+	errAgentBusy = errors.New("an agent job is already running for this user")
 )
 
 // sseFrame is one pre-rendered SSE frame (event name + marshaled JSON payload),
@@ -403,6 +409,10 @@ func (h *jobHub) queuedForLocked(convID string) bool {
 func (h *jobHub) startAgent(convID, userID, model string, spec replySpec) (j *genJob, pos int, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closing {
+		// A queued send would never be started once the hub is draining.
+		return nil, 0, errShuttingDown
+	}
 	if existing, ok := h.jobs[convID]; ok && existing.isRunning() {
 		return nil, 0, errJobRunning
 	}
@@ -419,8 +429,35 @@ func (h *jobHub) startAgent(convID, userID, model string, spec replySpec) (j *ge
 	return j, 0, err
 }
 
+// startAgentExclusive starts an agent job for the user, or refuses: it never
+// queues. The calendar scheduler uses it because a trigger that waits behind a
+// 60-minute agent job would land after the event it prepares for. Caller holds
+// no lock.
+func (h *jobHub) startAgentExclusive(convID, userID, model string) (*genJob, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closing {
+		return nil, errShuttingDown
+	}
+	if existing, ok := h.jobs[convID]; ok && existing.isRunning() {
+		return nil, errJobRunning
+	}
+	if h.queuedForLocked(convID) {
+		return nil, errJobRunning
+	}
+	if h.agentActive[userID] > 0 {
+		return nil, errAgentBusy
+	}
+	return h.startLocked(convID, userID, model, true)
+}
+
 // startLocked reserves the concurrency slots and creates the job. Caller holds h.mu.
 func (h *jobHub) startLocked(convID, userID, model string, agent bool) (*genJob, error) {
+	// A job created after the drain began is not covered by ShutdownJobs'
+	// cancellation, so it must never be created at all.
+	if h.closing {
+		return nil, errShuttingDown
+	}
 	select {
 	case h.global <- struct{}{}:
 	default:
