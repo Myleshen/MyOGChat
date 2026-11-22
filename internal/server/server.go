@@ -72,6 +72,10 @@ type Server struct {
 	linkwardenURL   string
 	linkwardenToken string
 
+	// Read-only Google Calendar OAuth client (3.3). Empty credentials disable
+	// the feature entirely.
+	google GoogleCalendar
+
 	// mediaSem bounds concurrent background media-transcription workers (4.5b).
 	mediaSem chan struct{}
 
@@ -118,8 +122,10 @@ func (s *Server) hub() *jobHub {
 // engines (features 3.5 / 3.6); imagegenURL/imagegenToken are the env defaults
 // for self-hosted image generation (feature 3.1, both may be empty);
 // linkwardenURL/linkwardenToken are the optional env fallback for the per-user
-// Linkwarden integration (feature 2.8, both must be set to apply).
-func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool, speechDefaults SpeechDefaults, imagegenURL, imagegenToken, linkwardenURL, linkwardenToken string) *Server {
+// Linkwarden integration (feature 2.8, both must be set to apply); google holds
+// the OAuth client for the read-only Google Calendar backend (feature 3.3,
+// disabled when either credential is empty).
+func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log *slog.Logger, encKey []byte, serverKey string, search SearchDefaults, geo GeoDefaults, sbx *sandbox.Runner, ocrEngine ocr.Engine, ocrEngineName string, ocrVisionAvailable bool, speechDefaults SpeechDefaults, imagegenURL, imagegenToken, linkwardenURL, linkwardenToken string, google GoogleCalendar) *Server {
 	s := &Server{
 		st: st, up: up, auth: a, static: staticFS, log: log,
 		streamAgentFn: up.StreamAgent,
@@ -131,6 +137,7 @@ func New(st *store.Store, up *upstream.Client, a *auth.Auth, staticFS fs.FS, log
 		imagegenToken:   imagegenToken,
 		linkwardenURL:   linkwardenURL,
 		linkwardenToken: linkwardenToken,
+		google:          google.withDefaults(),
 		mediaSem:        make(chan struct{}, 2),
 		freeBytes:       sandbox.FreeBytes,
 	}
@@ -229,6 +236,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/me/calendar", s.handlePutCalendar)
 	mux.HandleFunc("PATCH /api/me/calendar", s.handlePatchCalendar)
 	mux.HandleFunc("GET /api/me/calendar/calendars", s.handleListCalendars)
+	mux.HandleFunc("GET /api/me/calendar/google/start", s.handleGoogleCalendarStart)
+	mux.HandleFunc("GET /api/me/calendar/google/callback", s.handleGoogleCalendarCallback)
 	mux.HandleFunc("DELETE /api/me/calendar", s.handleDeleteCalendar)
 	// Calendar-triggered conversations (per-user, 6.0).
 	mux.HandleFunc("GET /api/me/calendar/trigger", s.handleGetCalendarTrigger)

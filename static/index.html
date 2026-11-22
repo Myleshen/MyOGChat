@@ -490,10 +490,17 @@
       <section id="calendar-section" class="settings-section settings-calendar">
         <h2 class="settings-heading">Calendar</h2>
         <p class="settings-subtitle-sm">
-          Connect a calendar so the assistant can read and — on CalDAV — create,
-          update, and delete events.
+          Connect a calendar so the assistant can read events — and, on CalDAV,
+          create, update, and delete them.
         </p>
         <p id="calendar-status" class="settings-subtitle-sm">Calendar: loading…</p>
+
+        <!-- Google Calendar (read-only OAuth). Shown only when the server has
+             an OAuth client configured and nothing is connected yet. -->
+        <p id="calendar-google" hidden>
+          <a id="calendar-google-connect" class="btn btn-primary"
+             href="/api/me/calendar/google/start">Connect Google Calendar</a>
+        </p>
 
         <!-- Default calendar (connected accounts only). CalDAV gets a picker;
              ICS feeds are single and read-only, so they render as plain text. -->
@@ -507,7 +514,7 @@
           <button type="button" id="calendar-default-retry" class="btn btn-ghost" hidden>Retry</button>
         </div>
 
-        <label class="field">
+        <label class="field" id="calendar-type-field">
           <span class="field-label">Type</span>
           <select id="calendar-kind">
             <option value="caldav">CalDAV (Apple/iCloud, Zoho)</option>
@@ -574,7 +581,7 @@
             to the model you choose — as a new chat in the project you pick.
           </p>
           <p id="calendar-trigger-offline" class="settings-subtitle-sm" hidden>
-            Connect a calendar first — scheduled prompts only work with CalDAV.
+            Connect a calendar first — scheduled prompts need CalDAV or Google Calendar.
           </p>
 
           <div id="calendar-trigger-fields" class="calendar-trigger-fields" hidden>

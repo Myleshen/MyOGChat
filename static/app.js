@@ -153,6 +153,8 @@ const calendarDefaultStatic = document.getElementById("calendar-default-static")
 const calendarDefaultHint = document.getElementById("calendar-default-hint");
 const calendarDefaultRetry = document.getElementById("calendar-default-retry");
 const calendarKind = document.getElementById("calendar-kind");
+const calendarTypeField = document.getElementById("calendar-type-field");
+const calendarGoogle = document.getElementById("calendar-google");
 const calendarProvider = document.getElementById("calendar-provider");
 const calendarCaldavFields = document.getElementById("calendar-caldav-fields");
 const calendarICSFields = document.getElementById("calendar-ics-fields");
@@ -2587,9 +2589,11 @@ const CALENDAR_ENDPOINTS = {
 };
 
 function updateCalendarFieldVisibility() {
-  const kind = calendarKind ? calendarKind.value : "caldav";
+  /* A Google account has no CalDAV/ICS form: hide the type switch entirely. */
+  const kind = calendarGoogleConnected ? "google" : calendarKind ? calendarKind.value : "caldav";
   calendarCaldavFields.hidden = kind !== "caldav";
   calendarICSFields.hidden = kind !== "ics";
+  calendarTypeField.hidden = kind === "google";
 }
 
 function applyCalendarProviderPreset() {
@@ -2604,6 +2608,11 @@ function showCalendarError(msg) {
 
 /* Last confirmed default calendar, so a failed PATCH can revert the select. */
 let calendarDefaultValue = "";
+
+/* Google Calendar state: whether the server has an OAuth client, and whether
+   the connected account is Google (which has no CalDAV/ICS form). */
+let calendarGoogleAvailable = false;
+let calendarGoogleConnected = false;
 
 function hideCalendarDefaultNote() {
   calendarDefaultHint.hidden = true;
@@ -2640,7 +2649,7 @@ function renderCalendarDefaultOptions(calendars, current) {
   hideCalendarDefaultNote();
 }
 
-/* Fetch the account's calendars for the picker (CalDAV only; ICS is one feed). */
+/* Fetch the account's calendars for the picker (CalDAV and Google; ICS is one feed). */
 async function loadCalendarCalendars() {
   if (!calendarDefault) return;
   calendarDefaultField.hidden = true;
@@ -2689,13 +2698,21 @@ async function saveCalendarDefault() {
 
 /* Render the connected state (never shows the secret). */
 function applyCalendarStatus(s) {
-  if (s && s.connected) {
+  if (s && typeof s.google_available === "boolean") calendarGoogleAvailable = s.google_available;
+  const connected = !!(s && s.connected);
+  calendarGoogleConnected = connected && s.kind === "google";
+  if (calendarGoogleConnected) {
+    calendarStatus.textContent = "Connected to Google Calendar — read-only.";
+    calendarDisconnect.hidden = false;
+    calendarSave.hidden = true;
+  } else if (connected) {
     const kindLabel = s.kind === "ics" ? "Google ICS (read-only)" : "CalDAV";
     const who = s.username ? " as " + s.username : "";
     calendarStatus.textContent =
       "Connected: " + (s.provider ? s.provider + " " : "") + kindLabel + who +
       (s.can_write ? " — read/write." : " — read-only.");
     calendarDisconnect.hidden = false;
+    calendarSave.hidden = false;
     calendarKind.value = s.kind === "ics" ? "ics" : "caldav";
     if (s.provider) calendarProvider.value = s.provider;
     if (s.kind === "caldav") {
@@ -2706,8 +2723,12 @@ function applyCalendarStatus(s) {
   } else {
     calendarStatus.textContent = "Not connected. The assistant cannot read your calendar.";
     calendarDisconnect.hidden = true;
+    calendarSave.hidden = false;
     calendarSave.textContent = "Connect";
   }
+  /* The Google sign-in link is only an entry point, never a control on a
+     connected account. */
+  calendarGoogle.hidden = connected || !calendarGoogleAvailable;
   applyCalendarDefaultVisibility(s);
   updateCalendarFieldVisibility();
 }
