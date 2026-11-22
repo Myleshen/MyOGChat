@@ -164,6 +164,28 @@ const calendarError = document.getElementById("calendar-error");
 const calendarSave = document.getElementById("calendar-save");
 const calendarDisconnect = document.getElementById("calendar-disconnect");
 
+/* Scheduled prompts (calendar-triggered chats) — the Calendar section's sub-block. */
+const calendarTrigger = document.getElementById("calendar-trigger");
+const calendarTriggerEnabled = document.getElementById("calendar-trigger-enabled");
+const calendarTriggerOffline = document.getElementById("calendar-trigger-offline");
+const calendarTriggerFields = document.getElementById("calendar-trigger-fields");
+const calendarTriggerProject = document.getElementById("calendar-trigger-project");
+const calendarTriggerModel = document.getElementById("calendar-trigger-model");
+const calendarTriggerPrompt = document.getElementById("calendar-trigger-prompt");
+const calendarTriggerQuietStart = document.getElementById("calendar-trigger-quiet-start");
+const calendarTriggerQuietEnd = document.getElementById("calendar-trigger-quiet-end");
+const calendarTriggerQuietClear = document.getElementById("calendar-trigger-quiet-clear");
+const calendarTriggerPreviewBtn = document.getElementById("calendar-trigger-preview");
+const calendarTriggerPreviewOut = document.getElementById("calendar-trigger-preview-out");
+const calendarTriggerPreviewPrompt = document.getElementById("calendar-trigger-preview-prompt");
+const calendarTriggerPreviewList = document.getElementById("calendar-trigger-preview-list");
+const calendarTriggerPreviewEmpty = document.getElementById("calendar-trigger-preview-empty");
+const calendarTriggerPreviewSkipped = document.getElementById("calendar-trigger-preview-skipped");
+const calendarTriggerError = document.getElementById("calendar-trigger-error");
+const calendarTriggerSave = document.getElementById("calendar-trigger-save");
+const calendarTriggerRuns = document.getElementById("calendar-trigger-runs");
+const calendarTriggerRunsEmpty = document.getElementById("calendar-trigger-runs-empty");
+
 /* Integrations (admin only, Phase 2.4 / 2.8). */
 const integrationsSection = document.getElementById("integrations-section");
 const settingToolsEnabled = document.getElementById("setting-tools-enabled");
@@ -1022,6 +1044,7 @@ function showSettingsPage() {
   loadMySearch().catch(() => {}); /* per-user web search (2.12) */
   loadMyLinkwarden().catch(() => {}); /* per-user Linkwarden (2.8) */
   loadCalendarStatus().catch(() => {});
+  loadCalendarTrigger().catch(() => {}); /* scheduled prompts + recent runs */
   loadMail().catch(() => {}); /* email (feature 3.2) — per-user, all users */
   loadAgentWorkspaces().catch(() => {}); /* agent files (per-user, all users) */
   if (isAdmin) {
@@ -2780,6 +2803,240 @@ async function disconnectCalendar() {
   }
 }
 
+/* ============================== Scheduled prompts (calendar trigger) ============================== */
+/* Calendar-triggered chats, shown inside the Calendar section: 15 minutes before
+   an event the server starts a new chat from the event using the template below.
+   The block stays hidden when the server predates /api/me/calendar/trigger, so a
+   mixed deploy never shows dead controls. */
+
+const CALENDAR_TRIGGER_SKIP_TEXT = {
+  skipped_late: "Skipped — it was too close to the start time.",
+  skipped_quiet: "Skipped — it fell inside your quiet hours.",
+  skipped_busy: "Skipped — you were already running a long job.",
+  skipped_quota: "Skipped — the monthly quota was used up.",
+};
+
+let calendarTriggerConnected = false;
+
+const calendarRelFormat = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+/* "in 12 minutes" / "yesterday" for an ISO timestamp. */
+function calendarRelative(iso) {
+  const ms = Date.parse(iso || "");
+  if (Number.isNaN(ms)) return "";
+  const mins = Math.round((ms - Date.now()) / 60000);
+  if (Math.abs(mins) < 60) return calendarRelFormat.format(mins, "minute");
+  const hours = Math.round(mins / 60);
+  if (Math.abs(hours) < 24) return calendarRelFormat.format(hours, "hour");
+  return calendarRelFormat.format(Math.round(hours / 24), "day");
+}
+
+/* <time> with a relative label and the absolute timestamp in the tooltip. */
+function buildCalendarTime(iso, className) {
+  const time = el("time", className);
+  const ms = Date.parse(iso || "");
+  time.dateTime = Number.isNaN(ms) ? "" : new Date(ms).toISOString();
+  if (!Number.isNaN(ms)) time.title = new Date(ms).toLocaleString();
+  time.textContent = calendarRelative(iso) || String(iso || "");
+  return time;
+}
+
+function renderCalendarTriggerProjects(selected) {
+  calendarTriggerProject.textContent = "";
+  const none = el("option");
+  none.value = "";
+  none.textContent = "No project";
+  calendarTriggerProject.appendChild(none);
+  for (const project of state.projects) {
+    const opt = el("option");
+    opt.value = String(project.id);
+    opt.textContent = project.name || "Untitled project";
+    calendarTriggerProject.appendChild(opt);
+  }
+  calendarTriggerProject.value = state.projects.some((p) => String(p.id) === String(selected))
+    ? String(selected)
+    : "";
+}
+
+function calendarTriggerRunNote(run) {
+  if (run.status === "failed") return run.reason ? "Failed — " + run.reason : "Failed.";
+  return CALENDAR_TRIGGER_SKIP_TEXT[run.status] || "";
+}
+
+function renderCalendarTriggerRuns(runs) {
+  const list = Array.isArray(runs) ? runs : [];
+  calendarTriggerRuns.textContent = "";
+  calendarTriggerRunsEmpty.hidden = list.length !== 0;
+  for (const run of list) {
+    const li = el("li", "calendar-trigger-run");
+    const head = el("div", "calendar-trigger-run-head");
+    const summary = String(run.summary || "Untitled event");
+    if (run.status === "fired" && run.conversation_id) {
+      const open = el("button", "calendar-trigger-run-link");
+      open.type = "button";
+      open.textContent = summary;
+      open.title = "Open the chat this event started";
+      open.addEventListener("click", () => {
+        leaveSettings();
+        openConversation(run.conversation_id);
+      });
+      head.appendChild(open);
+    } else {
+      const title = el("span", "calendar-trigger-run-title");
+      title.textContent = summary;
+      head.appendChild(title);
+    }
+    const chip = el("span", "badge calendar-trigger-status");
+    chip.textContent = run.status === "fired" ? "Fired" : run.status === "failed" ? "Failed" : "Skipped";
+    if (run.status === "fired") chip.classList.add("calendar-trigger-status-ok");
+    else if (run.status === "failed") chip.classList.add("calendar-trigger-status-bad");
+    head.appendChild(chip);
+    li.appendChild(head);
+
+    const meta = el("p", "calendar-trigger-run-meta");
+    meta.appendChild(buildCalendarTime(run.start || run.created_at));
+    const note = calendarTriggerRunNote(run);
+    if (note) meta.append(" · " + note);
+    li.appendChild(meta);
+    calendarTriggerRuns.appendChild(li);
+  }
+}
+
+async function loadCalendarTriggerRuns() {
+  const data = await api("/api/me/calendar/trigger/runs?limit=20");
+  renderCalendarTriggerRuns(data && data.runs);
+}
+
+function applyCalendarTrigger(s) {
+  const connected = !!(s && s.connected);
+  calendarTriggerConnected = connected;
+  calendarTriggerOffline.hidden = connected;
+  calendarTriggerEnabled.checked = !!(s && s.enabled);
+  renderCalendarTriggerProjects(s ? s.project_id : "");
+  fillModelSelect(calendarTriggerModel, s ? s.model : "");
+  calendarTriggerPrompt.value = (s && s.prompt_template) || "";
+  calendarTriggerQuietStart.value = (s && s.quiet_start) || "";
+  calendarTriggerQuietEnd.value = (s && s.quiet_end) || "";
+  calendarTriggerFields.hidden = !calendarTriggerEnabled.checked;
+  calendarTriggerPreviewOut.hidden = true;
+  for (const control of [
+    calendarTriggerEnabled,
+    calendarTriggerProject,
+    calendarTriggerModel,
+    calendarTriggerPrompt,
+    calendarTriggerQuietStart,
+    calendarTriggerQuietEnd,
+    calendarTriggerQuietClear,
+    calendarTriggerPreviewBtn,
+    calendarTriggerSave,
+  ]) {
+    control.disabled = !connected;
+  }
+  setFormError(calendarTriggerError, "");
+}
+
+async function loadCalendarTrigger() {
+  if (!calendarTrigger) return;
+  calendarTrigger.hidden = true;
+  try {
+    applyCalendarTrigger(await api("/api/me/calendar/trigger"));
+    calendarTrigger.hidden = false;
+  } catch {
+    return; // older server without the route — leave the block hidden
+  }
+  loadCalendarTriggerRuns().catch(() => {});
+}
+
+async function saveCalendarTrigger() {
+  setFormError(calendarTriggerError, "");
+  const enabled = calendarTriggerEnabled.checked;
+  const quietStart = calendarTriggerQuietStart.value;
+  const quietEnd = calendarTriggerQuietEnd.value;
+  if (enabled && Boolean(quietStart) !== Boolean(quietEnd)) {
+    setFormError(calendarTriggerError, "Set both quiet-hour times, or clear them.");
+    return;
+  }
+  /* Only send what the form can show: an untouched prompt or project is left
+     out so the server's defaults apply (turning the toggle on alone works). */
+  const body = { enabled };
+  if (enabled) {
+    body.project_id = calendarTriggerProject.value || null;
+    if (calendarTriggerModel.value) body.model = calendarTriggerModel.value;
+    if (calendarTriggerPrompt.value.trim()) body.prompt_template = calendarTriggerPrompt.value;
+    body.quiet_start = quietStart || null;
+    body.quiet_end = quietEnd || null;
+  }
+  const label = calendarTriggerSave.textContent;
+  calendarTriggerSave.disabled = true;
+  calendarTriggerSave.textContent = "Saving…";
+  try {
+    applyCalendarTrigger(
+      await api("/api/me/calendar/trigger", {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(body),
+      })
+    );
+    toast("Scheduled prompts saved");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    setFormError(calendarTriggerError, err.message);
+  } finally {
+    calendarTriggerSave.disabled = !calendarTriggerConnected;
+    calendarTriggerSave.textContent = label;
+  }
+}
+
+function renderCalendarTriggerPreview(data) {
+  calendarTriggerPreviewOut.hidden = false;
+  calendarTriggerPreviewPrompt.textContent = (data && data.prompt) || "";
+  calendarTriggerPreviewList.textContent = "";
+  const events = data && Array.isArray(data.events) ? data.events : [];
+  for (const event of events) {
+    const li = el("li", "calendar-trigger-event");
+    li.appendChild(buildCalendarTime(event.start, "calendar-trigger-event-time"));
+    const name = el("span", "calendar-trigger-event-summary");
+    name.textContent = event.summary || "Untitled event";
+    li.appendChild(name);
+    calendarTriggerPreviewList.appendChild(li);
+  }
+  calendarTriggerPreviewEmpty.hidden = events.length !== 0;
+  calendarTriggerPreviewEmpty.textContent = "No matching events coming up.";
+  const skipped = Number(data && data.skipped) || 0;
+  calendarTriggerPreviewSkipped.hidden = !skipped;
+  calendarTriggerPreviewSkipped.textContent = skipped
+    ? skipped + (skipped === 1 ? " event skipped" : " events skipped") + " (quiet hours or already started)."
+    : "";
+}
+
+async function previewCalendarTrigger() {
+  setFormError(calendarTriggerError, "");
+  const label = calendarTriggerPreviewBtn.textContent;
+  calendarTriggerPreviewBtn.disabled = true;
+  calendarTriggerPreviewBtn.textContent = "Previewing…";
+  try {
+    /* The unsaved form is sent so the preview reflects what is on screen; blank
+       fields are omitted so the server's defaults apply. */
+    const body = { project_id: calendarTriggerProject.value || null };
+    if (calendarTriggerModel.value) body.model = calendarTriggerModel.value;
+    if (calendarTriggerPrompt.value.trim()) body.prompt_template = calendarTriggerPrompt.value;
+    renderCalendarTriggerPreview(
+      await api("/api/me/calendar/trigger/preview", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(body),
+      })
+    );
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    calendarTriggerPreviewOut.hidden = true;
+    setFormError(calendarTriggerError, err.message);
+  } finally {
+    calendarTriggerPreviewBtn.disabled = !calendarTriggerConnected;
+    calendarTriggerPreviewBtn.textContent = label;
+  }
+}
+
 /* ============================== Groups & shared keys (§2.2) ============================== */
 
 function groupById(id) {
@@ -3533,7 +3790,14 @@ async function saveProject() {
 /* ============================== Model / effort pickers ============================== */
 
 function renderModelSelect() {
-  modelSelect.innerHTML = "";
+  fillModelSelect(modelSelect, modelSelect.value);
+}
+
+/* Fill any model <select> from the registry: price tiers for built-ins, then one
+   group per custom provider. Shared by the composer picker and the calendar
+   trigger's model picker so both list the same models. */
+function fillModelSelect(select, selected) {
+  select.innerHTML = "";
   // Built-ins keep the price-tier grouping; custom provider models carry a
   // `provider` slug and get their own group under the provider's name.
   const builtins = state.models.filter((m) => !m.provider);
@@ -3554,7 +3818,7 @@ function renderModelSelect() {
       opt.textContent = modelOptionLabel(m);
       og.appendChild(opt);
     }
-    modelSelect.appendChild(og);
+    select.appendChild(og);
   }
   const byProvider = new Map();
   for (const m of state.models) {
@@ -3572,8 +3836,10 @@ function renderModelSelect() {
       opt.textContent = modelOptionLabel(m);
       og.appendChild(opt);
     }
-    modelSelect.appendChild(og);
+    select.appendChild(og);
   }
+  select.value =
+    selected && modelById(selected) ? selected : select.options.length ? select.options[0].value : "";
 }
 
 function updateEffortVisibility() {
@@ -6447,6 +6713,23 @@ function wireEvents() {
   if (calendarDisconnect) calendarDisconnect.addEventListener("click", disconnectCalendar);
   if (calendarDefaultSelect) calendarDefaultSelect.addEventListener("change", saveCalendarDefault);
   if (calendarDefaultRetry) calendarDefaultRetry.addEventListener("click", () => loadCalendarCalendars().catch(() => {}));
+
+  /* Scheduled prompts (calendar-triggered chats). */
+  if (calendarTriggerEnabled) {
+    calendarTriggerEnabled.addEventListener("change", () => {
+      calendarTriggerFields.hidden = !calendarTriggerEnabled.checked;
+      if (!calendarTriggerFields.hidden) setFormError(calendarTriggerError, "");
+    });
+  }
+  if (calendarTriggerQuietClear) {
+    calendarTriggerQuietClear.addEventListener("click", () => {
+      calendarTriggerQuietStart.value = "";
+      calendarTriggerQuietEnd.value = "";
+      calendarTriggerQuietStart.focus();
+    });
+  }
+  if (calendarTriggerPreviewBtn) calendarTriggerPreviewBtn.addEventListener("click", previewCalendarTrigger);
+  if (calendarTriggerSave) calendarTriggerSave.addEventListener("click", saveCalendarTrigger);
 
   /* Integrations: tools toggle + Linkwarden (admin, Phase 2.4 / 2.8). */
   settingToolsEnabled.addEventListener("change", saveToolsEnabled);
