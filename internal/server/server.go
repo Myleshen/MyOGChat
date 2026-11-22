@@ -203,6 +203,7 @@ func (s *Server) Handler() http.Handler {
 	// Per-user custom upstream providers (§22).
 	mux.HandleFunc("GET /api/me/providers", s.handleListProviders)
 	mux.HandleFunc("POST /api/me/providers", s.handleCreateProvider)
+	mux.HandleFunc("PATCH /api/me/providers/{id}", s.handleUpdateProvider)
 	mux.HandleFunc("POST /api/me/providers/{id}/models", s.handleRefreshProviderModels)
 	mux.HandleFunc("DELETE /api/me/providers/{id}", s.handleDeleteProvider)
 	// Usage & quotas (2.11).

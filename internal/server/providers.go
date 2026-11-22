@@ -186,6 +186,102 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, providerViewOf(p))
 }
 
+// handleUpdateProvider edits a provider in place. The slug never changes, even
+// when the name does: model ids are "<slug>/<vendor-id>", so a new slug would
+// orphan every conversation pinned to one of this provider's models. A new base
+// URL or key is proven the same way create proves one — by listing its models —
+// and nothing is written unless that fetch succeeds.
+func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
+	u, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	// Pointer fields: omitted means "keep the stored value". An empty string is
+	// always rejected, so "unchanged" can never be expressed by sending "".
+	var req struct {
+		Name    *string `json:"name"`
+		BaseURL *string `json:"base_url"`
+		APIKey  *string `json:"api_key"`
+	}
+	if err := decodeJSON(w, r, &req, 16*1024); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == nil && req.BaseURL == nil && req.APIKey == nil {
+		writeError(w, http.StatusBadRequest, "name, base_url or api_key is required")
+		return
+	}
+	p, err := s.st.GetUserProvider(r.Context(), r.PathValue("id"), u.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+	if err != nil {
+		s.log.Error("get provider", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load provider")
+		return
+	}
+	update := p
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if n := len([]rune(name)); n == 0 || n > maxProviderNameRunes {
+			writeError(w, http.StatusBadRequest, "name must be 1-64 characters")
+			return
+		}
+		update.Name = name
+	}
+	if req.BaseURL != nil {
+		base, err := normalizeProviderBaseURL(*req.BaseURL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		update.BaseURL = base
+	}
+	key := ""
+	if req.APIKey != nil {
+		key = strings.TrimSpace(*req.APIKey)
+		if key == "" {
+			writeError(w, http.StatusBadRequest, "api_key must not be empty")
+			return
+		}
+		enc, err := secret.Encrypt(s.encKey, []byte(key))
+		if err != nil {
+			s.log.Error("encrypt provider key", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to store provider")
+			return
+		}
+		update.KeyEnc = enc
+	}
+	if req.BaseURL != nil || key != "" {
+		plain := key
+		if plain == "" {
+			raw, err := secret.Decrypt(s.encKey, p.KeyEnc)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "the provider key could not be read; delete and re-add the provider")
+				return
+			}
+			plain = string(raw)
+		}
+		list, err := fetchProviderModels(r.Context(), update.BaseURL, plain)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "could not list models: "+err.Error())
+			return
+		}
+		update.Models = list
+	}
+	if err := s.st.UpdateUserProvider(r.Context(), update); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "provider not found")
+			return
+		}
+		s.log.Error("update provider", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update provider")
+		return
+	}
+	writeJSON(w, http.StatusOK, providerViewOf(update))
+}
+
 // handleRefreshProviderModels re-fetches the catalog; on failure the cached list
 // is kept and the upstream message is returned with 502.
 func (s *Server) handleRefreshProviderModels(w http.ResponseWriter, r *http.Request) {

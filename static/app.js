@@ -2393,6 +2393,11 @@ function buildProviderRow(p) {
   li.appendChild(status);
 
   const actions = el("div", "provider-actions");
+  const edit = el("button", "user-action");
+  edit.type = "button";
+  edit.textContent = "Edit";
+  edit.setAttribute("aria-label", "Edit " + p.name);
+  edit.addEventListener("click", () => openProviderForm(p));
   const refresh = el("button", "user-action");
   refresh.type = "button";
   refresh.textContent = "Refresh models";
@@ -2403,12 +2408,24 @@ function buildProviderRow(p) {
   del.textContent = "Delete";
   del.setAttribute("aria-label", "Delete " + p.name);
   del.addEventListener("click", () => deleteProvider(p));
-  actions.append(refresh, del);
+  actions.append(edit, refresh, del);
   li.appendChild(actions);
   return li;
 }
 
-function openProviderForm() {
+/* Null when the form is adding a provider; the provider id when editing one. */
+let editingProviderId = null;
+
+function openProviderForm(p) {
+  providerForm.reset();
+  setFormError(providerError, "");
+  editingProviderId = p ? p.id : null;
+  providerName.value = p ? p.name : "";
+  providerBaseUrl.value = p ? p.base_url : "";
+  providerKey.value = "";
+  providerKey.required = !p;
+  providerKey.placeholder = p ? "Leave blank to keep the current key" : "nvapi-…";
+  providerForm.querySelector('button[type="submit"]').textContent = p ? "Save changes" : "Save";
   providerForm.hidden = false;
   providerAddToggle.hidden = true;
   providerName.focus();
@@ -2417,6 +2434,10 @@ function openProviderForm() {
 function closeProviderForm() {
   providerForm.reset();
   setFormError(providerError, "");
+  editingProviderId = null;
+  providerKey.required = true;
+  providerKey.placeholder = "nvapi-…";
+  providerForm.querySelector('button[type="submit"]').textContent = "Save";
   providerForm.hidden = true;
   providerAddToggle.hidden = false;
   providerAddToggle.focus();
@@ -2439,14 +2460,46 @@ async function saveProvider(e) {
   const name = providerName.value.trim();
   const baseUrl = providerBaseUrl.value.trim();
   const key = providerKey.value.trim();
-  if (!name || !baseUrl || !key) {
-    setFormError(providerError, "Name, base URL and API key are all required.");
+  const original = editingProviderId ? state.providers.find((x) => x.id === editingProviderId) : null;
+  if (!name || !baseUrl || (!key && !original)) {
+    setFormError(
+      providerError,
+      original
+        ? "Name and base URL are required; leave the key blank to keep the current one."
+        : "Name, base URL and API key are all required."
+    );
     return;
+  }
+  // A blank key is never sent: omitting the field is how "keep the stored key"
+  // is expressed, and an empty string would be rejected.
+  const body = original ? {} : { name: name.slice(0, 120), base_url: baseUrl, api_key: key };
+  if (original) {
+    if (name !== original.name) body.name = name.slice(0, 120);
+    if (baseUrl !== original.base_url) body.base_url = baseUrl;
+    if (key) body.api_key = key;
+    if (Object.keys(body).length === 0) {
+      setFormError(providerError, "Nothing to save — change the name, base URL or key first.");
+      return;
+    }
   }
   const btn = providerForm.querySelector('button[type="submit"]');
   btn.disabled = true;
   btn.textContent = "Saving…";
   try {
+    if (original) {
+      const updated = await api("/api/me/providers/" + enc(original.id), {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(body),
+      });
+      const i = state.providers.findIndex((x) => x.id === updated.id);
+      if (i >= 0) state.providers[i] = updated;
+      closeProviderForm();
+      renderProviders();
+      await reloadModels().catch(() => {});
+      toast("Provider updated");
+      return;
+    }
     const created = await api("/api/me/providers", {
       method: "POST",
       headers: JSON_HEADERS,
@@ -2462,7 +2515,7 @@ async function saveProvider(e) {
     setFormError(providerError, err.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = "Save";
+    btn.textContent = original ? "Save changes" : "Save";
   }
 }
 
@@ -6381,7 +6434,7 @@ function wireEvents() {
 
   /* Custom providers (per-user). */
   providerForm.addEventListener("submit", saveProvider);
-  providerAddToggle.addEventListener("click", openProviderForm);
+  providerAddToggle.addEventListener("click", () => openProviderForm());
   providerCancel.addEventListener("click", closeProviderForm);
 
   /* Groups & shared keys (§2.2). */
