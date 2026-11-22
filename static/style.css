@@ -1326,6 +1326,9 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  /* Keep headings scrolled into view clear of the sticky category chips
+     (nav = 40px min-height + 2 x 8px padding + 1px border). */
+  scroll-padding-top: calc(40px + 16px + 1px);
   display: flex;
   flex-direction: column;
 }
@@ -1341,6 +1344,9 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
   padding: 8px 12px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
+  /* Content scrolls under the chips: a soft edge reads as layering instead of
+     the text being sliced in half by the hairline. */
+  box-shadow: 0 6px 12px -8px rgba(0, 0, 0, 0.55);
   overflow-x: auto;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
@@ -1381,7 +1387,7 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
 .settings-section.cat-hidden { display: none; }
 
 @media (min-width: 768px) {
-  .settings-body { flex-direction: row; align-items: flex-start; }
+  .settings-body { flex-direction: row; align-items: flex-start; scroll-padding-top: 0; }
   .settings-nav {
     align-self: flex-start;
     flex: 0 0 210px;
@@ -1392,6 +1398,7 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
     padding: 16px 12px;
     border-bottom: none;
     border-right: 1px solid var(--border);
+    box-shadow: none;
     overflow: visible;
     overflow-y: auto;
   }
@@ -1775,6 +1782,13 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
 #calendar-trigger-offline { color: var(--text); }
 .calendar-trigger-fields { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .calendar-trigger-fields .field-hint { flex: none; }
+/* A textarea clips at its padding edge, so any vertical padding reveals the
+   top slice of the next line. No vertical padding + a 28px line box means the
+   box (5 rows = 140px) always ends exactly between two lines, top and bottom. */
+.calendar-trigger-fields textarea {
+  line-height: 28px;
+  padding: 0 12px;
+}
 .calendar-trigger select:disabled,
 .calendar-trigger textarea:disabled,
 .calendar-trigger input:disabled,
@@ -1803,6 +1817,11 @@ a.attachment-chip:hover { background: var(--bg-overlay); }
 }
 .calendar-trigger-time:focus { outline: none; border-color: var(--accent); }
 .calendar-trigger-quiet-to { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* Phone: the sentence gets its own row so the two times + Clear sit as one
+   tidy unit underneath instead of wrapping three ways. */
+@media (max-width: 767px) {
+  .calendar-trigger-quiet-lead { flex: 1 0 100%; }
+}
 
 .calendar-trigger-preview {
   display: flex;
