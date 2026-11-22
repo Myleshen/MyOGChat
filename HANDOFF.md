@@ -281,8 +281,11 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
   (`GET/PUT/DELETE /api/me/linkwarden`, `users.linkwarden_*` columns) with an
   optional `LINKWARDEN_URL`/`LINKWARDEN_TOKEN` env fallback. Operators can set a
   user's keys with `myogchat user setkey` (see `docs/2.8-linkwarden.md`).
-- **Group key-sharing** is unit-tested (`internal/server/keys_test.go`) but a full
-  live "member uses the owner's key" round-trip hasn't been done.
+- **Group key-sharing** is unit-tested (`internal/server/keys_test.go`) and
+  live-verified on the deployed Pi: a member joined a `share_key` group with no
+  key of their own (`using_group_key:true`) and a real upstream turn was carried
+  by the owner's key. No endpoint returns key material (`key_hint` is the
+  member's own key only, so `""` here). Groups are user-owned, not admin-gated.
 - **PDF** is unit-tested (+ a fixture) and the UI attach/send works; a real
   multi-page PDF hasn't been pushed through the UI yet.
 - **Document extraction (4.5a)** now covers OOXML/ODF/EPUB/RTF entirely with the

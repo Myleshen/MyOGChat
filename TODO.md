@@ -81,7 +81,9 @@ key when sharing is allowed.
 - `groups(id, name, owner_id, share_key, created_at)` +
   `group_members(group_id, user_id, role)`.
 - Resolution becomes: own key → group key (owner's key if the group allows
-  sharing) → server key → error. Owner/admin manages members.
+  sharing) → server key → error. Groups are user-owned: any user creates and
+  owns their own group and adds members by username or email; admins can only
+  additionally remove a member from any group.
 - UI: group switcher, member management, "use my key for this group" toggle.
 
 ### 2.3 Files & PDF attachments — ✅ done (deployed)

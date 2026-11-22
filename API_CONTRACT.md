@@ -979,6 +979,12 @@ Admins do **not** see other users' chats (only user administration).
 - Resolution order for every upstream call (§2.1/§2.2): the user's own key → a
   shared group key → the shared server key (when `share_server_key` is on) →
   `errNoKey` (`no OpenCode Go API key configured — add one in Settings`).
+- Groups are **user-owned, not admin-gated**: any user creates and owns their
+  own groups and adds members by username or email; an admin can only
+  additionally remove a member from any group. By design no endpoint exposes
+  key material — a member riding a group key sees only `group_name`, with
+  `key_hint` `""`. Endpoint-level rules and exact `403` bodies:
+  `docs/2.2-groups.md`.
 
 ## 10. Code sandbox (2.6 Python / 2.7 Bash)
 
