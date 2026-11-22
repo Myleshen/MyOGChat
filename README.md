@@ -126,6 +126,7 @@ Logs: `journalctl --user -u myogchat -f`.
 - [`DESIGN.md`](DESIGN.md) — architecture and design
 - [`API_CONTRACT.md`](API_CONTRACT.md) — exact REST/SSE contract
 - [`AGENTS.md`](AGENTS.md) — notes for AI coding agents working on this repo
+- [`CHANGELOG.md`](CHANGELOG.md) — release history
 
 ## Notes
 
