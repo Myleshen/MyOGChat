@@ -18,8 +18,8 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
   export + admin backup, 5.4 edit & resend, 5.5 pinned chats, 5.6 paste image,
   5.7 background/concurrent generation, 5.8 sandbox file artifacts, 5.9 email
   digest, 5.10 reuse empty draft, 5.11 multiple mailboxes — plus the hardening
-  pass (see `TODO.md` → Phase 5). **5.12 agent mode** is implemented and
-  unit-tested but **not deployed** (`docs/5.12-agent-mode.md`).
+  pass (see `TODO.md` → Phase 5). **5.12 agent mode** is shipped (v0.1.0) and
+  verified live (`docs/5.12-agent-mode.md`).
 - **Custom providers** (2026-11-21): each user can add an OpenAI-compatible
   endpoint (e.g. NVIDIA NIM) with their own key; its models join the picker,
   chat-completions only, prices untracked (`docs/6.5-custom-providers.md`).
@@ -109,6 +109,7 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-provid
 - `AGENTS.md` — concise agent notes (layout, rules, commands)
 - `TODO.md` — roadmap with per-item status
 - `README.md` — user-facing overview
+- `CHANGELOG.md` — release history, newest first (what shipped in each tag)
 - `docs/` — `2.2-groups.md`, `2.3-attachments.md`, `2.4-tools.md`,
   `2.4-search-providers.md`, `2.5-ocr.md`, `2.6-2.7-sandbox.md`,
   `2.8-linkwarden.md`, `2.9-settings-page.md`,
@@ -119,7 +120,7 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-provid
 - `docs/` Phase 5: `5-vision.md`, `5-search-pin.md`, `5-export-edit.md` (shipped),
   `5.7-background-generation.md`, `5.8-sandbox-artifacts.md`, `5.9-email-digest.md`,
   `5.10-reuse-draft.md`, `5.11-multi-mailbox.md`, `5-hardening.md` (shipped),
-  `5.12-agent-mode.md` (implemented, unit-tested, not deployed)
+  `5.12-agent-mode.md` (shipped, verified live)
 - `docs/6.0-calendar-triggers.md` — Phase 6, design only (the calendar starts its
   own conversations)
 - `docs/6.4-upstream-dialects.md` — the four upstream dialects: what each
@@ -190,9 +191,9 @@ deploy/deploy-release.sh pi v1.2.3         # pipes deploy/install-release.sh ove
   swaps the binary, restarts, then polls for HTTP 200.
 - First deploy only: `docker login ghcr.io` on the Pi (packages are private by
   default; PAT with `read:packages`).
-- Rollback: `deploy/deploy-release.sh pi <tag>` — only the newest image version
-  is retained per package, so an older tag must be re-tagged first, and that
-  re-runs the workflow and rebuilds its images.
+- Rollback: `deploy/deploy-release.sh pi <tag>` installs that tag's binary and
+  digests; nothing is pruned, so any release before **v0.2.0**'s broken images
+  can be rolled back to directly (v0.2.0 itself cannot — use v0.2.1).
 - Details, verification and rollback: `docs/6.1-release-ci.md`.
 
 ## Testing (UI/UX is a gate — use agent-browser)
@@ -302,11 +303,11 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
   not in the `docker` group on the workstation). Build the image on the Pi with
   `bash deploy/ocr-setup.sh`, then `MYOGCHAT_OCR_LIVE=1 go test ./internal/ocr/
   -run LiveSmoke -v`.
-- **Agent mode (5.12)** is implemented and unit-tested but **not deployed**: no
-  live 60-minute agent run, no live Docker persistent-workspace test, and no
-  `GITHUB_TOKEN` support (private repos cannot be cloned). A failed agent job now
-  persists its partial reply and logs one `WARN` line; a normal chat still
-  discards a failed reply.
+- **Agent mode (5.12)** is live: jobs, the 202 queue, workspaces, stop-with-
+  partial and the Docker toolbelt were all verified on the Pi. Still unverified:
+  a full 60-minute run driven from a phone, and there is no `GITHUB_TOKEN`, so
+  private repos cannot be cloned. A failed agent job persists its partial reply
+  and logs one `WARN` line; a normal chat still discards a failed reply.
 - **Usage/quota accounting** (2.11) is implemented: per-user token/cost view
   (`GET /api/me/usage`), admin all-users view, and optional admin quotas
   (`daily_token_limit` / `monthly_cost_limit`, 0 = off) with per-user overrides.

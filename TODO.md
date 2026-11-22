@@ -458,9 +458,9 @@ merges sequentially and resolves the small additive conflicts in shared files
   Files: `internal/server/{jobs,chat,workspace,integrations}.go`,
   `internal/sandbox/{sandbox,harvest}.go`, `internal/store/store.go`,
   `internal/tools/sandbox.go`.
-- **Known limitation:** nothing here has run live yet (no full 60-minute agent
-  run, no live Docker persistent-workspace test) and there is no `GITHUB_TOKEN`,
-  so private repos cannot be cloned. Not deployed.
+- **Known limitation:** shipped in v0.1.0 and verified live (queue, workspaces,
+  owned files, toolbelt, stop-with-partial). Still unverified: a full 60-minute
+  run from a phone. There is no `GITHUB_TOKEN`, so private repos cannot be cloned.
 
 ### 5.x Hardening — ✅ shipped ([`docs/5-hardening.md`](5-hardening.md))
 - Server + SPA fixes for the audit findings: atomic edit/truncate, private-temp
