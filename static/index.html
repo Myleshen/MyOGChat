@@ -558,6 +558,85 @@
           <button type="button" id="calendar-save" class="btn btn-primary">Connect</button>
           <button type="button" id="calendar-disconnect" class="btn btn-ghost" hidden>Disconnect</button>
         </div>
+
+        <!-- ==== BEGIN scheduled prompts (calendar-triggered chats) ==== -->
+        <!-- Self-contained sub-block: calendar → start a chat from an event.
+             Kept in the DOM (hidden) until GET /api/me/calendar/trigger answers,
+             so an older server that lacks the route shows no dead controls. -->
+        <div id="calendar-trigger" class="calendar-trigger" hidden>
+          <h3 class="settings-heading">Scheduled prompts</h3>
+          <label class="setting-toggle">
+            <span>Start chats from my calendar</span>
+            <input type="checkbox" id="calendar-trigger-enabled">
+          </label>
+          <p class="settings-subtitle-sm">
+            15 minutes before an event starts, the assistant reads it and sends it
+            to the model you choose — as a new chat in the project you pick.
+          </p>
+          <p id="calendar-trigger-offline" class="settings-subtitle-sm" hidden>
+            Connect a calendar first — scheduled prompts only work with CalDAV.
+          </p>
+
+          <div id="calendar-trigger-fields" class="calendar-trigger-fields" hidden>
+            <label class="field">
+              <span class="field-label">Project (optional)</span>
+              <select id="calendar-trigger-project"></select>
+            </label>
+            <label class="field">
+              <span class="field-label">Model</span>
+              <select id="calendar-trigger-model"></select>
+            </label>
+            <label class="field">
+              <span class="field-label">Prompt</span>
+              <textarea id="calendar-trigger-prompt" rows="5"
+                        aria-describedby="calendar-trigger-prompt-hint"></textarea>
+            </label>
+            <p class="field-hint" id="calendar-trigger-prompt-hint">
+              Placeholders: <code>{{summary}}</code> <code>{{start}}</code>
+              <code>{{end}}</code> <code>{{location}}</code> <code>{{description}}</code>
+            </p>
+
+            <div class="calendar-trigger-quiet">
+              <span class="field-label">Quiet hours (optional)</span>
+              <div class="calendar-trigger-quiet-row">
+                <span>Don't start chats between</span>
+                <label class="visually-hidden" for="calendar-trigger-quiet-start">Quiet hours start</label>
+                <input id="calendar-trigger-quiet-start" type="time" class="calendar-trigger-time">
+                <span class="calendar-trigger-quiet-to">
+                  and
+                  <label class="visually-hidden" for="calendar-trigger-quiet-end">Quiet hours end</label>
+                  <input id="calendar-trigger-quiet-end" type="time" class="calendar-trigger-time">
+                </span>
+                <button type="button" id="calendar-trigger-quiet-clear" class="btn btn-ghost calendar-trigger-quiet-clear">Clear</button>
+              </div>
+            </div>
+
+            <div class="key-actions">
+              <button type="button" id="calendar-trigger-preview" class="btn btn-ghost">Preview</button>
+            </div>
+
+            <div id="calendar-trigger-preview-out" class="calendar-trigger-preview" hidden>
+              <p class="field-label">Rendered prompt</p>
+              <p id="calendar-trigger-preview-prompt" class="calendar-trigger-rendered"></p>
+              <p class="field-label">Next matching events</p>
+              <ul id="calendar-trigger-preview-list" class="calendar-trigger-events"></ul>
+              <p id="calendar-trigger-preview-empty" class="settings-subtitle-sm" hidden></p>
+              <p id="calendar-trigger-preview-skipped" class="settings-subtitle-sm" hidden></p>
+            </div>
+          </div>
+
+          <p id="calendar-trigger-error" class="login-error" role="alert" hidden></p>
+          <div class="key-actions">
+            <button type="button" id="calendar-trigger-save" class="btn btn-primary">Save</button>
+          </div>
+
+          <div class="calendar-trigger-runs-block">
+            <h4 class="settings-heading">Recent runs</h4>
+            <ul id="calendar-trigger-runs" class="calendar-trigger-runs"></ul>
+            <p id="calendar-trigger-runs-empty" class="settings-subtitle-sm" hidden>No triggers yet.</p>
+          </div>
+        </div>
+        <!-- ==== END scheduled prompts ==== -->
       </section>
 
       <!-- Integrations (admin only, Phase 2.4 / 2.8). Hidden for non-admins. -->
