@@ -140,23 +140,9 @@ jobs:
             sleep 5
           done
           gh release upload "$GITHUB_REF_NAME" images.txt --clobber
-      # Keep one version per package: `latest` moves every release, so old
-      # version tags would linger forever. Rolling back to an older release now
-      # means re-tagging its commit to rebuild the images.
-      # continue-on-error: the app is already published; never fail a good release.
-      - name: prune old python image versions
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: myogchat-sandbox-python
-          package-type: container
-          min-versions-to-keep: 1
-          delete-only-untagged-versions: false
-      - name: prune old bash image versions
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: myogchat-sandbox-bash
-          package-type: container
-          min-versions-to-keep: 1
-          delete-only-untagged-versions: false
+      # No pruning: the GHCR packages are public, so storage and bandwidth cost
+      # nothing and pruning saves nothing. It also broke a release — each push
+      # tags the image twice (`$GITHUB_REF_NAME` and `latest`) under one index,
+      # so keeping a single version deleted the shared child manifest blobs and
+      # left the surviving index un-pullable. If pruning ever comes back it must
+      # keep at least the versions whose tags are still advertised.
