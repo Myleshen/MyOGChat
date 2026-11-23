@@ -518,3 +518,16 @@ merges sequentially and resolves the small additive conflicts in shared files
 - Edits, deletes and regenerates in either chat never touch the other.
 - **Not built:** the UI action (a per-message **Continue from here** button —
   separate UI pass).
+
+### 6.8 Global user memory — 🟡 implemented, unmerged ([`docs/6.8-user-memory.md`](docs/6.8-user-memory.md))
+- `users.memory` (additive migration) is a per-user "about me" injected into
+  **every** conversation as a `## About the user` block — global memory, then
+  project instructions, then project memory — so it reaches unfiled chats and
+  calendar-triggered replies too, which project memory never did.
+- `GET|PUT /api/me/memory` (owner-scoped, 8000-rune cap counted in runes, empty
+  string clears, `updated_at` null while empty); `GET /api/auth/me` gains
+  `memory_set` so Settings can show a hint without a second request.
+- User-written only: no background model call, no per-project override, no edit
+  history (all deliberately out of scope). Cost: ~2k tokens of input per turn at
+  the cap, cheaper than project memory since it is one block.
+- **Not built:** the Settings UI (API-only, like calendar triggers).

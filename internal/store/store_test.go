@@ -126,7 +126,7 @@ VALUES ('proj-legacy', 'Old Project', 'be terse', 0, 111, 222);`
 	if err != nil {
 		t.Fatalf("columns(users): %v", err)
 	}
-	for _, col := range []string{"status", "daily_token_limit", "monthly_cost_limit"} {
+	for _, col := range []string{"status", "daily_token_limit", "monthly_cost_limit", "memory", "memory_updated_at"} {
 		if !userCols[col] {
 			t.Errorf("migration did not add users.%s", col)
 		}
