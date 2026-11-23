@@ -54,6 +54,10 @@ docs under [`docs/`](docs/).
   ([`docs/3.5-3.6-speech.md`](docs/3.5-3.6-speech.md))
 - **Light / dark / system** themes and a categorized **settings page** (Account,
   Appearance, AI & access, Integrations, Tools, Voice, Usage, Users, About)
+- **Web Push notifications** — a reply that finishes while the app is closed
+  reaches your phone through the browser's own push service (VAPID + RFC 8291,
+  stdlib only; the payload is the conversation title and a status word, never
+  message text) ([`docs/6.6-notifications.md`](docs/6.6-notifications.md))
 - Installable **PWA** (mobile-first; add to home screen on Android/iOS)
 - Configurable retention (default 30 days, max 60) and multi-user accounts
   (username/password; first run creates the admin), designed to sit behind a

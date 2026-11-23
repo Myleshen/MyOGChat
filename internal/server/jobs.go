@@ -153,6 +153,12 @@ type genJob struct {
 	step      int // 1-based tool round reported by the agent loop
 	maxSteps  int
 	subs      map[*jobSubscriber]struct{}
+	// hadSubs records whether an SSE client was attached when the job reached
+	// a terminal state: watching a reply must never also buzz the phone.
+	hadSubs bool
+	// persisted records whether a stop/error left a partial reply behind, which
+	// is the only case where that failure is worth a notification.
+	persisted bool
 
 	done chan struct{}
 }
@@ -246,6 +252,7 @@ func (j *genJob) finish(status, title, errMsg string) {
 	j.status = status
 	j.title = title
 	j.errMsg = errMsg
+	j.hadSubs = len(j.subs) > 0
 	switch status {
 	case jobDone:
 		j.emitLocked(newFrame("done", doneEvent{MessageID: j.messageID, Title: title}))
@@ -259,6 +266,38 @@ func (j *genJob) finish(status, title, errMsg string) {
 	j.mu.Unlock()
 	j.cancel()
 	close(j.done)
+}
+
+// setPersisted records that a stopped or failed job left a partial reply in the
+// database (the notification decision depends on it).
+func (j *genJob) setPersisted() {
+	j.mu.Lock()
+	j.persisted = true
+	j.mu.Unlock()
+}
+
+// pushNotice returns the notification to send for a finished job, if any. A job
+// still running, one that a live client watched, and a failure that left
+// nothing to read are all silent.
+func (j *genJob) pushNotice(convTitle string) (status, title string, ok bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.hadSubs {
+		return "", "", false
+	}
+	switch j.status {
+	case jobDone:
+	case jobError, jobStopped:
+		if !j.persisted {
+			return "", "", false
+		}
+	default:
+		return "", "", false
+	}
+	if j.title != "" {
+		convTitle = j.title
+	}
+	return j.status, convTitle, true
 }
 
 // subscribe registers a new client and returns its subscriber. A job that is

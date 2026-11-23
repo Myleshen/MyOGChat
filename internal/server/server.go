@@ -23,6 +23,7 @@ import (
 	"myogchat/internal/auth"
 	"myogchat/internal/models"
 	"myogchat/internal/ocr"
+	"myogchat/internal/push"
 	"myogchat/internal/sandbox"
 	"myogchat/internal/speech"
 	"myogchat/internal/store"
@@ -100,6 +101,13 @@ type Server struct {
 	// user — the last fetch error and when it was last logged.
 	triggerMu     sync.Mutex
 	triggerStates map[string]triggerState
+
+	// Web Push (6.6). pushMu guards the lazy VAPID sender, the send semaphore
+	// and the test-injected HTTP client; pushSnd is nil until first use.
+	pushMu   sync.Mutex
+	pushSnd  *push.Sender
+	pushSem  chan struct{}
+	pushHTTP *http.Client
 }
 
 // hub returns the reply-job hub, creating it on first use.
@@ -231,6 +239,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/me/linkwarden", s.handleGetMyLinkwarden)
 	mux.HandleFunc("PUT /api/me/linkwarden", s.handlePutMyLinkwarden)
 	mux.HandleFunc("DELETE /api/me/linkwarden", s.handleDeleteMyLinkwarden)
+	// Web Push notifications (per-user, 6.6).
+	mux.HandleFunc("GET /api/me/notifications", s.handleNotifications)
+	mux.HandleFunc("POST /api/me/push/subscribe", s.handlePushSubscribe)
+	mux.HandleFunc("DELETE /api/me/push/{id}", s.handlePushDelete)
+	mux.HandleFunc("POST /api/me/push/test", s.handlePushTest)
 	// Calendar (per-user, 3.3).
 	mux.HandleFunc("GET /api/me/calendar", s.handleGetCalendar)
 	mux.HandleFunc("PUT /api/me/calendar", s.handlePutCalendar)

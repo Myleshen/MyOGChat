@@ -479,6 +479,26 @@ merges sequentially and resolves the small additive conflicts in shared files
   (a context/attention trade-off: ~8k tokens of extra input per turn in that
   project, ~$0.0012/turn uncached and cached after the first turn).
 
+### 6.6 Web Push notifications — ⏳ backend shipped, UI pending ([`docs/6.6-notifications.md`](6.6-notifications.md))
+- A finished reply sends a Web Push message to the user's browser subscriptions
+  when no SSE client is watching it (`done`; `error`/`stopped` only when a
+  partial reply was persisted). VAPID (ES256 JWT) + RFC 8291 `aes128gcm`
+  encryption in `internal/push`, standard library only — no new dependency and
+  no third-party push service.
+- Subscriptions live in `push_subscriptions`, unique by endpoint (re-subscribe
+  updates), owner-scoped, cascaded on user delete; 404/410 prunes a row, five
+  consecutive failures drop it. The VAPID key pair is generated on first use and
+  stored encrypted in `settings`.
+- Payload is `{title, body, url, tag}`: the conversation title plus
+  `Reply ready`/`Job failed`/`Job stopped` — never message content. Sends run in
+  a goroutine (10 s timeout, 4 concurrent max) and can never affect the reply.
+- Endpoints: `GET /api/me/notifications`, `POST /api/me/push/subscribe`,
+  `DELETE /api/me/push/{id}`, `POST /api/me/push/test` (`API_CONTRACT.md` §24);
+  admin `push_enabled` gates sending. `static/sw.js` gained `push` and
+  `notificationclick`.
+- **Not built:** the Settings UI (subscribe/test/remove) — that is the next SPA
+  pass; nothing has been exercised against a real browser/phone yet.
+
 ### 6.0 Calendar triggers — ✅ shipped (backend) ([`docs/6.0-calendar-triggers.md`](6.0-calendar-triggers.md))
 - An opt-in per-user config starts an **agent conversation** 15 minutes before
   each CalDAV event: the event is rendered into the prompt
