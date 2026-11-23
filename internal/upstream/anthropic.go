@@ -47,9 +47,9 @@ func (c *Client) doAnthropic(ctx context.Context, p Params, payload any) (*http.
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
 		resp.Body.Close()
-		return nil, fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		return nil, upstreamHTTPError(resp.StatusCode, snippet)
 	}
 	return resp, nil
 }

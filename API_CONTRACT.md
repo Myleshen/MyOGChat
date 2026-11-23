@@ -1795,7 +1795,7 @@ known — the SPA renders "not tracked". Token counts are still recorded. `GET
 ## 23. Calendar triggers (6.0)
 
 Opt-in, per-user automatic conversations started shortly before a calendar event.
-Only a **CalDAV** account is read; an ICS feed is never a trigger source.
+Only a **CalDAV or Google** account is read; an ICS feed is never a trigger source.
 Behaviour and rationale: [`docs/6.0-calendar-triggers.md`](docs/6.0-calendar-triggers.md).
 
 ### 23.1 Schema (additive)
@@ -1840,8 +1840,8 @@ sub-collections of it.
   "lead_minutes":15,"connected":true,"last_error":""}`.
   Defaults are filled in for a user who never saved a config; `prompt_template`
   is the built-in default when the stored one is empty. `connected` reports a
-  usable CalDAV account. `last_error` is the last calendar read error seen by the
-  running scheduler (empty when healthy; resets on restart).
+  usable CalDAV or Google account. `last_error` is the last calendar read error
+  seen by the running scheduler (empty when healthy; resets on restart).
 - `PUT /api/me/calendar/trigger` — any subset of
   `{enabled, project_id, model, prompt_template, quiet_start, quiet_end}`;
   `{"enabled":true}` alone is valid. `project_id:""` clears the project;
@@ -1849,7 +1849,7 @@ sub-collections of it.
   the same shape as `GET`. `400 {"error":…}` for an unknown model (resolved like
   any other model, so custom providers work), a project that is not the caller's,
   a quiet value that is not strict `HH:MM`, `quiet_start` without `quiet_end` (or
-  the reverse), or `enabled:true` with no CalDAV calendar connected.
+  the reverse), or `enabled:true` with no CalDAV or Google calendar connected.
 - `DELETE /api/me/calendar/trigger` → `204`, idempotent. Removes the config **and
   that user's run rows**.
 - `GET /api/me/calendar/trigger/runs?limit=20` →
@@ -1862,8 +1862,9 @@ sub-collections of it.
   template for the next matching event(s) in the scheduler's window; writes
   nothing. `skipped` counts in-window events that will produce no conversation
   (already started, quiet at fire time, or already in the ledger). `400` when no
-  CalDAV calendar is connected; `502 {"error":"could not read the calendar: …"}`
-  when the fetch fails.
+  calendar is connected (the message is `connect a calendar first (CalDAV or
+  Google Calendar)`); `502 {"error":"could not read the calendar: …"}` when the
+  fetch fails.
 
 ### 23.3 Semantics
 
