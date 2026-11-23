@@ -93,8 +93,16 @@ Internet access is via the Cloudflare Tunnel (public hostname → `http://raspbe
 
 ## v6 features
 
+- **Web Push** (`docs/6.6-notifications.md`): a finished reply notifies the
+  user's devices when no SSE client is watching it; VAPID + RFC 8291 in
+  `internal/push` (stdlib only), subscriptions in `push_subscriptions`.
 - **Calendar triggers** (`docs/6.0-calendar-triggers.md`): an opt-in per-user
   config starts an agent conversation 15 minutes before each CalDAV event
   (120 s scheduler tick, dedupe ledger on `(user_id, event_uid, event_start)`,
   quiet hours, quota/busy/late skips). Triggered replies lose `list_chats` /
-  `read_chat` and never write project memory.
+  `read_chat` and never write project memory, but still get the owner's global
+  memory.
+- **Global user memory** (`docs/6.8-user-memory.md`): `users.memory` (8000-rune
+  cap, `GET|PUT /api/me/memory`) is injected into **every** conversation as a
+  `## About the user` block **before** project instructions and project memory;
+  user-written only, no auto-update.

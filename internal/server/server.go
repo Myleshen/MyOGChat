@@ -23,6 +23,7 @@ import (
 	"myogchat/internal/auth"
 	"myogchat/internal/models"
 	"myogchat/internal/ocr"
+	"myogchat/internal/push"
 	"myogchat/internal/sandbox"
 	"myogchat/internal/speech"
 	"myogchat/internal/store"
@@ -100,6 +101,13 @@ type Server struct {
 	// user — the last fetch error and when it was last logged.
 	triggerMu     sync.Mutex
 	triggerStates map[string]triggerState
+
+	// Web Push (6.6). pushMu guards the lazy VAPID sender, the send semaphore
+	// and the test-injected HTTP client; pushSnd is nil until first use.
+	pushMu   sync.Mutex
+	pushSnd  *push.Sender
+	pushSem  chan struct{}
+	pushHTTP *http.Client
 }
 
 // hub returns the reply-job hub, creating it on first use.
@@ -212,6 +220,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/me/key", s.handleGetMyKey)
 	mux.HandleFunc("PUT /api/me/key", s.handlePutMyKey)
+	// Per-user global memory (6.8).
+	mux.HandleFunc("GET /api/me/memory", s.handleGetMyMemory)
+	mux.HandleFunc("PUT /api/me/memory", s.handlePutMyMemory)
 	// Per-user custom upstream providers (§22).
 	mux.HandleFunc("GET /api/me/providers", s.handleListProviders)
 	mux.HandleFunc("POST /api/me/providers", s.handleCreateProvider)
@@ -231,6 +242,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/me/linkwarden", s.handleGetMyLinkwarden)
 	mux.HandleFunc("PUT /api/me/linkwarden", s.handlePutMyLinkwarden)
 	mux.HandleFunc("DELETE /api/me/linkwarden", s.handleDeleteMyLinkwarden)
+	// Web Push notifications (per-user, 6.6).
+	mux.HandleFunc("GET /api/me/notifications", s.handleNotifications)
+	mux.HandleFunc("POST /api/me/push/subscribe", s.handlePushSubscribe)
+	mux.HandleFunc("DELETE /api/me/push/{id}", s.handlePushDelete)
+	mux.HandleFunc("POST /api/me/push/test", s.handlePushTest)
 	// Calendar (per-user, 3.3).
 	mux.HandleFunc("GET /api/me/calendar", s.handleGetCalendar)
 	mux.HandleFunc("PUT /api/me/calendar", s.handlePutCalendar)
@@ -268,6 +284,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/conversations/{id}/messages", s.handlePostMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/messages/{messageId}/edit", s.handleEditMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/regenerate", s.handleRegenerate)
+	// Continue from here: copy the transcript up to one message into a new chat.
+	mux.HandleFunc("POST /api/conversations/{id}/fork", s.handleForkConversation)
 	// Detached generation (Phase 5.7): snapshot for reattach/poll, and stop.
 	mux.HandleFunc("GET /api/conversations/{id}/generation", s.handleGetGeneration)
 	mux.HandleFunc("POST /api/conversations/{id}/generation/stop", s.handleStopGeneration)
@@ -558,6 +576,9 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 	}{conv, msgs})
 }
 
+// titleMaxRunes bounds a stored conversation title (the fork marker included).
+const titleMaxRunes = 200
+
 func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request) {
 	u, ok := currentUser(w, r)
 	if !ok {
@@ -595,7 +616,7 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if req.Title != nil {
-		if len([]rune(*req.Title)) > 200 {
+		if len([]rune(*req.Title)) > titleMaxRunes {
 			writeError(w, http.StatusBadRequest, "title exceeds 200 characters")
 			return
 		}

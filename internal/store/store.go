@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS users (
   serper_key_enc TEXT,
   linkwarden_url TEXT,
   linkwarden_token_enc TEXT,
+  memory        TEXT NOT NULL DEFAULT '',
+  memory_updated_at INTEGER,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -166,7 +168,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_user ON artifacts(user_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts(conversation_id);
-` + userProvidersSchema + calendarTriggersSchema
+` + userProvidersSchema + calendarTriggersSchema + pushSubscriptionsSchema
 
 // calendarTriggersSchema is the per-user calendar-trigger config plus its run
 // ledger (6.0). It is kept in its own constant because it is applied twice: by
@@ -195,6 +197,24 @@ CREATE TABLE IF NOT EXISTS trigger_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_trigger_runs_user ON trigger_runs(user_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trigger_runs_dedupe ON trigger_runs(user_id, event_uid, event_start);
+`
+
+// pushSubscriptionsSchema holds one row per browser push subscription (6.6).
+// The unique index on endpoint makes a re-subscribe an update, so a browser
+// that rotates its keys does not leak a row.
+const pushSubscriptionsSchema = `
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint   TEXT NOT NULL,
+  p256dh     TEXT NOT NULL,
+  auth       TEXT NOT NULL,
+  user_agent TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  last_used  INTEGER NOT NULL DEFAULT 0,
+  failures   INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscriptions(endpoint);
 `
 
 // userProvidersSchema is the per-user custom upstream provider table (§22).
@@ -232,8 +252,12 @@ type User struct {
 	// encrypted with internal/secret. Both nil when unconfigured.
 	LinkwardenURL      *string `json:"-"`
 	LinkwardenTokenEnc *string `json:"-"`
-	CreatedAt          int64   `json:"created_at"`
-	UpdatedAt          int64   `json:"updated_at"`
+	// Global per-user memory (6.8): a short "about me" injected into every
+	// conversation. MemoryUpdatedAt is nil until the user sets a non-empty one.
+	Memory          string `json:"-"`
+	MemoryUpdatedAt *int64 `json:"-"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
 }
 
 // Conversation mirrors a row of the conversations table.
@@ -508,6 +532,10 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(calendarTriggersSchema); err != nil {
 		return err
 	}
+	// Web Push subscriptions (6.6): one new table plus its endpoint index.
+	if _, err := s.db.Exec(pushSubscriptionsSchema); err != nil {
+		return err
+	}
 	steps := []struct {
 		table, column, ddl string
 	}{
@@ -525,6 +553,9 @@ func (s *Store) migrate() error {
 		{"users", "serper_key_enc", `ALTER TABLE users ADD COLUMN serper_key_enc TEXT`},
 		{"users", "linkwarden_url", `ALTER TABLE users ADD COLUMN linkwarden_url TEXT`},
 		{"users", "linkwarden_token_enc", `ALTER TABLE users ADD COLUMN linkwarden_token_enc TEXT`},
+		// Global user memory (6.8): additive; existing users start with none.
+		{"users", "memory", `ALTER TABLE users ADD COLUMN memory TEXT NOT NULL DEFAULT ''`},
+		{"users", "memory_updated_at", `ALTER TABLE users ADD COLUMN memory_updated_at INTEGER`},
 		{"messages", "images", `ALTER TABLE messages ADD COLUMN images TEXT`},
 		{"messages", "artifacts", `ALTER TABLE messages ADD COLUMN artifacts TEXT`},
 		{"attachments", "status", `ALTER TABLE attachments ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'`},
@@ -697,7 +728,7 @@ func optInt(n sql.NullInt64) *int64 {
 
 // ---------- users ----------
 
-const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, daily_token_limit, monthly_cost_limit, serper_key_enc, linkwarden_url, linkwarden_token_enc, created_at, updated_at"
+const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, daily_token_limit, monthly_cost_limit, serper_key_enc, linkwarden_url, linkwarden_token_enc, memory, memory_updated_at, created_at, updated_at"
 
 func scanUser(sc scanner) (User, error) {
 	var u User
@@ -705,7 +736,8 @@ func scanUser(sc scanner) (User, error) {
 	var keyEnc sql.NullString
 	var daily, monthly sql.NullInt64
 	var serperEnc, linkURL, linkTokenEnc sql.NullString
-	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &daily, &monthly, &serperEnc, &linkURL, &linkTokenEnc, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	var memoryAt sql.NullInt64
+	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &daily, &monthly, &serperEnc, &linkURL, &linkTokenEnc, &u.Memory, &memoryAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return User{}, err
 	}
 	u.IsAdmin = admin != 0
@@ -715,6 +747,7 @@ func scanUser(sc scanner) (User, error) {
 	u.SerperKeyEnc = optString(serperEnc)
 	u.LinkwardenURL = optString(linkURL)
 	u.LinkwardenTokenEnc = optString(linkTokenEnc)
+	u.MemoryUpdatedAt = optInt(memoryAt)
 	return u, nil
 }
 
@@ -722,10 +755,11 @@ func scanUser(sc scanner) (User, error) {
 // driver error (the caller maps it to 409).
 func (s *Store) InsertUser(ctx context.Context, u *User) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.Username, u.Email, u.PasswordHash, boolToInt(u.IsAdmin), u.Status, nullString(u.APIKeyEnc),
 		nullInt(u.DailyTokenLimit), nullInt(u.MonthlyCostLimit), nullString(u.SerperKeyEnc),
-		nullString(u.LinkwardenURL), nullString(u.LinkwardenTokenEnc), u.CreatedAt, u.UpdatedAt)
+		nullString(u.LinkwardenURL), nullString(u.LinkwardenTokenEnc), u.Memory, nullInt(u.MemoryUpdatedAt),
+		u.CreatedAt, u.UpdatedAt)
 	return err
 }
 
@@ -810,6 +844,20 @@ func (s *Store) SetUserLimits(ctx context.Context, id string, daily, monthly *in
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET daily_token_limit = ?, monthly_cost_limit = ?, updated_at = ? WHERE id = ?`,
 		nullInt(daily), nullInt(monthly), now, id)
+	return err
+}
+
+// SetUserMemory replaces a user's global memory (6.8). An empty string clears
+// both the text and its timestamp, so a cleared memory reads back with
+// updated_at = nil.
+func (s *Store) SetUserMemory(ctx context.Context, id, memory string, now int64) error {
+	var at *int64
+	if memory != "" {
+		at = &now
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET memory = ?, memory_updated_at = ?, updated_at = ? WHERE id = ?`,
+		memory, nullInt(at), now, id)
 	return err
 }
 
@@ -928,9 +976,18 @@ func scanConversation(sc scanner) (Conversation, error) {
 	return c, nil
 }
 
+// execContexter is the bit of *sql.DB / *sql.Tx the insert helpers need.
+type execContexter interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // InsertConversation inserts a new conversation row for its owner.
 func (s *Store) InsertConversation(ctx context.Context, c *Conversation) error {
-	_, err := s.db.ExecContext(ctx,
+	return insertConversation(ctx, s.db, c)
+}
+
+func insertConversation(ctx context.Context, ex execContexter, c *Conversation) error {
+	_, err := ex.ExecContext(ctx,
 		`INSERT INTO conversations (id, user_id, title, model, effort, project_id, pinned, agent_mode, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, nullString(c.UserID), c.Title, c.Model, nullString(c.Effort), nullString(c.ProjectID),
@@ -1225,6 +1282,10 @@ func scanMessage(sc scanner) (Message, error) {
 
 // InsertMessage inserts a new message row.
 func (s *Store) InsertMessage(ctx context.Context, m *Message) error {
+	return insertMessage(ctx, s.db, m)
+}
+
+func insertMessage(ctx context.Context, ex execContexter, m *Message) error {
 	attachments, err := marshalJSON(m.Attachments)
 	if err != nil {
 		return err
@@ -1241,7 +1302,7 @@ func (s *Store) InsertMessage(ctx context.Context, m *Message) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx,
+	_, err = ex.ExecContext(ctx,
 		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ConversationID, m.Role, m.Content, nullString(m.Reasoning),
 		nullString(m.Model), nullInt(m.PromptTokens), nullInt(m.CompletionTokens),
@@ -1376,6 +1437,82 @@ func (s *Store) EditUserMessageAndTruncate(ctx context.Context, conversationID, 
 		return err
 	}
 	return tx.Commit()
+}
+
+// ErrForkTooLarge is returned by ForkConversation when the copied message set
+// would exceed the caller's cap.
+var ErrForkTooLarge = errors.New("conversation too large to fork")
+
+// ForkConversation writes dst (owner, title, model, effort, project and agent
+// mode already set) and copies every message of srcID up to and including
+// anchorID into it, in one transaction. Copies get fresh ids and keep the
+// source created_at so order and timings survive.
+//
+// Attachment, image and artifact references in the message JSON are copied
+// verbatim: those rows are scoped to the user (attachments, images) or are
+// readable by owner only (artifacts), so nothing is duplicated and nothing
+// crosses users. shortcut: artifacts carry the source conversation_id, so
+// deleting the source chat cascades its artifact rows away and the fork's
+// buttons 404 — upgrade to a shared-bytes table if forks must outlive sources.
+//
+// An anchor that is not in srcID is ErrNotFound; a copy larger than maxMessages
+// is ErrForkTooLarge and writes nothing.
+func (s *Store) ForkConversation(ctx context.Context, srcID, anchorID string, dst *Conversation, newID func() string, maxMessages int) (int, error) {
+	var anchorCreated, anchorRowid int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT created_at, rowid FROM messages WHERE id = ? AND conversation_id = ?`,
+		anchorID, srcID).Scan(&anchorCreated, &anchorRowid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+messageCols+` FROM messages
+		  WHERE conversation_id = ? AND (created_at, rowid) <= (?, ?)
+		  ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+		srcID, anchorCreated, anchorRowid, maxMessages+1)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	msgs := make([]Message, 0, 16)
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return 0, err
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	// Release the single pooled connection before opening the write transaction.
+	rows.Close()
+	if len(msgs) > maxMessages {
+		return 0, ErrForkTooLarge
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if err := insertConversation(ctx, tx, dst); err != nil {
+		return 0, err
+	}
+	for i := range msgs {
+		msgs[i].ID = newID()
+		msgs[i].ConversationID = dst.ID
+		if err := insertMessage(ctx, tx, &msgs[i]); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(msgs), nil
 }
 
 // Backup writes a consistent snapshot of the live database to destPath using

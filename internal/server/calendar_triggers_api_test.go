@@ -250,4 +250,15 @@ func TestCalendarTriggerPreview(t *testing.T) {
 	if rec := preview(ics); rec.Code != http.StatusBadRequest {
 		t.Fatalf("ICS preview = %d, want 400", rec.Code)
 	}
+
+	// No calendar at all: the refusal names both supported sources, not CalDAV
+	// alone (Google Calendar is one too).
+	none := seedKeyUser(t, st, "u-none", "none", "")
+	rec = preview(none)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unconnected preview = %d, want 400", rec.Code)
+	}
+	if want := `{"error":"connect a calendar first (CalDAV or Google Calendar)"}` + "\n"; rec.Body.String() != want {
+		t.Errorf("unconnected preview = %s, want %s", rec.Body.String(), want)
+	}
 }

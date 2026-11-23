@@ -657,6 +657,10 @@ func run(cfg config, log *slog.Logger) error {
 	if _, err := st.EnsureSetting(ctx, "tts_enabled", "1"); err != nil {
 		return err
 	}
+	// Web Push notifications (6.6) default to on; the admin can switch them off.
+	if _, err := st.EnsureSetting(ctx, "push_enabled", "1"); err != nil {
+		return err
+	}
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {

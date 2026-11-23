@@ -18,6 +18,9 @@ docs under [`docs/`](docs/).
   optional default model; a chat is filed in a project or left unfiled
 - **Project memory** — durable facts learned from project chats, injected into
   every chat of the project ([`docs/6.2-project-memory.md`](docs/6.2-project-memory.md))
+- **Global memory** — a short "about me" per user, written by you and injected
+  into every conversation before project instructions
+  ([`docs/6.8-user-memory.md`](docs/6.8-user-memory.md))
 - **Agent mode** — opt-in per conversation for long jobs: a persistent 5 GiB
   sandbox workspace, a 60-minute / 60-step budget and a per-user queue
   ([`docs/5.12-agent-mode.md`](docs/5.12-agent-mode.md))
@@ -34,7 +37,10 @@ docs under [`docs/`](docs/).
 - Collapsible **thinking** blocks (duration + reasoning-token count) and a
   thinking badge on models that surface reasoning
 - Per-message **cost** and **tokens/sec**, plus a conversation running total
-- **Regenerate** and copy tools; auto-generated chat titles
+- **Regenerate** and copy tools; auto-generated chat titles; **continue from
+  here** — fork a chat at any message into a new conversation (shared attachment
+  and artifact bytes, fresh agent workspace)
+  ([`docs/5-export-edit.md`](docs/5-export-edit.md#c-continue-from-here-fork))
 - **Tools** — the model can call `web_search` (Tavily → Brave → Serper →
   DuckDuckGo fallback, keyless by default), `fetch_url`, Linkwarden, OpenStreetMap
   `maps_*`, and `run_bash` / `run_python` in a hardened Docker sandbox
@@ -54,6 +60,10 @@ docs under [`docs/`](docs/).
   ([`docs/3.5-3.6-speech.md`](docs/3.5-3.6-speech.md))
 - **Light / dark / system** themes and a categorized **settings page** (Account,
   Appearance, AI & access, Integrations, Tools, Voice, Usage, Users, About)
+- **Web Push notifications** — a reply that finishes while the app is closed
+  reaches your phone through the browser's own push service (VAPID + RFC 8291,
+  stdlib only; the payload is the conversation title and a status word, never
+  message text) ([`docs/6.6-notifications.md`](docs/6.6-notifications.md))
 - Installable **PWA** (mobile-first; add to home screen on Android/iOS)
 - Configurable retention (default 30 days, max 60) and multi-user accounts
   (username/password; first run creates the admin), designed to sit behind a

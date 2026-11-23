@@ -18,5 +18,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	out := auth.PublicUser(u)
 	out["tools_enabled"] = s.toolsEnabled(r.Context())
 	out["agent_enabled"] = s.agentEnabled(r.Context())
+	// Never the text: the SPA only needs to know whether to show a hint (§24).
+	out["memory_set"] = memorySet(u.Memory)
 	writeJSON(w, http.StatusOK, out)
 }

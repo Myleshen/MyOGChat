@@ -45,13 +45,13 @@ func TestValidateKey(t *testing.T) {
 		}
 	})
 
-	t.Run("upstream failure keeps the body", func(t *testing.T) {
+	t.Run("upstream failure surfaces the message", func(t *testing.T) {
 		c, _ := newKeyCheckServer(t, http.StatusBadRequest, `{"error":{"message":"bad request"}}`)
 		err := c.ValidateKey(context.Background(), "oc_sk_x")
 		if err == nil {
 			t.Fatal("ValidateKey = nil, want error")
 		}
-		want := `upstream HTTP 400: {"error":{"message":"bad request"}}`
+		want := "upstream HTTP 400: bad request"
 		if err.Error() != want {
 			t.Errorf("ValidateKey = %q, want %q", err, want)
 		}

@@ -494,7 +494,7 @@ func (c *Client) ValidateKey(ctx context.Context, apiKey string) error {
 		return errors.New("invalid API key")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		return upstreamHTTPError(resp.StatusCode, snippet)
 	}
 	// Guard against gateways that return 200 with an error body.
 	if bytes.Contains(snippet, []byte("\"error\"")) && !bytes.Contains(snippet, []byte("\"data\"")) {
@@ -605,9 +605,9 @@ func (c *Client) do(ctx context.Context, baseURL, path, sessionID, apiKey string
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
 		resp.Body.Close()
-		return nil, fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		return nil, upstreamHTTPError(resp.StatusCode, snippet)
 	}
 	return resp, nil
 }
@@ -944,6 +944,51 @@ func scanSSE(body io.Reader, handle func(event, data string) (done bool, err err
 func firstN(s string, n int) string {
 	if len(s) > n {
 		return s[:n]
+	}
+	return s
+}
+
+// upstreamHTTPError renders a non-2xx upstream response as one line: the
+// upstream's own message when the body is a JSON error envelope, else a
+// truncated body snippet. The status code always survives.
+func upstreamHTTPError(status int, body []byte) error {
+	if msg := upstreamJSONMessage(body); msg != "" {
+		return fmt.Errorf("upstream HTTP %d: %s", status, msg)
+	}
+	return fmt.Errorf("upstream HTTP %d: %s", status, firstN(strings.TrimSpace(string(body)), 200))
+}
+
+// upstreamJSONMessage digs the human message out of the error envelopes the
+// dialects receive: {"error":{"message"}}, {"error":{"type","message"}},
+// Anthropic's {"type":"error","error":{…}}, Google's
+// {"error":{"code","message","status"}}, and a bare {"message"}. Empty for
+// anything else, including an HTML error page.
+func upstreamJSONMessage(body []byte) string {
+	var env struct {
+		Message string          `json:"message"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(body, &env) != nil {
+		return ""
+	}
+	if msg := oneLine(env.Message); msg != "" {
+		return msg
+	}
+	var inner struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(env.Error, &inner) != nil {
+		return ""
+	}
+	return oneLine(inner.Message)
+}
+
+// oneLine folds a message onto a single line and caps it at 200 characters, so
+// one upstream failure stays one readable error.
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > 200 {
+		s = string(r[:200])
 	}
 	return s
 }

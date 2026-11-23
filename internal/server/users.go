@@ -279,6 +279,8 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		// Image generation (feature 3.1).
 		ImagegenURL   *string `json:"imagegen_url"`
 		ImagegenToken *string `json:"imagegen_token"`
+		// Web Push notifications (6.6): on by default.
+		PushEnabled *bool `json:"push_enabled"`
 	}
 	if err := decodeJSON(w, r, &req, 8*1024); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -443,6 +445,13 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.PushEnabled != nil {
+		if err := s.setBoolSetting(r.Context(), settingPushEnabled, *req.PushEnabled); err != nil {
+			s.log.Error("set push_enabled", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update settings")
+			return
+		}
+	}
 	s.writeSettings(w, r)
 }
 
@@ -469,6 +478,9 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		"pending_users":      pending,
 		"share_server_key":   share,
 		"server_key_present": s.serverKey != "",
+		// Web Push (6.6): the admin gate; per-user state lives in
+		// /api/me/notifications.
+		"push_enabled": s.pushEnabled(r.Context()),
 	}
 	for k, v := range s.integrationSettings(r.Context()) {
 		out[k] = v

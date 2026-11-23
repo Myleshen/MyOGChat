@@ -479,6 +479,26 @@ merges sequentially and resolves the small additive conflicts in shared files
   (a context/attention trade-off: ~8k tokens of extra input per turn in that
   project, ~$0.0012/turn uncached and cached after the first turn).
 
+### 6.6 Web Push notifications — ⏳ backend shipped, UI pending ([`docs/6.6-notifications.md`](6.6-notifications.md))
+- A finished reply sends a Web Push message to the user's browser subscriptions
+  when no SSE client is watching it (`done`; `error`/`stopped` only when a
+  partial reply was persisted). VAPID (ES256 JWT) + RFC 8291 `aes128gcm`
+  encryption in `internal/push`, standard library only — no new dependency and
+  no third-party push service.
+- Subscriptions live in `push_subscriptions`, unique by endpoint (re-subscribe
+  updates), owner-scoped, cascaded on user delete; 404/410 prunes a row, five
+  consecutive failures drop it. The VAPID key pair is generated on first use and
+  stored encrypted in `settings`.
+- Payload is `{title, body, url, tag}`: the conversation title plus
+  `Reply ready`/`Job failed`/`Job stopped` — never message content. Sends run in
+  a goroutine (10 s timeout, 4 concurrent max) and can never affect the reply.
+- Endpoints: `GET /api/me/notifications`, `POST /api/me/push/subscribe`,
+  `DELETE /api/me/push/{id}`, `POST /api/me/push/test` (`API_CONTRACT.md` §24);
+  admin `push_enabled` gates sending. `static/sw.js` gained `push` and
+  `notificationclick`.
+- Settings UI shipped (Voice & devices → Notifications: enable, test, turn
+  off). Not yet exercised against a real browser/phone.
+
 ### 6.0 Calendar triggers — ✅ shipped (backend) ([`docs/6.0-calendar-triggers.md`](6.0-calendar-triggers.md))
 - An opt-in per-user config starts an **agent conversation** 15 minutes before
   each CalDAV event: the event is rendered into the prompt
@@ -499,5 +519,34 @@ merges sequentially and resolves the small additive conflicts in shared files
 - Endpoints: `GET|PUT|DELETE /api/me/calendar/trigger`,
   `GET /api/me/calendar/trigger/runs`, `POST /api/me/calendar/trigger/preview`
   (`API_CONTRACT.md` §23). Ledger pruned after 90 days by the janitor.
-- **Not built:** the Settings UI (config is API-only) and any verification
-  against a real iCloud/Zoho account; no daily cap, no per-trigger timezone.
+- Settings UI shipped (under Calendar). Not verified against a real iCloud/Zoho
+  account; no daily cap, no per-trigger timezone.
+
+### Fork a conversation from a message — ✅ shipped (backend) ([`docs/5-export-edit.md`](5-export-edit.md))
+- `POST /api/conversations/{id}/fork` copies the transcript up to and including
+  one message into a new chat owned by the caller: same project, model, effort
+  and `agent_mode`, title `<source title> — fork`, new message ids with the
+  source `created_at` preserved. One transaction; an anchor outside the
+  conversation, or another user's chat, is `404`; above 5,000 copied messages it
+  is `413` and writes nothing. No upstream call, no title generation.
+- Attachment, image and artifact references are copied as references — the rows
+  are user-scoped, so no bytes are duplicated and nothing crosses users. Known
+  trade-off: an artifact row dies with the source conversation, so a fork's
+  artifact chips `404` after the source is deleted (see the doc).
+- An agent fork starts with an **empty workspace**: the transcript is context,
+  not files, so nothing is copied from the source's sandbox directory.
+- Edits, deletes and regenerates in either chat never touch the other.
+- UI action shipped: **Continue from here** in the assistant action row.
+
+### 6.8 Global user memory — 🟡 implemented, unmerged ([`docs/6.8-user-memory.md`](docs/6.8-user-memory.md))
+- `users.memory` (additive migration) is a per-user "about me" injected into
+  **every** conversation as a `## About the user` block — global memory, then
+  project instructions, then project memory — so it reaches unfiled chats and
+  calendar-triggered replies too, which project memory never did.
+- `GET|PUT /api/me/memory` (owner-scoped, 8000-rune cap counted in runes, empty
+  string clears, `updated_at` null while empty); `GET /api/auth/me` gains
+  `memory_set` so Settings can show a hint without a second request.
+- User-written only: no background model call, no per-project override, no edit
+  history (all deliberately out of scope). Cost: ~2k tokens of input per turn at
+  the cap, cheaper than project memory since it is one block.
+- Settings UI shipped under AI & access → About you.

@@ -132,3 +132,46 @@ async function cacheFirstExact(request) {
   }
   return res;
 }
+
+/* Web Push (6.6). The server sends JSON: {title, body, url, tag}. Only the
+   conversation title and a status word are ever in it — never message text. */
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (e) {
+    data = {};
+  }
+  const title = data.title || "MyOGChat";
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: data.body || "Reply ready",
+      // The conversation id: a newer notification replaces an older one.
+      tag: data.tag || "myogchat",
+      data: { url: data.url || "/" },
+      icon: "icons/icon.svg",
+      badge: "icons/icon.svg",
+    })
+  );
+});
+
+/* Tapping a notification focuses an open tab and navigates it to the
+   conversation; with no tab open it opens a new one. */
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || "/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+      for (const client of windows) {
+        if (client.url.indexOf(self.location.origin) !== 0) continue;
+        return client.focus().then((focused) => {
+          if (focused && "navigate" in focused) {
+            return focused.navigate(client.url.split("#")[0] + url).catch(() => focused);
+          }
+          return focused;
+        });
+      }
+      return self.clients.openWindow(url);
+    })
+  );
+});

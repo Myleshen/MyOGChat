@@ -27,6 +27,16 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
   conversation 15 minutes before each CalDAV or Google event — 120 s scheduler
   tick, a dedupe ledger, quiet hours and quota/busy/late skips
   (`docs/6.0-calendar-triggers.md`).
+
+- **Fork a chat** (2026-11-23): `POST /api/conversations/{id}/fork` copies a
+  transcript up to one message into a new chat (same project/model/effort/agent
+  mode, `— fork` title, shared attachment/artifact bytes, fresh agent workspace,
+  413 above 5,000 messages). Backend only — the UI pass owns the button
+  (`docs/5-export-edit.md` §C).
+- **Global user memory** (2026-11-23): a per-user "about me" injected as an
+  `## About the user` block into **every** conversation, before project
+  instructions and project memory; written only by the user via
+  `GET|PUT /api/me/memory`, 8000-rune cap (`docs/6.8-user-memory.md`).
 - **Google Calendar (read-only OAuth)** (2026-11-22): a per-user Google account
   via the Calendar v3 API with the `calendar.readonly` scope, alongside CalDAV and
   the legacy secret ICS URL. Needs `MYOGCHAT_GOOGLE_CLIENT_ID` +
@@ -109,7 +119,7 @@ internal/
 static/       embedded PWA (vanilla JS, no build step); vendor/ has marked + highlight.js
 scripts/      ui-test.sh, ui-test-run.sh, test-user.sh
 deploy/       systemd unit + deploy.sh + sandbox-setup.sh + ocr-setup.sh + ocr/ (Dockerfile) + env.example
-docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-providers.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.10-2.11-tool-activity-usage.md, 2.13-vision-ocr.md, 3.1-imagegen.md, 3.2-imap.md, 3.3-calendar.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, SCOPING.md, 5-vision.md, 5-search-pin.md, 5-export-edit.md, 5.7-background-generation.md, 5.8-sandbox-artifacts.md, 5.9-email-digest.md, 5.10-reuse-draft.md, 5.11-multi-mailbox.md, 5-hardening.md, 5.12-agent-mode.md, 6.0-calendar-triggers.md, 6.2-project-memory.md, research/phase4/
+docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-providers.md, 2.5-ocr.md, 2.6-2.7-sandbox.md, 2.8-linkwarden.md, 2.9-settings-page.md, 2.10-2.11-tool-activity-usage.md, 2.13-vision-ocr.md, 3.1-imagegen.md, 3.2-imap.md, 3.3-calendar.md, 3.4-maps.md, 3.5-3.6-speech.md, PHASE4.md, SCOPING.md, 5-vision.md, 5-search-pin.md, 5-export-edit.md, 5.7-background-generation.md, 5.8-sandbox-artifacts.md, 5.9-email-digest.md, 5.10-reuse-draft.md, 5.11-multi-mailbox.md, 5-hardening.md, 5.12-agent-mode.md, 6.0-calendar-triggers.md, 6.2-project-memory.md, 6.8-user-memory.md, research/phase4/
 ```
 
 ## Docs index
@@ -132,10 +142,15 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-provid
   `5.10-reuse-draft.md`, `5.11-multi-mailbox.md`, `5-hardening.md` (shipped),
   `5.12-agent-mode.md` (shipped, verified live)
 - `docs/6.0-calendar-triggers.md` — Phase 6, shipped (the calendar starts its
-  own conversations; API + 120 s scheduler, no Settings UI yet)
+  own conversations; 120 s scheduler, Settings UI under Calendar)
 - `docs/6.2-project-memory.md` — Phase 6, shipped (rolling project memory)
+- `docs/6.8-user-memory.md` — Phase 6, implemented on `feat/user-memory` (the
+  per-user "about me" injected into every chat; Settings → AI & access)
 - `docs/6.4-upstream-dialects.md` — the four upstream dialects: what each
   adapter maps, the event-model gaps, and the unverified-live caveats
+- `docs/6.6-notifications.md` — Web Push: what a notification says (never
+  message content), when a send happens (only with no SSE client attached),
+  subscription keying and removal
 
 ## Conventions & hard constraints
 
@@ -282,6 +297,10 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 
 ## Known gaps / caveats (be honest)
 
+- **Web Push** has its Settings UI (Voice & devices → Notifications) but has
+  never been exercised against a real browser/phone: the server side, payload encryption (RFC 8291 vector) and the
+  service-worker handlers are tested, but subscribe → notify → tap-to-open needs
+  a real HTTPS origin and a device. `GET /api/me/notifications` is the SPA's hook.
 - **web_search** now works with zero configuration (DuckDuckGo keyless fallback).
   Tavily/Brave keys (`TAVILY_API_KEY` / `BRAVE_API_KEY`, or the `brave_key` DB
   setting) and a per-user Serper key give higher-quality results; the provider is
@@ -329,8 +348,8 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 - **Calendar triggers (6.0)** are unit-tested end to end against a fake CalDAV
   server (fire once + dedupe, late/quiet/quota/busy skips, preview, endpoints,
   the no-chat-tools / no-memory exceptions). **Not verified against a real
-  iCloud/Zoho account**, and there is **no Settings UI**: the config is
-  API-only (`GET/PUT/DELETE /api/me/calendar/trigger`). Quiet hours use the
+  iCloud/Zoho account**. Its Settings UI lives under Calendar → Scheduled
+  prompts. Quiet hours use the
   server's local clock, there is no daily cap and no per-trigger timezone; the
   existing quota is the only hard spend stop.
 

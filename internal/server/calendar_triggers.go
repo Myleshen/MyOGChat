@@ -631,7 +631,7 @@ func (s *Server) handlePreviewCalendarTrigger(w http.ResponseWriter, r *http.Req
 	ctx := r.Context()
 	acc, err := s.st.GetCalendarAccount(ctx, u.ID)
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusBadRequest, "connect a CalDAV calendar first")
+		writeError(w, http.StatusBadRequest, "connect a calendar first (CalDAV or Google Calendar)")
 		return
 	}
 	if err != nil {

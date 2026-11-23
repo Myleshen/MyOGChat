@@ -429,6 +429,8 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 		if next, nextSpec, ok := s.hub().complete(j); ok {
 			go s.runReply(next, nextSpec)
 		}
+		// Web Push (6.6): a client that was not watching gets a notification.
+		s.notifyReply(j, spec.conv)
 	}()
 	ctx := j.ctx
 	conv := spec.conv
@@ -521,7 +523,10 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 		attachImagesToLastUser(msgs, spec.images)
 		chatCtx = foldAttachments(nonImageAttachments(atts))
 	}
-	instructions := s.projectInstructions(ctx, conv.ProjectID, u.ID)
+	// Global memory goes first, then project instructions, then project
+	// memory, so a project can refine the global note but never silently lose
+	// to it (6.8).
+	instructions := joinSystem(userMemoryBlock(u.Memory), s.projectInstructions(ctx, conv.ProjectID, u.ID))
 
 	// Build the per-request tool set before composing the instructions: a
 	// registered email_digest appends the fixed summarization standard (5.9) to
@@ -607,22 +612,27 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 	// persistPartialReply stores what the job produced so far. Only agent mode
 	// does: a long agent run is expensive and its work must survive a stop,
 	// shutdown or failure. A normal chat keeps the historical discard
-	// behaviour, so a failed reply never leaves a junk half-message behind.
-	persistPartialReply := func() {
+	// behaviour, so a failed reply never leaves a junk half-message behind. It
+	// reports whether a partial was actually written (6.6 notifies only then).
+	persistPartialReply := func() bool {
 		if !agent {
-			return
+			return false
 		}
-		s.persistPartial(ctx, conv, asstID, content.String(), reasoning.String(),
+		return s.persistPartial(ctx, conv, asstID, content.String(), reasoning.String(),
 			tools, generatedImages, generatedArtifacts, startedAt)
 	}
 	// stop ends the job on an explicit stop or shutdown. fail ends it on a
 	// terminal error but still reports the real message to the client.
 	stop := func() {
-		persistPartialReply()
+		if persistPartialReply() {
+			j.setPersisted()
+		}
 		j.finish(jobStopped, "", "")
 	}
 	fail := func(msg string) {
-		persistPartialReply()
+		if persistPartialReply() {
+			j.setPersisted()
+		}
 		j.finish(jobError, "", msg)
 	}
 	// cancelled ends a job whose context is done: a budget running out is a
@@ -872,11 +882,12 @@ func (s *Server) generateTitle(ctx context.Context, out chan<- string, convID, a
 // the partial content/reasoning/tools plus any collected images and artifacts.
 // No usage is recorded because the stream never reported it. An empty reply is
 // never stored, and the write uses a context detached from the cancelled job.
+// It reports whether a row was written.
 func (s *Server) persistPartial(ctx context.Context, conv store.Conversation, id, content, reasoning string,
-	tools []store.ToolActivity, images []store.GeneratedImage, artifacts []store.ArtifactRef, startedAt time.Time) {
+	tools []store.ToolActivity, images []store.GeneratedImage, artifacts []store.ArtifactRef, startedAt time.Time) bool {
 	content = upstream.SanitizeDSML(content)
 	if strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" {
-		return
+		return false
 	}
 	now := time.Now()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -900,11 +911,12 @@ func (s *Server) persistPartial(ctx context.Context, conv store.Conversation, id
 	}
 	if err := s.st.InsertMessage(ctx, &msg); err != nil {
 		s.log.Error("insert partial assistant message", "error", err)
-		return
+		return false
 	}
 	if err := s.st.TouchConversation(ctx, conv.ID, msg.CreatedAt); err != nil {
 		s.log.Error("bump conversation updated_at", "error", err)
 	}
+	return true
 }
 
 // attachmentsFromLastUser reloads the attachment texts referenced by the most
@@ -1022,6 +1034,15 @@ func nonImageAttachments(atts []store.Attachment) []store.Attachment {
 		out = append(out, a)
 	}
 	return out
+}
+
+// userMemoryBlock renders a user's global memory (6.8) as a system-prompt
+// block, or "" when there is none to inject.
+func userMemoryBlock(memory string) string {
+	if !memorySet(memory) {
+		return ""
+	}
+	return "## About the user\n" + strings.TrimSpace(memory)
 }
 
 // projectInstructions returns the system prompt of a conversation's project:

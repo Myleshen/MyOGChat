@@ -94,6 +94,35 @@ Body may contain `title` (string, ≤200 chars), `model` (valid registry id),
 
 ### `DELETE /api/conversations/{id}` → `204`.
 
+### `POST /api/conversations/{id}/fork` — continue from here
+
+Body `{"message_id": "<id>"}`. Copies the conversation's messages from the
+beginning **up to and including** `message_id` into a **new conversation owned
+by the caller**; nothing after that message is copied.
+
+- `201` `{"id":"<new conv id>","title":"<source title> — fork","message_count":N}`
+  — `message_count` is the number of copied messages (1 … 5000). An untitled
+  source yields `Untitled — fork`; the base is truncated so the whole title stays
+  within the 200-rune `PATCH` cap.
+- `400` — missing/empty `message_id` or a malformed body.
+- `404` — the conversation is unknown or not the caller's, or the message does
+  not belong to that conversation (indistinguishable, never `403`).
+- `413` `{"error":"conversation too large to fork"}` — the copied set would
+  exceed **5,000** messages. Nothing is written.
+- The new conversation keeps the source's `project_id`, `model`, `effort` and
+  `agent_mode` and belongs to the same user. It is **not** pinned.
+- Messages are copied as **new rows with new ids**, every persisted field kept
+  (role, content, reasoning, model, tokens, cost, duration, `tools`, `images`,
+  `attachments`, `artifacts`) and the source `created_at` preserved, so order
+  and timings survive.
+- Attachment / image / artifact references are copied **as references**: the
+  underlying rows and bytes are shared, never duplicated (they are scoped to the
+  user, and artifact downloads stay owner-only).
+- No upstream call of any kind and no title generation.
+- An agent-mode fork gets a **fresh, empty workspace** — nothing is copied from
+  `sandbox/agent/<user>/<conv>`; the transcript is context, not files.
+
+
 ### `POST /api/conversations/{id}/messages` — chat (SSE)
 
 Body: `{"content":"<user text>"}` (non-empty, ≤100 KB).
@@ -618,7 +647,9 @@ nothing else; `updated_at` is bumped.
   - **google dialect**: fold them into `"systemInstruction":{"parts":[{"text"}]}`.
   - Instructions come from the conversation's project: `projects.instructions`
     plus, when non-empty, a `## Project memory` block separated by a blank line
-    (6.2). The server composes that one string; the dialect only passes it on.
+    (6.2). Since 6.8 the caller's global memory, when non-empty, is a
+    `## About the user` block **before** those two (§24.3). The server composes
+    that one string; the dialect only passes it on.
 - `Usage` gains `ReasoningTokens`:
   - chat: `usage.completion_tokens_details.reasoning_tokens`
   - responses: `usage.output_tokens_details.reasoning_tokens`
@@ -822,6 +853,7 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 -- conversations and projects each gain: user_id TEXT REFERENCES users(id) ON DELETE CASCADE
+-- users also gains (6.8): memory TEXT NOT NULL DEFAULT '', memory_updated_at INTEGER
 ```
 
 Settings keys (created with defaults on first open):
@@ -860,8 +892,9 @@ Public (no session required): `status`, `setup`, `register`, `login`.
   `403` when the account `status` is `pending` (message: "account pending
   approval") or `disabled`.
 - `POST /api/auth/logout` → `204`, clears the cookie.
-- `GET /api/auth/me` → `200 {"id","username","email","is_admin","tools_enabled","agent_enabled"}` or `401`
-  (`tools_enabled` / `agent_enabled` are the server-wide switches, readable by every user).
+- `GET /api/auth/me` → `200 {"id","username","email","is_admin","tools_enabled","agent_enabled","memory_set"}` or `401`
+  (`tools_enabled` / `agent_enabled` are the server-wide switches, readable by every user;
+  `memory_set` says whether the caller has a global memory — never the text, §24.2).
 
 Session cookie: name `myogchat`, value = `base64url(userID|expiryUnix|hex(hmacSHA256(secret, userID|expiry)))`,
 `HttpOnly`, `SameSite=Lax`, `Path=/`, 30-day expiry, `Secure` when the request
@@ -1795,7 +1828,7 @@ known — the SPA renders "not tracked". Token counts are still recorded. `GET
 ## 23. Calendar triggers (6.0)
 
 Opt-in, per-user automatic conversations started shortly before a calendar event.
-Only a **CalDAV** account is read; an ICS feed is never a trigger source.
+Only a **CalDAV or Google** account is read; an ICS feed is never a trigger source.
 Behaviour and rationale: [`docs/6.0-calendar-triggers.md`](docs/6.0-calendar-triggers.md).
 
 ### 23.1 Schema (additive)
@@ -1840,8 +1873,8 @@ sub-collections of it.
   "lead_minutes":15,"connected":true,"last_error":""}`.
   Defaults are filled in for a user who never saved a config; `prompt_template`
   is the built-in default when the stored one is empty. `connected` reports a
-  usable CalDAV account. `last_error` is the last calendar read error seen by the
-  running scheduler (empty when healthy; resets on restart).
+  usable CalDAV or Google account. `last_error` is the last calendar read error
+  seen by the running scheduler (empty when healthy; resets on restart).
 - `PUT /api/me/calendar/trigger` — any subset of
   `{enabled, project_id, model, prompt_template, quiet_start, quiet_end}`;
   `{"enabled":true}` alone is valid. `project_id:""` clears the project;
@@ -1849,7 +1882,7 @@ sub-collections of it.
   the same shape as `GET`. `400 {"error":…}` for an unknown model (resolved like
   any other model, so custom providers work), a project that is not the caller's,
   a quiet value that is not strict `HH:MM`, `quiet_start` without `quiet_end` (or
-  the reverse), or `enabled:true` with no CalDAV calendar connected.
+  the reverse), or `enabled:true` with no CalDAV or Google calendar connected.
 - `DELETE /api/me/calendar/trigger` → `204`, idempotent. Removes the config **and
   that user's run rows**.
 - `GET /api/me/calendar/trigger/runs?limit=20` →
@@ -1862,8 +1895,9 @@ sub-collections of it.
   template for the next matching event(s) in the scheduler's window; writes
   nothing. `skipped` counts in-window events that will produce no conversation
   (already started, quiet at fire time, or already in the ledger). `400` when no
-  CalDAV calendar is connected; `502 {"error":"could not read the calendar: …"}`
-  when the fetch fails.
+  calendar is connected (the message is `connect a calendar first (CalDAV or
+  Google Calendar)`); `502 {"error":"could not read the calendar: …"}` when the
+  fetch fails.
 
 ### 23.3 Semantics
 
@@ -1878,4 +1912,126 @@ sub-collections of it.
 - Template tokens: `{{summary}}`, `{{start}}`, `{{end}}`, `{{location}}`,
   `{{description}}`; dates are RFC 3339 local time; unknown tokens are left as-is.
 - A triggered reply omits `list_chats` / `read_chat` and never writes project
-  memory. It still counts toward the caller's usage and quota.
+
+  memory. It still receives the owner's global memory (6.8) and still counts
+  toward the caller's usage and quota.
+
+## 24. Web Push notifications (6.6)
+
+A finished reply notifies the user's devices when no live SSE client is watching
+it. Behaviour and rationale: [`docs/6.6-notifications.md`](docs/6.6-notifications.md).
+
+### 24.1 Schema (additive)
+
+```sql
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint   TEXT NOT NULL,
+  p256dh     TEXT NOT NULL,          -- base64url uncompressed P-256 public key
+  auth       TEXT NOT NULL,          -- base64url 16-byte auth secret
+  user_agent TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  last_used  INTEGER NOT NULL DEFAULT 0,
+  failures   INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscriptions(endpoint);
+```
+
+The VAPID key pair is generated on first use; the encrypted PKCS#8 private key
+lives in `settings.vapid_private_key` (never returned, never logged).
+
+### 24.2 Endpoints (session required, per-user)
+
+- `GET /api/me/notifications` → `200`
+  `{"enabled":true,"public_key":"<base64url>","subscriptions":2,"supported":true}`.
+  `enabled` is the admin `push_enabled` setting (default on); `supported` is
+  false when the VAPID key cannot be initialised; `public_key` is then empty.
+  The key is the `applicationServerKey` for `pushManager.subscribe`.
+- `POST /api/me/push/subscribe` — body
+  `{"endpoint":"https://…","p256dh":"…","auth":"…","user_agent":"…"}` →
+  `201 {"id":"<uuid>"}`. The endpoint must be `https`; `p256dh` must decode to a
+  valid uncompressed P-256 point and `auth` to 16 bytes (`400 {"error":…}`
+  otherwise). Re-subscribing the **same endpoint** updates that row (keys,
+  owner, user-agent, failure streak) and returns its id rather than adding a
+  duplicate.
+- `DELETE /api/me/push/{id}` → `204`, idempotent for an id that never existed or
+  is already gone. Another user's row is `404`.
+- `POST /api/me/push/test` → `200 {"sent":1,"failed":0}`; sends a fixed test
+  notification to all of the caller's subscriptions and prunes the ones that
+  fail (404/410 immediately, otherwise after 5 consecutive failures).
+  `503 {"error":"notifications are disabled"}` when `push_enabled` is off.
+
+### 24.3 Delivery
+
+- Trigger: a detached reply job reaching `done`, or `error`/`stopped` after
+  persisting a partial reply — and only if no SSE client was subscribed when it
+  finished. One notification per subscription; failures never touch the job.
+- Payload (JSON, RFC 8291 `aes128gcm` encrypted):
+  `{"title":"<conversation title>","body":"Reply ready|Job failed|Job stopped",
+  "url":"/#/c/<id>","tag":"<conversation id>"}`. No message content, ever.
+- Request: `POST <endpoint>` with `Authorization: vapid t=<ES256 JWT>,k=<pubkey>`
+  (`aud` = endpoint origin, `exp` = now + 12 h, `sub` = `MYOGCHAT_PUBLIC_URL` or
+  `mailto:myogchat@localhost`), `Content-Encoding: aes128gcm`, `TTL: 43200`,
+  `Urgency: normal`.
+- Admin setting `push_enabled` (default `1`, in `GET/PATCH /api/settings`)
+  gates sending. One goroutine per delivery, 10 s timeout, max 4 concurrent;
+  a saturated queue drops the notification instead of delaying it.
+
+## 25. Global user memory (6.8)
+
+A per-user "about me" text injected into the system prompt of **every**
+conversation that user sends — project or unfiled, normal or agent-mode, typed or
+calendar-triggered. It is separate from project memory (6.2), which stays
+per-project, and it is only ever written by the user: no automatic update, no
+model call, no edit history.
+
+### 25.1 Schema (additive)
+
+```sql
+-- users gains:
+--   memory            TEXT NOT NULL DEFAULT ''  -- the global memory text
+--   memory_updated_at INTEGER                  -- ms since epoch, NULL when empty
+```
+
+`memory_updated_at` is separate from `users.updated_at` because every other
+per-user setter (key, limits, Linkwarden) also bumps the row.
+
+### 25.2 Endpoints (session required, per-user)
+
+- `GET /api/me/memory` → `200 {"memory": string, "limit": 8000, "updated_at": ms|null}`.
+  `updated_at` is `null` until a non-empty memory is stored and `null` again
+  after clearing. Only the caller's own text is ever returned.
+- `PUT /api/me/memory` `{"memory": string}` → `200` with the same shape.
+  `""` clears the memory (and its timestamp). `memory` ≤ **8000 runes** —
+  longer is `400 {"error":"memory exceeds 8000 characters"}` (the cap counts
+  characters, not bytes). A whitespace-only value is stored as given but is not
+  injected and reports `memory_set:false`.
+- `GET /api/auth/me` (§9.3) gains `"memory_set": bool` — the text itself is
+  never sent there.
+
+Cost: the memory is part of the system prompt on every turn the user sends, so at
+the 8000-character ceiling it adds roughly **2k tokens of input per turn** —
+cheaper than project memory (one block, smaller cap), and cached after the first
+turn. The ceiling is a context/attention trade-off, not a model limit.
+
+### 25.3 Injection order
+
+`runReply` composes one string for `Params.Instructions`, so all four dialects
+(chat, responses, anthropic, google) pass the same text on (§8.6):
+
+```text
+## About the user
+<global memory>
+
+<project instructions>
+
+## Project memory
+<project memory>
+```
+
+Global memory comes **first**, then the project's authored instructions, then
+project memory — a project can refine the global note; a stale global note can
+never silently win over the project. Each block is omitted when empty. A
+calendar-triggered reply gets the global block (it is the owner's own context)
+but still never writes any memory.
