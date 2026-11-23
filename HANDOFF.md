@@ -27,7 +27,7 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
   conversation 15 minutes before each CalDAV or Google event — 120 s scheduler
   tick, a dedupe ledger, quiet hours and quota/busy/late skips
   (`docs/6.0-calendar-triggers.md`).
-<<<<<<< HEAD
+
 - **Fork a chat** (2026-11-23): `POST /api/conversations/{id}/fork` copies a
   transcript up to one message into a new chat (same project/model/effort/agent
   mode, `— fork` title, shared attachment/artifact bytes, fresh agent workspace,
@@ -148,6 +148,9 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-provid
   per-user "about me" injected into every chat; API only, no Settings UI yet)
 - `docs/6.4-upstream-dialects.md` — the four upstream dialects: what each
   adapter maps, the event-model gaps, and the unverified-live caveats
+- `docs/6.6-notifications.md` — Web Push: what a notification says (never
+  message content), when a send happens (only with no SSE client attached),
+  subscription keying and removal
 
 ## Conventions & hard constraints
 
@@ -294,6 +297,10 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 
 ## Known gaps / caveats (be honest)
 
+- **Web Push has no Settings UI yet** and has not been exercised against a real
+  browser/phone: the server side, payload encryption (RFC 8291 vector) and the
+  service-worker handlers are tested, but subscribe → notify → tap-to-open needs
+  a real HTTPS origin and a device. `GET /api/me/notifications` is the SPA's hook.
 - **web_search** now works with zero configuration (DuckDuckGo keyless fallback).
   Tavily/Brave keys (`TAVILY_API_KEY` / `BRAVE_API_KEY`, or the `brave_key` DB
   setting) and a per-user Serper key give higher-quality results; the provider is

@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_user ON artifacts(user_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts(conversation_id);
-` + userProvidersSchema + calendarTriggersSchema
+` + userProvidersSchema + calendarTriggersSchema + pushSubscriptionsSchema
 
 // calendarTriggersSchema is the per-user calendar-trigger config plus its run
 // ledger (6.0). It is kept in its own constant because it is applied twice: by
@@ -197,6 +197,24 @@ CREATE TABLE IF NOT EXISTS trigger_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_trigger_runs_user ON trigger_runs(user_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trigger_runs_dedupe ON trigger_runs(user_id, event_uid, event_start);
+`
+
+// pushSubscriptionsSchema holds one row per browser push subscription (6.6).
+// The unique index on endpoint makes a re-subscribe an update, so a browser
+// that rotates its keys does not leak a row.
+const pushSubscriptionsSchema = `
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint   TEXT NOT NULL,
+  p256dh     TEXT NOT NULL,
+  auth       TEXT NOT NULL,
+  user_agent TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  last_used  INTEGER NOT NULL DEFAULT 0,
+  failures   INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscriptions(endpoint);
 `
 
 // userProvidersSchema is the per-user custom upstream provider table (§22).
@@ -512,6 +530,10 @@ func (s *Store) migrate() error {
 	}
 	// Calendar triggers (6.0): two new tables plus their indexes.
 	if _, err := s.db.Exec(calendarTriggersSchema); err != nil {
+		return err
+	}
+	// Web Push subscriptions (6.6): one new table plus its endpoint index.
+	if _, err := s.db.Exec(pushSubscriptionsSchema); err != nil {
 		return err
 	}
 	steps := []struct {

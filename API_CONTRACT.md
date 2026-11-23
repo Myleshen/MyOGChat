@@ -1912,10 +1912,73 @@ sub-collections of it.
 - Template tokens: `{{summary}}`, `{{start}}`, `{{end}}`, `{{location}}`,
   `{{description}}`; dates are RFC 3339 local time; unknown tokens are left as-is.
 - A triggered reply omits `list_chats` / `read_chat` and never writes project
+
   memory. It still receives the owner's global memory (6.8) and still counts
   toward the caller's usage and quota.
 
-## 24. Global user memory (6.8)
+## 24. Web Push notifications (6.6)
+
+A finished reply notifies the user's devices when no live SSE client is watching
+it. Behaviour and rationale: [`docs/6.6-notifications.md`](docs/6.6-notifications.md).
+
+### 24.1 Schema (additive)
+
+```sql
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint   TEXT NOT NULL,
+  p256dh     TEXT NOT NULL,          -- base64url uncompressed P-256 public key
+  auth       TEXT NOT NULL,          -- base64url 16-byte auth secret
+  user_agent TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  last_used  INTEGER NOT NULL DEFAULT 0,
+  failures   INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscriptions(endpoint);
+```
+
+The VAPID key pair is generated on first use; the encrypted PKCS#8 private key
+lives in `settings.vapid_private_key` (never returned, never logged).
+
+### 24.2 Endpoints (session required, per-user)
+
+- `GET /api/me/notifications` → `200`
+  `{"enabled":true,"public_key":"<base64url>","subscriptions":2,"supported":true}`.
+  `enabled` is the admin `push_enabled` setting (default on); `supported` is
+  false when the VAPID key cannot be initialised; `public_key` is then empty.
+  The key is the `applicationServerKey` for `pushManager.subscribe`.
+- `POST /api/me/push/subscribe` — body
+  `{"endpoint":"https://…","p256dh":"…","auth":"…","user_agent":"…"}` →
+  `201 {"id":"<uuid>"}`. The endpoint must be `https`; `p256dh` must decode to a
+  valid uncompressed P-256 point and `auth` to 16 bytes (`400 {"error":…}`
+  otherwise). Re-subscribing the **same endpoint** updates that row (keys,
+  owner, user-agent, failure streak) and returns its id rather than adding a
+  duplicate.
+- `DELETE /api/me/push/{id}` → `204`, idempotent for an id that never existed or
+  is already gone. Another user's row is `404`.
+- `POST /api/me/push/test` → `200 {"sent":1,"failed":0}`; sends a fixed test
+  notification to all of the caller's subscriptions and prunes the ones that
+  fail (404/410 immediately, otherwise after 5 consecutive failures).
+  `503 {"error":"notifications are disabled"}` when `push_enabled` is off.
+
+### 24.3 Delivery
+
+- Trigger: a detached reply job reaching `done`, or `error`/`stopped` after
+  persisting a partial reply — and only if no SSE client was subscribed when it
+  finished. One notification per subscription; failures never touch the job.
+- Payload (JSON, RFC 8291 `aes128gcm` encrypted):
+  `{"title":"<conversation title>","body":"Reply ready|Job failed|Job stopped",
+  "url":"/#/c/<id>","tag":"<conversation id>"}`. No message content, ever.
+- Request: `POST <endpoint>` with `Authorization: vapid t=<ES256 JWT>,k=<pubkey>`
+  (`aud` = endpoint origin, `exp` = now + 12 h, `sub` = `MYOGCHAT_PUBLIC_URL` or
+  `mailto:myogchat@localhost`), `Content-Encoding: aes128gcm`, `TTL: 43200`,
+  `Urgency: normal`.
+- Admin setting `push_enabled` (default `1`, in `GET/PATCH /api/settings`)
+  gates sending. One goroutine per delivery, 10 s timeout, max 4 concurrent;
+  a saturated queue drops the notification instead of delaying it.
+
+## 25. Global user memory (6.8)
 
 A per-user "about me" text injected into the system prompt of **every**
 conversation that user sends — project or unfiled, normal or agent-mode, typed or
@@ -1923,7 +1986,7 @@ calendar-triggered. It is separate from project memory (6.2), which stays
 per-project, and it is only ever written by the user: no automatic update, no
 model call, no edit history.
 
-### 24.1 Schema (additive)
+### 25.1 Schema (additive)
 
 ```sql
 -- users gains:
@@ -1934,7 +1997,7 @@ model call, no edit history.
 `memory_updated_at` is separate from `users.updated_at` because every other
 per-user setter (key, limits, Linkwarden) also bumps the row.
 
-### 24.2 Endpoints (session required, per-user)
+### 25.2 Endpoints (session required, per-user)
 
 - `GET /api/me/memory` → `200 {"memory": string, "limit": 8000, "updated_at": ms|null}`.
   `updated_at` is `null` until a non-empty memory is stored and `null` again
@@ -1952,7 +2015,7 @@ the 8000-character ceiling it adds roughly **2k tokens of input per turn** —
 cheaper than project memory (one block, smaller cap), and cached after the first
 turn. The ceiling is a context/attention trade-off, not a model limit.
 
-### 24.3 Injection order
+### 25.3 Injection order
 
 `runReply` composes one string for `Params.Instructions`, so all four dialects
 (chat, responses, anthropic, google) pass the same text on (§8.6):

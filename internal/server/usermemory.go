@@ -12,14 +12,14 @@ import (
 // block. Unlike project memory nothing ever writes it automatically.
 const maxUserMemoryRunes = 8000
 
-// memoryPayload is the shape of GET/PUT /api/me/memory (§24).
+// memoryPayload is the shape of GET/PUT /api/me/memory (§25).
 type memoryPayload struct {
 	Memory    string `json:"memory"`
 	Limit     int    `json:"limit"`
 	UpdatedAt *int64 `json:"updated_at"`
 }
 
-// handleGetMyMemory returns the caller's own "about me" memory (§24).
+// handleGetMyMemory returns the caller's own "about me" memory (§25).
 func (s *Server) handleGetMyMemory(w http.ResponseWriter, r *http.Request) {
 	u, ok := currentUser(w, r)
 	if !ok {
