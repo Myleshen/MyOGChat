@@ -38,8 +38,13 @@ while read -r ref; do
     *) echo "error: unexpected image reference in images.txt: $ref" >&2; exit 1 ;;
   esac
   docker pull "$ref"
+  prev=$(docker image inspect -f '{{.Id}}' "$local_name:latest" 2>/dev/null || true)
   # The app runs images by their local names (MYOGCHAT_SANDBOX_IMAGE_*).
   docker tag "$ref" "$local_name:latest"
+  # Drop the digest reference and the superseded build, or every release leaves
+  # another ~900 MB of sandbox images behind.
+  docker rmi "$ref" >/dev/null 2>&1 || true
+  [ -n "$prev" ] && docker rmi "$prev" >/dev/null 2>&1 || true
 done < images.txt
 
 echo "==> installing binary to $BIN_DIR/myogchat"
