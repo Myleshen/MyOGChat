@@ -496,8 +496,8 @@ merges sequentially and resolves the small additive conflicts in shared files
   `DELETE /api/me/push/{id}`, `POST /api/me/push/test` (`API_CONTRACT.md` §24);
   admin `push_enabled` gates sending. `static/sw.js` gained `push` and
   `notificationclick`.
-- **Not built:** the Settings UI (subscribe/test/remove) — that is the next SPA
-  pass; nothing has been exercised against a real browser/phone yet.
+- Settings UI shipped (Voice & devices → Notifications: enable, test, turn
+  off). Not yet exercised against a real browser/phone.
 
 ### 6.0 Calendar triggers — ✅ shipped (backend) ([`docs/6.0-calendar-triggers.md`](6.0-calendar-triggers.md))
 - An opt-in per-user config starts an **agent conversation** 15 minutes before
@@ -519,8 +519,8 @@ merges sequentially and resolves the small additive conflicts in shared files
 - Endpoints: `GET|PUT|DELETE /api/me/calendar/trigger`,
   `GET /api/me/calendar/trigger/runs`, `POST /api/me/calendar/trigger/preview`
   (`API_CONTRACT.md` §23). Ledger pruned after 90 days by the janitor.
-- **Not built:** the Settings UI (config is API-only) and any verification
-  against a real iCloud/Zoho account; no daily cap, no per-trigger timezone.
+- Settings UI shipped (under Calendar). Not verified against a real iCloud/Zoho
+  account; no daily cap, no per-trigger timezone.
 
 ### Fork a conversation from a message — ✅ shipped (backend) ([`docs/5-export-edit.md`](5-export-edit.md))
 - `POST /api/conversations/{id}/fork` copies the transcript up to and including
@@ -536,8 +536,7 @@ merges sequentially and resolves the small additive conflicts in shared files
 - An agent fork starts with an **empty workspace**: the transcript is context,
   not files, so nothing is copied from the source's sandbox directory.
 - Edits, deletes and regenerates in either chat never touch the other.
-- **Not built:** the UI action (a per-message **Continue from here** button —
-  separate UI pass).
+- UI action shipped: **Continue from here** in the assistant action row.
 
 ### 6.8 Global user memory — 🟡 implemented, unmerged ([`docs/6.8-user-memory.md`](docs/6.8-user-memory.md))
 - `users.memory` (additive migration) is a per-user "about me" injected into
@@ -550,4 +549,4 @@ merges sequentially and resolves the small additive conflicts in shared files
 - User-written only: no background model call, no per-project override, no edit
   history (all deliberately out of scope). Cost: ~2k tokens of input per turn at
   the cap, cheaper than project memory since it is one block.
-- **Not built:** the Settings UI (API-only, like calendar triggers).
+- Settings UI shipped under AI & access → About you.

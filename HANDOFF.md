@@ -142,10 +142,10 @@ docs/         2.2-groups.md, 2.3-attachments.md, 2.4-tools.md, 2.4-search-provid
   `5.10-reuse-draft.md`, `5.11-multi-mailbox.md`, `5-hardening.md` (shipped),
   `5.12-agent-mode.md` (shipped, verified live)
 - `docs/6.0-calendar-triggers.md` — Phase 6, shipped (the calendar starts its
-  own conversations; API + 120 s scheduler, no Settings UI yet)
+  own conversations; 120 s scheduler, Settings UI under Calendar)
 - `docs/6.2-project-memory.md` — Phase 6, shipped (rolling project memory)
 - `docs/6.8-user-memory.md` — Phase 6, implemented on `feat/user-memory` (the
-  per-user "about me" injected into every chat; API only, no Settings UI yet)
+  per-user "about me" injected into every chat; Settings → AI & access)
 - `docs/6.4-upstream-dialects.md` — the four upstream dialects: what each
   adapter maps, the event-model gaps, and the unverified-live caveats
 - `docs/6.6-notifications.md` — Web Push: what a notification says (never
@@ -297,8 +297,8 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 
 ## Known gaps / caveats (be honest)
 
-- **Web Push has no Settings UI yet** and has not been exercised against a real
-  browser/phone: the server side, payload encryption (RFC 8291 vector) and the
+- **Web Push** has its Settings UI (Voice & devices → Notifications) but has
+  never been exercised against a real browser/phone: the server side, payload encryption (RFC 8291 vector) and the
   service-worker handlers are tested, but subscribe → notify → tap-to-open needs
   a real HTTPS origin and a device. `GET /api/me/notifications` is the SPA's hook.
 - **web_search** now works with zero configuration (DuckDuckGo keyless fallback).
@@ -348,8 +348,8 @@ ComfyUI/SD-Turbo on the Proxmox box; app side shipped — `docs/3.1-imagegen.md`
 - **Calendar triggers (6.0)** are unit-tested end to end against a fake CalDAV
   server (fire once + dedupe, late/quiet/quota/busy skips, preview, endpoints,
   the no-chat-tools / no-memory exceptions). **Not verified against a real
-  iCloud/Zoho account**, and there is **no Settings UI**: the config is
-  API-only (`GET/PUT/DELETE /api/me/calendar/trigger`). Quiet hours use the
+  iCloud/Zoho account**. Its Settings UI lives under Calendar → Scheduled
+  prompts. Quiet hours use the
   server's local clock, there is no daily cap and no per-trigger timezone; the
   existing quota is the only hard spend stop.
 
