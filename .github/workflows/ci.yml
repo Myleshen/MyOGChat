@@ -11,6 +11,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Draft PRs get pushed to constantly; CI starts when the PR is marked ready.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
