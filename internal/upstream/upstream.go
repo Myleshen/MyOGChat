@@ -948,6 +948,13 @@ func firstN(s string, n int) string {
 	return s
 }
 
+// HTTPError renders a non-2xx upstream response the way every dialect reports
+// one; exported for callers outside this package that talk to an upstream (the
+// provider-key check), so none of them echo a raw JSON envelope to the user.
+func HTTPError(status int, body []byte) error {
+	return upstreamHTTPError(status, body)
+}
+
 // upstreamHTTPError renders a non-2xx upstream response as one line: the
 // upstream's own message when the body is a JSON error envelope, else a
 // truncated body snippet. The status code always survives.
