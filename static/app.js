@@ -274,6 +274,22 @@ const voiceStatus = document.getElementById("voice-status");
 const voiceError = document.getElementById("voice-error");
 const voiceSave = document.getElementById("voice-save");
 
+/* Notifications for this device (6.6) — self-contained, safe to relocate. */
+const notifStatus = document.getElementById("notif-status");
+const notifNote = document.getElementById("notif-note");
+const notifError = document.getElementById("notif-error");
+const notifEnable = document.getElementById("notif-enable");
+const notifTest = document.getElementById("notif-test");
+const notifDisable = document.getElementById("notif-disable");
+
+/* About you: per-user global memory (6.8) — self-contained, safe to relocate. */
+const memoryText = document.getElementById("memory-text");
+const memoryCount = document.getElementById("memory-count");
+const memoryError = document.getElementById("memory-error");
+const memoryStatus = document.getElementById("memory-status");
+const memorySave = document.getElementById("memory-save");
+const memoryClear = document.getElementById("memory-clear");
+
 /* ==== BEGIN email (read-only IMAP, feature 3.2 / multi-mailbox 5.11) — self-contained, safe to relocate ==== */
 const emailForm = document.getElementById("email-form");
 const emailAccountsList = document.getElementById("email-accounts");
@@ -338,6 +354,8 @@ const state = {
   },
   mail: { accounts: [], presets: [], max_accounts: 10, connected: false }, // GET /api/me/mail/accounts (feature 3.2 / 5.11)
   agentDraft: false,       // Agent choice for a not-yet-created chat (applied on create)
+  notifications: null,     // GET /api/me/notifications (6.6) — null until loaded
+  pushSub: null,           // this browser's PushSubscription, if any
   flags: { toolsEnabled: true, agentEnabled: true }, // server switches (both from /api/auth/me; /api/settings repeats them for admins)
 };
 
@@ -639,6 +657,8 @@ function handleUnauthorized() {
   renderAttachments();
   stopSpeaking();
   state.agentDraft = false;
+  state.notifications = null; /* 6.6: another account has its own devices */
+  state.pushSub = null;
   state.flags = { toolsEnabled: true, agentEnabled: true };
   state.speech = { stt_available: false, stt_enabled: false, tts_available: false, tts_enabled: false, tts_voice: "" };
   appEl.hidden = true;
@@ -795,7 +815,10 @@ async function enterApp() {
     return;
   }
   updateNewChatLabel();
-  if (state.conversations.length > 0) {
+  const deepLink = conversationIdFromHash();
+  if (deepLink) {
+    openConversation(deepLink); /* the chat the URL names wins over the newest one */
+  } else if (state.conversations.length > 0) {
     openConversation(state.conversations[0].id);
   } else {
     showWelcome();
@@ -908,8 +931,36 @@ function leaveSettings() {
 
 /* Show/hide the settings page to match the current hash. */
 function applyRoute() {
-  if (state.user && isSettingsRoute()) showSettingsPage();
-  else hideSettingsPage();
+  if (state.user && isSettingsRoute()) {
+    showSettingsPage();
+    return;
+  }
+  hideSettingsPage();
+  if (!state.user) return;
+  // #/c/<id> names a chat: a forked one, or one a notification opened. Any
+  // other hash leaves the open chat alone.
+  const id = conversationIdFromHash();
+  if (id && (!state.current || state.current.id !== id)) openConversation(id).catch(() => {});
+}
+
+/* The conversation id in the #/c/<id> hash, or "" for any other route. */
+function conversationIdFromHash() {
+  const m = /^#\/c\/([^/]+)$/.exec(location.hash);
+  if (!m) return "";
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return "";
+  }
+}
+
+/* Keep the URL naming the open chat, so a reload (or a tapped notification,
+   whose URL is #/c/<id>) lands on the same one. replaceState, not a push: Back
+   still means "leave settings", never "step back through chats". */
+function syncChatHash(convId) {
+  const hash = "#/c/" + enc(convId);
+  if (location.hash === hash) return;
+  history.replaceState(null, "", hash);
 }
 
 /* ============================== Settings categories (4.4) ============================== */
@@ -921,7 +972,7 @@ function applyRoute() {
 const SETTINGS_CATEGORIES = [
   { id: "account", label: "Account", icon: "👤", sections: ["account-section"] },
   { id: "appearance", label: "Appearance", icon: "🎨", sections: ["appearance-section"] },
-  { id: "ai", label: "AI & access", icon: "🔑", sections: ["key-section", "providers-section", "groups-section"] },
+  { id: "ai", label: "AI & access", icon: "🔑", sections: ["key-section", "providers-section", "memory-section", "groups-section"] },
   {
     id: "integrations",
     label: "Integrations",
@@ -934,7 +985,7 @@ const SETTINGS_CATEGORIES = [
     icon: "🧰",
     sections: ["tools-section", "agent-section", "integrations-section", "ocr-section"],
   },
-  { id: "voice", label: "Voice", icon: "🗣️", sections: ["voice-section"] },
+  { id: "voice", label: "Voice & devices", icon: "🗣️", sections: ["voice-section", "notifications-section"] },
   { id: "usage", label: "Usage", icon: "📊", sections: ["usage-section"] },
   { id: "users", label: "Users", icon: "👥", sections: ["users-section"] },
   { id: "about", label: "About", icon: "ℹ️", sections: ["about-section"] },
@@ -1049,6 +1100,8 @@ function showSettingsPage() {
   loadCalendarTrigger().catch(() => {}); /* scheduled prompts + recent runs */
   loadMail().catch(() => {}); /* email (feature 3.2) — per-user, all users */
   loadAgentWorkspaces().catch(() => {}); /* agent files (per-user, all users) */
+  loadNotifications().catch(() => {}); /* push for this device (6.6) — never blocks the page */
+  loadMemory().catch(() => {}); /* "about you" global memory (6.8) */
   if (isAdmin) {
     loadUsers().catch(() => {});
     loadSettingsInfo(false).catch(() => {});
@@ -1855,6 +1908,273 @@ async function saveVoiceSettings() {
 }
 
 /* ===== end Voice / speech (3.5/3.6) ===== */
+
+/* ===== Notifications for this device (6.6) — self-contained, safe to relocate =====
+   The server never returns push endpoints (they are bearer credentials), so the
+   id of this browser's subscription is remembered locally: that is what "turn
+   off on this device" needs. */
+const PUSH_RECORD_KEY = "myogchat.push";
+
+function pushRecord() {
+  try {
+    const r = JSON.parse(lsGet(PUSH_RECORD_KEY, "null"));
+    return r && r.id && r.endpoint ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+/* base64url both ways: Web Push keys are raw bytes, the API speaks base64url. */
+function b64UrlEncode(buf) {
+  let s = "";
+  for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function b64UrlDecode(text) {
+  const b64 = String(text || "").replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+function pushApiReady() {
+  return (
+    "Notification" in window && "serviceWorker" in navigator && "PushManager" in window
+  );
+}
+
+/* This browser's push subscription, or null. Best effort: a browser without
+   push support simply has none. */
+async function currentPushSubscription() {
+  if (!pushApiReady()) return null;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    return reg ? await reg.pushManager.getSubscription() : null;
+  } catch {
+    return null;
+  }
+}
+
+/* Why notifications cannot be switched on here, or "" when they can. Ordered
+   from the things the user cannot fix to the ones they can. */
+function pushBlockedReason(s) {
+  if (!window.isSecureContext) return "Notifications need HTTPS (or localhost).";
+  if (!pushApiReady()) return "This browser cannot show notifications.";
+  if (s && !s.enabled) return "Notifications are turned off on this server.";
+  if (s && !s.supported) return "Notifications are not configured on this server yet.";
+  if (Notification.permission === "denied") {
+    return "Notifications are blocked for this site — allow them in your browser's site settings, then reload.";
+  }
+  return "";
+}
+
+function isAppleMobile() {
+  return /iP(hone|ad|od)/.test(navigator.userAgent);
+}
+
+async function loadNotifications() {
+  const s = await api("/api/me/notifications");
+  state.notifications = s;
+  state.pushSub = await currentPushSubscription();
+  renderNotifications();
+}
+
+/* One state line, plus exactly the buttons that state allows. */
+function renderNotifications() {
+  const s = state.notifications;
+  const rec = pushRecord();
+  const on = !!(
+    rec &&
+    s &&
+    s.subscriptions > 0 &&
+    state.pushSub &&
+    state.pushSub.endpoint === rec.endpoint
+  );
+  const blocked = pushBlockedReason(s);
+  const devices = s && s.subscriptions > 0 ? s.subscriptions : 0;
+
+  notifError.hidden = true;
+  // iOS only delivers Web Push to the installed home-screen app, so say it
+  // there rather than letting the button fail.
+  notifNote.hidden = !isAppleMobile();
+  notifNote.textContent =
+    "On iPhone and iPad, add this app to your home screen first — iOS only delivers notifications to the installed app.";
+
+  let status;
+  if (!s) status = "Notifications: loading…";
+  else if (blocked) status = blocked;
+  else if (on) {
+    status =
+      "Notifications on for this device" +
+      (devices > 1 ? " (" + devices + " devices in total)." : ".");
+  } else if (devices > 0) {
+    status =
+      "Notifications are on for " +
+      devices +
+      (devices === 1 ? " other device" : " other devices") +
+      " — turn them on here too?";
+  } else {
+    status = "Notifications are off on this device.";
+  }
+  notifStatus.textContent = status;
+
+  notifEnable.hidden = !!blocked || on || !s;
+  notifDisable.hidden = !(on || (rec && rec.id && state.pushSub));
+  notifTest.hidden = devices === 0;
+}
+
+async function enableNotifications() {
+  notifError.hidden = true;
+  notifEnable.disabled = true;
+  try {
+    const s = state.notifications || (await api("/api/me/notifications"));
+    if (!s.supported || !s.public_key) {
+      throw new Error("Notifications are not configured on this server yet.");
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      // Re-render first: a denial hides the button and the status line says
+      // what to do about it, so nothing is left looking broken.
+      renderNotifications();
+      if (permission !== "denied") throw new Error("Permission was not granted — try again.");
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: b64UrlDecode(s.public_key),
+    });
+    const saved = await api("/api/me/push/subscribe", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        endpoint: sub.endpoint,
+        p256dh: b64UrlEncode(sub.getKey("p256dh")),
+        auth: b64UrlEncode(sub.getKey("auth")),
+        user_agent: navigator.userAgent,
+      }),
+    });
+    lsSet(
+      PUSH_RECORD_KEY,
+      JSON.stringify({ id: saved && saved.id ? saved.id : "", endpoint: sub.endpoint })
+    );
+    state.pushSub = sub;
+    await loadNotifications();
+    toast("Notifications on for this device");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    notifError.textContent = err.message || "Could not enable notifications";
+    notifError.hidden = false;
+  } finally {
+    notifEnable.disabled = false;
+  }
+}
+
+async function disableNotifications() {
+  notifError.hidden = true;
+  notifDisable.disabled = true;
+  try {
+    const rec = pushRecord();
+    if (state.pushSub) await state.pushSub.unsubscribe();
+    if (rec && rec.id) {
+      await api("/api/me/push/" + enc(rec.id), { method: "DELETE" });
+    }
+    lsSet(PUSH_RECORD_KEY, "");
+    state.pushSub = null;
+    await loadNotifications();
+    toast("Notifications off for this device");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    /* The browser side may already be gone; say what did happen rather than
+       leaving a button that looks stuck. */
+    notifError.textContent = err.message || "Could not turn notifications off";
+    notifError.hidden = false;
+  } finally {
+    notifDisable.disabled = false;
+  }
+}
+
+async function sendTestNotification() {
+  notifError.hidden = true;
+  notifTest.disabled = true;
+  try {
+    const out = await api("/api/me/push/test", { method: "POST" });
+    const sent = (out && out.sent) || 0;
+    const failed = (out && out.failed) || 0;
+    if (sent === 0 && failed === 0) toast("No devices are subscribed yet");
+    else if (failed > 0) toast("Test sent to " + sent + ", failed for " + failed);
+    else toast("Test notification sent");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    notifError.textContent = err.message || "Could not send a test";
+    notifError.hidden = false;
+  } finally {
+    notifTest.disabled = false;
+  }
+}
+
+/* ===== end Notifications (6.6) ===== */
+
+/* ===== About you: per-user global memory (6.8) — self-contained, safe to relocate =====
+   Written only by its owner, injected into the system prompt of every chat. */
+function syncMemoryCount() {
+  const n = [...memoryText.value].length;
+  memoryCount.textContent = n + " / 8000";
+  memoryCount.classList.toggle("over", n > 8000);
+}
+
+async function loadMemory() {
+  memoryError.hidden = true;
+  memoryStatus.hidden = true;
+  try {
+    const m = await api("/api/me/memory");
+    memoryText.value = (m && typeof m.memory === "string" && m.memory) || "";
+    syncMemoryCount();
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    memoryError.textContent = err.message || "Could not load your notes";
+    memoryError.hidden = false;
+  }
+}
+
+async function saveMemory() {
+  memoryError.hidden = true;
+  memoryError.textContent = "";
+  memoryStatus.hidden = true;
+  memorySave.disabled = true;
+  try {
+    const m = await api("/api/me/memory", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ memory: memoryText.value }),
+    });
+    memoryText.value = (m && typeof m.memory === "string" && m.memory) || "";
+    syncMemoryCount();
+    if (state.user) state.user.memory_set = memoryText.value.trim() !== "";
+    memoryStatus.textContent = memoryText.value.trim()
+      ? "Saved — added to every chat from now on."
+      : "Cleared — nothing is added to your chats any more.";
+    memoryStatus.hidden = false;
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    memoryError.textContent = err.message || "Could not save your notes";
+    memoryError.hidden = false;
+  } finally {
+    memorySave.disabled = false;
+  }
+}
+
+async function clearMemory() {
+  if (!memoryText.value.trim()) {
+    memoryText.focus();
+    return;
+  }
+  if (!confirm("Clear the notes the assistant knows about you?")) return;
+  memoryText.value = "";
+  await saveMemory();
+}
+
+/* ===== end About you (6.8) ===== */
 
 /* ==== BEGIN email (read-only IMAP, feature 3.2 / multi-mailbox 5.11) — self-contained, safe to relocate ==== */
 /* Load the caller's mailboxes (per-user, not admin-gated). */
@@ -3933,6 +4253,7 @@ async function openConversation(id) {
 function setCurrentConversation(conv) {
   state.current = conv;
   state.currentMessages = Array.isArray(conv.messages) ? conv.messages : [];
+  syncChatHash(conv.id);
   state.activeProjectId = conv.project_id || null;
   if (state.activeProjectId) state.expandedProjects.add(state.activeProjectId);
   if (modelById(conv.model)) {
@@ -4369,6 +4690,15 @@ function buildAssistantFooter(m, isLast) {
     );
   }
   actions.appendChild(copyButton(m));
+  // Continue from here (fork): needs the server-side message id, which an
+  // optimistic (just-streamed) message only gains after the refresh below.
+  if (m.id && state.current) {
+    const fork = actionButton("Continue from here", (btn) => forkFromMessage(m, btn));
+    fork.title = "Copy this chat up to here into a new chat";
+    fork.setAttribute("aria-label", fork.title);
+    fork.disabled = currentGenerating();
+    actions.appendChild(fork);
+  }
   if (isLast) actions.appendChild(actionButton("Retry", () => regenerate()));
   footer.appendChild(actions);
   return footer;
@@ -4395,6 +4725,7 @@ function buildAssistantMessage(m, isLast) {
     const content = el("div", "msg-content markdown");
     content.innerHTML = renderMarkdown(m.content);
     enhanceMarkdown(content);
+    renderDiagrams(content);
     bubble.appendChild(content);
   }
   const hasImages = Array.isArray(m.images) && m.images.length > 0;
@@ -4502,6 +4833,31 @@ function configureMarked() {
         );
       },
     },
+    extensions: [
+      {
+        /* Markdown eats the backslash in \( \) \[ \], which would leave the
+           maths delimiters as plain brackets before KaTeX ever sees them. Keep
+           the raw text; code spans and fences are separate tokens, so they are
+           never touched. */
+        name: "mathDelimiters",
+        level: "inline",
+        start(src) {
+          const paren = src.indexOf("\\(");
+          const bracket = src.indexOf("\\[");
+          if (paren < 0) return bracket < 0 ? undefined : bracket;
+          if (bracket < 0) return paren;
+          return Math.min(paren, bracket);
+        },
+        tokenizer(src) {
+          const m = /^(\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\])/.exec(src);
+          if (!m) return undefined;
+          /* Escaped for the same reason renderer.html escapes: this token
+             bypasses marked's own text handling, and KaTeX reads the DOM's
+             textContent, so entities decode back before typesetting. */
+          return { type: "text", raw: m[0], text: escapeHtml(m[0]) };
+        },
+      },
+    ],
   });
 }
 
@@ -4521,7 +4877,9 @@ function renderMarkdown(text) {
 
 function enhanceMarkdown(container) {
   container.querySelectorAll("pre code").forEach((code) => {
-    if (code.dataset.highlighted) return;
+    // Mermaid source is diagram input, not code to highlight (and highlight.js
+    // has no such language, so it warns on every streaming render).
+    if (code.dataset.highlighted || code.classList.contains("language-mermaid")) return;
     try {
       hljs.highlightElement(code);
     } catch {
@@ -4544,6 +4902,113 @@ function enhanceMarkdown(container) {
     });
     pre.appendChild(btn);
   });
+  typesetMath(container);
+}
+
+/* ============================== Maths + diagrams ============================== */
+/* KaTeX and Mermaid are vendored, not CDN, and loaded on first need: inject the
+   tag, remember the promise. Plain paths are correct — the static handler
+   serves them under the shell's content hash, so a new app.js (which is what a
+   vendored upgrade changes) rotates the SW cache that holds them. They are
+   deliberately absent from sw.js ASSETS: a chat with no maths must not pay for
+   them. Versions are recorded in static/vendor/README.md. */
+const KATEX_ASSETS = [
+  "vendor/katex/katex.min.css",
+  "vendor/katex/katex.min.js",
+  "vendor/katex/contrib/auto-render.min.js",
+];
+const MERMAID_ASSETS = ["vendor/mermaid/mermaid.min.js"];
+const vendorPending = new Map();
+
+function loadAsset(url) {
+  return new Promise((resolve, reject) => {
+    const css = url.endsWith(".css");
+    const node = document.createElement(css ? "link" : "script");
+    if (css) {
+      node.rel = "stylesheet";
+      node.href = url;
+    } else {
+      node.src = url;
+    }
+    node.onload = () => resolve();
+    node.onerror = () => reject(new Error("Could not load " + url));
+    document.head.appendChild(node);
+  });
+}
+
+function loadVendor(key, urls) {
+  if (!vendorPending.has(key)) {
+    // In order, not in parallel: auto-render binds window.katex as it loads.
+    vendorPending.set(
+      key,
+      urls.reduce((p, url) => p.then(() => loadAsset(url)), Promise.resolve())
+    );
+  }
+  return vendorPending.get(key);
+}
+
+/* Cheap guard so a chat without maths never loads KaTeX (or scans the DOM). */
+const MATH_HINT = /\$|\\\(|\\\[/;
+
+/* Typeset on every markdown render: auto-render only touches text nodes and
+   skips pre/code by default, so code spans and blocks are never parsed. */
+function typesetMath(container) {
+  if (!MATH_HINT.test(container.textContent || "")) return;
+  loadVendor("katex", KATEX_ASSETS)
+    .then(() => {
+      if (!container.isConnected) return;
+      try {
+        renderMathInElement(container, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\[", right: "\\]", display: true },
+            { left: "$", right: "$", display: false },
+            { left: "\\(", right: "\\)", display: false },
+          ],
+          throwOnError: false,
+          // Malformed maths keeps the text the model wrote, in the text colour.
+          errorColor: "inherit",
+          strict: "ignore",
+        });
+      } catch {
+        /* never let a formula break the message */
+      }
+    })
+    .catch(() => {});
+}
+
+/* Diagrams render only once a reply is finished — every streaming delta would
+   otherwise re-layout the whole diagram. The source stays a code block until
+   then, and forever if Mermaid is missing or rejects it. */
+let mermaidSeq = 0;
+
+function renderDiagrams(container) {
+  const blocks = [...container.querySelectorAll("pre > code.language-mermaid")];
+  if (blocks.length === 0) return;
+  loadVendor("mermaid", MERMAID_ASSETS)
+    .then(async () => {
+      try {
+        // "default" on a light panel: one rendering that is legible in both
+        // themes, instead of re-rendering every diagram on a theme switch.
+        mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "default" });
+      } catch {
+        return;
+      }
+      for (const code of blocks) {
+        const pre = code.parentElement;
+        const src = code.textContent;
+        if (!pre || !pre.isConnected) continue;
+        try {
+          const { svg } = await mermaid.render("mmd" + ++mermaidSeq, src);
+          const box = el("div", "msg-mermaid");
+          box.innerHTML = svg;
+          pre.replaceWith(box);
+        } catch {
+          /* malformed diagram: leave the code block (and its copy button) alone */
+        }
+      }
+    })
+    .catch(() => {});
 }
 
 /* ============================== Scrolling ============================== */
@@ -5617,6 +6082,37 @@ async function regenerate() {
   });
 }
 
+/* "Continue from here" (fork): copy this chat up to one message into a new chat,
+   then land on it. The server caps the copy, so a huge chat answers 413. */
+async function forkFromMessage(m, btn) {
+  if (!state.current || !m.id) return;
+  if (currentGenerating()) {
+    toast("Wait for the current reply to finish");
+    return;
+  }
+  const source = state.current.id;
+  btn.disabled = true;
+  try {
+    const fork = await api("/api/conversations/" + enc(source) + "/fork", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ message_id: m.id }),
+    });
+    await loadConversations();
+    await openConversation(fork.id);
+    toast("Continued in a new chat");
+  } catch (err) {
+    if (err instanceof AuthError) return;
+    if (err instanceof ApiError && err.status === 413) {
+      toast("This chat is too large to fork");
+    } else {
+      toast(err.message || "Could not continue from here");
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ============================== Attachments (2.3) ============================== */
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -6643,6 +7139,20 @@ function wireEvents() {
 
   logoutBtn.addEventListener("click", doLogout);
   accountLogout.addEventListener("click", doLogout);
+
+  /* Notifications for this device (6.6). */
+  notifEnable.addEventListener("click", enableNotifications);
+  notifDisable.addEventListener("click", disableNotifications);
+  notifTest.addEventListener("click", sendTestNotification);
+
+  /* About you: global memory (6.8). */
+  memorySave.addEventListener("click", saveMemory);
+  memoryClear.addEventListener("click", clearMemory);
+  memoryText.addEventListener("input", () => {
+    syncMemoryCount();
+    memoryError.hidden = true;
+    memoryStatus.hidden = true;
+  });
 
   menuBtn.addEventListener("click", () => {
     if (sidebar.classList.contains("open")) closeSidebar();

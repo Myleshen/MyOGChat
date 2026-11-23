@@ -538,6 +538,10 @@ button { font: inherit; }
   display: inline-flex;
   gap: 4px;
   margin-left: auto;
+  /* A long label ("Continue from here") drops to a second row rather than
+     wrapping inside its own button. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   /* Long-press on an action must not start a text selection. */
   user-select: none;
   -webkit-user-select: none;
@@ -551,9 +555,12 @@ button { font: inherit; }
   color: var(--text-dim);
   font: inherit;
   font-size: 0.75rem;
+  white-space: nowrap;
   cursor: pointer;
 }
 .msg-action:hover { color: var(--text); border-color: var(--text-dim); }
+.msg-action:disabled { opacity: 0.5; cursor: default; }
+.msg-action:disabled:hover { color: var(--text-dim); border-color: var(--border); }
 /* On the accent user bubble `--text-dim` is ~1.7:1; white is 4.7:1 (dark) and
    5.2:1 (light), so the action labels stay legible where the bubble sits. */
 .msg-user .msg-action { color: #fff; border-color: rgba(255, 255, 255, 0.55); }
@@ -777,6 +784,33 @@ button { font: inherit; }
   cursor: pointer;
 }
 .copy-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
+/* ---------- Maths (KaTeX) and diagrams (Mermaid) ---------- */
+/* Display maths can be wider than a 360px screen: scroll it inside its own box,
+   never sideways across the thread. */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+.msg-content .katex { font-size: 1.05em; }
+
+/* A rendered diagram sits on its own light panel: Mermaid's default palette is
+   drawn for a light background, so one rendering stays legible in both themes. */
+.msg-mermaid {
+  margin: 0.5em 0;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.msg-mermaid svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
 
 /* ---------- Composer ---------- */
 
