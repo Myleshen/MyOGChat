@@ -212,6 +212,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/me/key", s.handleGetMyKey)
 	mux.HandleFunc("PUT /api/me/key", s.handlePutMyKey)
+	// Per-user global memory (6.8).
+	mux.HandleFunc("GET /api/me/memory", s.handleGetMyMemory)
+	mux.HandleFunc("PUT /api/me/memory", s.handlePutMyMemory)
 	// Per-user custom upstream providers (§22).
 	mux.HandleFunc("GET /api/me/providers", s.handleListProviders)
 	mux.HandleFunc("POST /api/me/providers", s.handleCreateProvider)

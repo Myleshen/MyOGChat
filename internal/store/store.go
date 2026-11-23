@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS users (
   serper_key_enc TEXT,
   linkwarden_url TEXT,
   linkwarden_token_enc TEXT,
+  memory        TEXT NOT NULL DEFAULT '',
+  memory_updated_at INTEGER,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -232,8 +234,12 @@ type User struct {
 	// encrypted with internal/secret. Both nil when unconfigured.
 	LinkwardenURL      *string `json:"-"`
 	LinkwardenTokenEnc *string `json:"-"`
-	CreatedAt          int64   `json:"created_at"`
-	UpdatedAt          int64   `json:"updated_at"`
+	// Global per-user memory (6.8): a short "about me" injected into every
+	// conversation. MemoryUpdatedAt is nil until the user sets a non-empty one.
+	Memory          string `json:"-"`
+	MemoryUpdatedAt *int64 `json:"-"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
 }
 
 // Conversation mirrors a row of the conversations table.
@@ -525,6 +531,9 @@ func (s *Store) migrate() error {
 		{"users", "serper_key_enc", `ALTER TABLE users ADD COLUMN serper_key_enc TEXT`},
 		{"users", "linkwarden_url", `ALTER TABLE users ADD COLUMN linkwarden_url TEXT`},
 		{"users", "linkwarden_token_enc", `ALTER TABLE users ADD COLUMN linkwarden_token_enc TEXT`},
+		// Global user memory (6.8): additive; existing users start with none.
+		{"users", "memory", `ALTER TABLE users ADD COLUMN memory TEXT NOT NULL DEFAULT ''`},
+		{"users", "memory_updated_at", `ALTER TABLE users ADD COLUMN memory_updated_at INTEGER`},
 		{"messages", "images", `ALTER TABLE messages ADD COLUMN images TEXT`},
 		{"messages", "artifacts", `ALTER TABLE messages ADD COLUMN artifacts TEXT`},
 		{"attachments", "status", `ALTER TABLE attachments ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'`},
@@ -697,7 +706,7 @@ func optInt(n sql.NullInt64) *int64 {
 
 // ---------- users ----------
 
-const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, daily_token_limit, monthly_cost_limit, serper_key_enc, linkwarden_url, linkwarden_token_enc, created_at, updated_at"
+const userCols = "id, username, email, password_hash, is_admin, status, api_key_enc, daily_token_limit, monthly_cost_limit, serper_key_enc, linkwarden_url, linkwarden_token_enc, memory, memory_updated_at, created_at, updated_at"
 
 func scanUser(sc scanner) (User, error) {
 	var u User
@@ -705,7 +714,8 @@ func scanUser(sc scanner) (User, error) {
 	var keyEnc sql.NullString
 	var daily, monthly sql.NullInt64
 	var serperEnc, linkURL, linkTokenEnc sql.NullString
-	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &daily, &monthly, &serperEnc, &linkURL, &linkTokenEnc, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	var memoryAt sql.NullInt64
+	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &admin, &u.Status, &keyEnc, &daily, &monthly, &serperEnc, &linkURL, &linkTokenEnc, &u.Memory, &memoryAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return User{}, err
 	}
 	u.IsAdmin = admin != 0
@@ -715,6 +725,7 @@ func scanUser(sc scanner) (User, error) {
 	u.SerperKeyEnc = optString(serperEnc)
 	u.LinkwardenURL = optString(linkURL)
 	u.LinkwardenTokenEnc = optString(linkTokenEnc)
+	u.MemoryUpdatedAt = optInt(memoryAt)
 	return u, nil
 }
 
@@ -722,10 +733,11 @@ func scanUser(sc scanner) (User, error) {
 // driver error (the caller maps it to 409).
 func (s *Store) InsertUser(ctx context.Context, u *User) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.Username, u.Email, u.PasswordHash, boolToInt(u.IsAdmin), u.Status, nullString(u.APIKeyEnc),
 		nullInt(u.DailyTokenLimit), nullInt(u.MonthlyCostLimit), nullString(u.SerperKeyEnc),
-		nullString(u.LinkwardenURL), nullString(u.LinkwardenTokenEnc), u.CreatedAt, u.UpdatedAt)
+		nullString(u.LinkwardenURL), nullString(u.LinkwardenTokenEnc), u.Memory, nullInt(u.MemoryUpdatedAt),
+		u.CreatedAt, u.UpdatedAt)
 	return err
 }
 
@@ -810,6 +822,20 @@ func (s *Store) SetUserLimits(ctx context.Context, id string, daily, monthly *in
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET daily_token_limit = ?, monthly_cost_limit = ?, updated_at = ? WHERE id = ?`,
 		nullInt(daily), nullInt(monthly), now, id)
+	return err
+}
+
+// SetUserMemory replaces a user's global memory (6.8). An empty string clears
+// both the text and its timestamp, so a cleared memory reads back with
+// updated_at = nil.
+func (s *Store) SetUserMemory(ctx context.Context, id, memory string, now int64) error {
+	var at *int64
+	if memory != "" {
+		at = &now
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET memory = ?, memory_updated_at = ?, updated_at = ? WHERE id = ?`,
+		memory, nullInt(at), now, id)
 	return err
 }
 

@@ -618,7 +618,9 @@ nothing else; `updated_at` is bumped.
   - **google dialect**: fold them into `"systemInstruction":{"parts":[{"text"}]}`.
   - Instructions come from the conversation's project: `projects.instructions`
     plus, when non-empty, a `## Project memory` block separated by a blank line
-    (6.2). The server composes that one string; the dialect only passes it on.
+    (6.2). Since 6.8 the caller's global memory, when non-empty, is a
+    `## About the user` block **before** those two (§24.3). The server composes
+    that one string; the dialect only passes it on.
 - `Usage` gains `ReasoningTokens`:
   - chat: `usage.completion_tokens_details.reasoning_tokens`
   - responses: `usage.output_tokens_details.reasoning_tokens`
@@ -822,6 +824,7 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 -- conversations and projects each gain: user_id TEXT REFERENCES users(id) ON DELETE CASCADE
+-- users also gains (6.8): memory TEXT NOT NULL DEFAULT '', memory_updated_at INTEGER
 ```
 
 Settings keys (created with defaults on first open):
@@ -860,8 +863,9 @@ Public (no session required): `status`, `setup`, `register`, `login`.
   `403` when the account `status` is `pending` (message: "account pending
   approval") or `disabled`.
 - `POST /api/auth/logout` → `204`, clears the cookie.
-- `GET /api/auth/me` → `200 {"id","username","email","is_admin","tools_enabled","agent_enabled"}` or `401`
-  (`tools_enabled` / `agent_enabled` are the server-wide switches, readable by every user).
+- `GET /api/auth/me` → `200 {"id","username","email","is_admin","tools_enabled","agent_enabled","memory_set"}` or `401`
+  (`tools_enabled` / `agent_enabled` are the server-wide switches, readable by every user;
+  `memory_set` says whether the caller has a global memory — never the text, §24.2).
 
 Session cookie: name `myogchat`, value = `base64url(userID|expiryUnix|hex(hmacSHA256(secret, userID|expiry)))`,
 `HttpOnly`, `SameSite=Lax`, `Path=/`, 30-day expiry, `Secure` when the request
@@ -1878,4 +1882,63 @@ sub-collections of it.
 - Template tokens: `{{summary}}`, `{{start}}`, `{{end}}`, `{{location}}`,
   `{{description}}`; dates are RFC 3339 local time; unknown tokens are left as-is.
 - A triggered reply omits `list_chats` / `read_chat` and never writes project
-  memory. It still counts toward the caller's usage and quota.
+  memory. It still receives the owner's global memory (6.8) and still counts
+  toward the caller's usage and quota.
+
+## 24. Global user memory (6.8)
+
+A per-user "about me" text injected into the system prompt of **every**
+conversation that user sends — project or unfiled, normal or agent-mode, typed or
+calendar-triggered. It is separate from project memory (6.2), which stays
+per-project, and it is only ever written by the user: no automatic update, no
+model call, no edit history.
+
+### 24.1 Schema (additive)
+
+```sql
+-- users gains:
+--   memory            TEXT NOT NULL DEFAULT ''  -- the global memory text
+--   memory_updated_at INTEGER                  -- ms since epoch, NULL when empty
+```
+
+`memory_updated_at` is separate from `users.updated_at` because every other
+per-user setter (key, limits, Linkwarden) also bumps the row.
+
+### 24.2 Endpoints (session required, per-user)
+
+- `GET /api/me/memory` → `200 {"memory": string, "limit": 8000, "updated_at": ms|null}`.
+  `updated_at` is `null` until a non-empty memory is stored and `null` again
+  after clearing. Only the caller's own text is ever returned.
+- `PUT /api/me/memory` `{"memory": string}` → `200` with the same shape.
+  `""` clears the memory (and its timestamp). `memory` ≤ **8000 runes** —
+  longer is `400 {"error":"memory exceeds 8000 characters"}` (the cap counts
+  characters, not bytes). A whitespace-only value is stored as given but is not
+  injected and reports `memory_set:false`.
+- `GET /api/auth/me` (§9.3) gains `"memory_set": bool` — the text itself is
+  never sent there.
+
+Cost: the memory is part of the system prompt on every turn the user sends, so at
+the 8000-character ceiling it adds roughly **2k tokens of input per turn** —
+cheaper than project memory (one block, smaller cap), and cached after the first
+turn. The ceiling is a context/attention trade-off, not a model limit.
+
+### 24.3 Injection order
+
+`runReply` composes one string for `Params.Instructions`, so all four dialects
+(chat, responses, anthropic, google) pass the same text on (§8.6):
+
+```text
+## About the user
+<global memory>
+
+<project instructions>
+
+## Project memory
+<project memory>
+```
+
+Global memory comes **first**, then the project's authored instructions, then
+project memory — a project can refine the global note; a stale global note can
+never silently win over the project. Each block is omitted when empty. A
+calendar-triggered reply gets the global block (it is the owner's own context)
+but still never writes any memory.

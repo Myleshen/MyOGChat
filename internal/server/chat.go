@@ -521,7 +521,10 @@ func (s *Server) runReply(j *genJob, spec replySpec) {
 		attachImagesToLastUser(msgs, spec.images)
 		chatCtx = foldAttachments(nonImageAttachments(atts))
 	}
-	instructions := s.projectInstructions(ctx, conv.ProjectID, u.ID)
+	// Global memory goes first, then project instructions, then project
+	// memory, so a project can refine the global note but never silently lose
+	// to it (6.8).
+	instructions := joinSystem(userMemoryBlock(u.Memory), s.projectInstructions(ctx, conv.ProjectID, u.ID))
 
 	// Build the per-request tool set before composing the instructions: a
 	// registered email_digest appends the fixed summarization standard (5.9) to
@@ -1022,6 +1025,15 @@ func nonImageAttachments(atts []store.Attachment) []store.Attachment {
 		out = append(out, a)
 	}
 	return out
+}
+
+// userMemoryBlock renders a user's global memory (6.8) as a system-prompt
+// block, or "" when there is none to inject.
+func userMemoryBlock(memory string) string {
+	if !memorySet(memory) {
+		return ""
+	}
+	return "## About the user\n" + strings.TrimSpace(memory)
 }
 
 // projectInstructions returns the system prompt of a conversation's project:

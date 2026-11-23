@@ -18,6 +18,9 @@ docs under [`docs/`](docs/).
   optional default model; a chat is filed in a project or left unfiled
 - **Project memory** — durable facts learned from project chats, injected into
   every chat of the project ([`docs/6.2-project-memory.md`](docs/6.2-project-memory.md))
+- **Global memory** — a short "about me" per user, written by you and injected
+  into every conversation before project instructions
+  ([`docs/6.8-user-memory.md`](docs/6.8-user-memory.md))
 - **Agent mode** — opt-in per conversation for long jobs: a persistent 5 GiB
   sandbox workspace, a 60-minute / 60-step budget and a per-user queue
   ([`docs/5.12-agent-mode.md`](docs/5.12-agent-mode.md))
