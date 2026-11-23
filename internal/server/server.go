@@ -268,6 +268,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/conversations/{id}/messages", s.handlePostMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/messages/{messageId}/edit", s.handleEditMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/regenerate", s.handleRegenerate)
+	// Continue from here: copy the transcript up to one message into a new chat.
+	mux.HandleFunc("POST /api/conversations/{id}/fork", s.handleForkConversation)
 	// Detached generation (Phase 5.7): snapshot for reattach/poll, and stop.
 	mux.HandleFunc("GET /api/conversations/{id}/generation", s.handleGetGeneration)
 	mux.HandleFunc("POST /api/conversations/{id}/generation/stop", s.handleStopGeneration)
@@ -558,6 +560,9 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 	}{conv, msgs})
 }
 
+// titleMaxRunes bounds a stored conversation title (the fork marker included).
+const titleMaxRunes = 200
+
 func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request) {
 	u, ok := currentUser(w, r)
 	if !ok {
@@ -595,7 +600,7 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if req.Title != nil {
-		if len([]rune(*req.Title)) > 200 {
+		if len([]rune(*req.Title)) > titleMaxRunes {
 			writeError(w, http.StatusBadRequest, "title exceeds 200 characters")
 			return
 		}

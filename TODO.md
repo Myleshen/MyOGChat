@@ -501,3 +501,20 @@ merges sequentially and resolves the small additive conflicts in shared files
   (`API_CONTRACT.md` §23). Ledger pruned after 90 days by the janitor.
 - **Not built:** the Settings UI (config is API-only) and any verification
   against a real iCloud/Zoho account; no daily cap, no per-trigger timezone.
+
+### Fork a conversation from a message — ✅ shipped (backend) ([`docs/5-export-edit.md`](5-export-edit.md))
+- `POST /api/conversations/{id}/fork` copies the transcript up to and including
+  one message into a new chat owned by the caller: same project, model, effort
+  and `agent_mode`, title `<source title> — fork`, new message ids with the
+  source `created_at` preserved. One transaction; an anchor outside the
+  conversation, or another user's chat, is `404`; above 5,000 copied messages it
+  is `413` and writes nothing. No upstream call, no title generation.
+- Attachment, image and artifact references are copied as references — the rows
+  are user-scoped, so no bytes are duplicated and nothing crosses users. Known
+  trade-off: an artifact row dies with the source conversation, so a fork's
+  artifact chips `404` after the source is deleted (see the doc).
+- An agent fork starts with an **empty workspace**: the transcript is context,
+  not files, so nothing is copied from the source's sandbox directory.
+- Edits, deletes and regenerates in either chat never touch the other.
+- **Not built:** the UI action (a per-message **Continue from here** button —
+  separate UI pass).
