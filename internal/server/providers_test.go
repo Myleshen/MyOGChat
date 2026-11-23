@@ -252,6 +252,47 @@ func TestProviderCreateFailurePersistsNothing(t *testing.T) {
 	}
 }
 
+// TestProviderKeyErrorIsReadable keeps a failed key check to one human line: a
+// JSON error envelope becomes its message, an HTML page a short snippet.
+func TestProviderKeyErrorIsReadable(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+	u := seedKeyUser(t, st, "u1", "alice", "")
+	ts, log := newFakeProviderServer(t, "")
+
+	log.modelsStatus = http.StatusUnauthorized
+	log.modelsBody = `{"error":{"message":"invalid_api_key"}}`
+	body := `{"name":"NVIDIA","base_url":"` + ts.URL + `/v1","api_key":"bad"}`
+	rec := providerRequest(t, srv, u, http.MethodPost, "/api/me/providers", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	if msg := errorMessage(t, rec); !strings.Contains(msg, "invalid_api_key") || strings.Contains(msg, `{"`) {
+		t.Errorf("error = %s, want the envelope's message and no JSON", msg)
+	}
+
+	log.modelsStatus = http.StatusBadGateway
+	log.modelsBody = "<html><body><h1>502 Bad Gateway</h1>" + strings.Repeat("x", 400) + "</body></html>"
+	rec = providerRequest(t, srv, u, http.MethodPost, "/api/me/providers", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	if msg := errorMessage(t, rec); !strings.Contains(msg, "502 Bad Gateway") || !strings.Contains(msg, "upstream HTTP 502") || strings.Contains(msg, "</html>") {
+		t.Errorf("error = %s, want a truncated HTML snippet and the status", msg)
+	}
+}
+
+// errorMessage returns the message inside the {"error":…} envelope.
+func errorMessage(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var env struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode error envelope: %v (body %s)", err, rec.Body.String())
+	}
+	return env.Error
+}
+
 // TestProviderRefreshKeepsOldListOn502 keeps the cached catalog when the
 // upstream fails a refresh.
 func TestProviderRefreshKeepsOldListOn502(t *testing.T) {

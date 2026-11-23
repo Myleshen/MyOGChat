@@ -14,6 +14,7 @@ import (
 	"myogchat/internal/models"
 	"myogchat/internal/secret"
 	"myogchat/internal/store"
+	"myogchat/internal/upstream"
 )
 
 // Custom upstream providers (§22): a user's own OpenAI-compatible endpoint
@@ -410,7 +411,7 @@ func fetchProviderModels(ctx context.Context, baseURL, apiKey string) ([]store.P
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, strings.TrimSpace(firstNBytes(string(body), 300)))
+		return nil, upstream.HTTPError(resp.StatusCode, body)
 	}
 	var list []providerModelJSON
 	if err := json.Unmarshal(body, &list); err != nil {
