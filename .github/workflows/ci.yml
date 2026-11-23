@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # ready_for_review is what starts CI for a branch developed as a draft.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
