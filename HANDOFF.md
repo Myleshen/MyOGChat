@@ -27,6 +27,11 @@ Raspberry Pi 4B, exposed via a Cloudflare Tunnel. Multi-user, mobile-first.
   conversation 15 minutes before each CalDAV or Google event — 120 s scheduler
   tick, a dedupe ledger, quiet hours and quota/busy/late skips
   (`docs/6.0-calendar-triggers.md`).
+- **Fork a chat** (2026-11-23): `POST /api/conversations/{id}/fork` copies a
+  transcript up to one message into a new chat (same project/model/effort/agent
+  mode, `— fork` title, shared attachment/artifact bytes, fresh agent workspace,
+  413 above 5,000 messages). Backend only — the UI pass owns the button
+  (`docs/5-export-edit.md` §C).
 - **Google Calendar (read-only OAuth)** (2026-11-22): a per-user Google account
   via the Calendar v3 API with the `calendar.readonly` scope, alongside CalDAV and
   the legacy secret ICS URL. Needs `MYOGCHAT_GOOGLE_CLIENT_ID` +

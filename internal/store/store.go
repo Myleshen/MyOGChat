@@ -928,9 +928,18 @@ func scanConversation(sc scanner) (Conversation, error) {
 	return c, nil
 }
 
+// execContexter is the bit of *sql.DB / *sql.Tx the insert helpers need.
+type execContexter interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // InsertConversation inserts a new conversation row for its owner.
 func (s *Store) InsertConversation(ctx context.Context, c *Conversation) error {
-	_, err := s.db.ExecContext(ctx,
+	return insertConversation(ctx, s.db, c)
+}
+
+func insertConversation(ctx context.Context, ex execContexter, c *Conversation) error {
+	_, err := ex.ExecContext(ctx,
 		`INSERT INTO conversations (id, user_id, title, model, effort, project_id, pinned, agent_mode, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, nullString(c.UserID), c.Title, c.Model, nullString(c.Effort), nullString(c.ProjectID),
@@ -1225,6 +1234,10 @@ func scanMessage(sc scanner) (Message, error) {
 
 // InsertMessage inserts a new message row.
 func (s *Store) InsertMessage(ctx context.Context, m *Message) error {
+	return insertMessage(ctx, s.db, m)
+}
+
+func insertMessage(ctx context.Context, ex execContexter, m *Message) error {
 	attachments, err := marshalJSON(m.Attachments)
 	if err != nil {
 		return err
@@ -1241,7 +1254,7 @@ func (s *Store) InsertMessage(ctx context.Context, m *Message) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx,
+	_, err = ex.ExecContext(ctx,
 		`INSERT INTO messages (`+messageCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ConversationID, m.Role, m.Content, nullString(m.Reasoning),
 		nullString(m.Model), nullInt(m.PromptTokens), nullInt(m.CompletionTokens),
@@ -1376,6 +1389,82 @@ func (s *Store) EditUserMessageAndTruncate(ctx context.Context, conversationID, 
 		return err
 	}
 	return tx.Commit()
+}
+
+// ErrForkTooLarge is returned by ForkConversation when the copied message set
+// would exceed the caller's cap.
+var ErrForkTooLarge = errors.New("conversation too large to fork")
+
+// ForkConversation writes dst (owner, title, model, effort, project and agent
+// mode already set) and copies every message of srcID up to and including
+// anchorID into it, in one transaction. Copies get fresh ids and keep the
+// source created_at so order and timings survive.
+//
+// Attachment, image and artifact references in the message JSON are copied
+// verbatim: those rows are scoped to the user (attachments, images) or are
+// readable by owner only (artifacts), so nothing is duplicated and nothing
+// crosses users. shortcut: artifacts carry the source conversation_id, so
+// deleting the source chat cascades its artifact rows away and the fork's
+// buttons 404 — upgrade to a shared-bytes table if forks must outlive sources.
+//
+// An anchor that is not in srcID is ErrNotFound; a copy larger than maxMessages
+// is ErrForkTooLarge and writes nothing.
+func (s *Store) ForkConversation(ctx context.Context, srcID, anchorID string, dst *Conversation, newID func() string, maxMessages int) (int, error) {
+	var anchorCreated, anchorRowid int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT created_at, rowid FROM messages WHERE id = ? AND conversation_id = ?`,
+		anchorID, srcID).Scan(&anchorCreated, &anchorRowid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+messageCols+` FROM messages
+		  WHERE conversation_id = ? AND (created_at, rowid) <= (?, ?)
+		  ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+		srcID, anchorCreated, anchorRowid, maxMessages+1)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	msgs := make([]Message, 0, 16)
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return 0, err
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	// Release the single pooled connection before opening the write transaction.
+	rows.Close()
+	if len(msgs) > maxMessages {
+		return 0, ErrForkTooLarge
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if err := insertConversation(ctx, tx, dst); err != nil {
+		return 0, err
+	}
+	for i := range msgs {
+		msgs[i].ID = newID()
+		msgs[i].ConversationID = dst.ID
+		if err := insertMessage(ctx, tx, &msgs[i]); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(msgs), nil
 }
 
 // Backup writes a consistent snapshot of the live database to destPath using

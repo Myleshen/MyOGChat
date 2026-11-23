@@ -94,6 +94,35 @@ Body may contain `title` (string, ≤200 chars), `model` (valid registry id),
 
 ### `DELETE /api/conversations/{id}` → `204`.
 
+### `POST /api/conversations/{id}/fork` — continue from here
+
+Body `{"message_id": "<id>"}`. Copies the conversation's messages from the
+beginning **up to and including** `message_id` into a **new conversation owned
+by the caller**; nothing after that message is copied.
+
+- `201` `{"id":"<new conv id>","title":"<source title> — fork","message_count":N}`
+  — `message_count` is the number of copied messages (1 … 5000). An untitled
+  source yields `Untitled — fork`; the base is truncated so the whole title stays
+  within the 200-rune `PATCH` cap.
+- `400` — missing/empty `message_id` or a malformed body.
+- `404` — the conversation is unknown or not the caller's, or the message does
+  not belong to that conversation (indistinguishable, never `403`).
+- `413` `{"error":"conversation too large to fork"}` — the copied set would
+  exceed **5,000** messages. Nothing is written.
+- The new conversation keeps the source's `project_id`, `model`, `effort` and
+  `agent_mode` and belongs to the same user. It is **not** pinned.
+- Messages are copied as **new rows with new ids**, every persisted field kept
+  (role, content, reasoning, model, tokens, cost, duration, `tools`, `images`,
+  `attachments`, `artifacts`) and the source `created_at` preserved, so order
+  and timings survive.
+- Attachment / image / artifact references are copied **as references**: the
+  underlying rows and bytes are shared, never duplicated (they are scoped to the
+  user, and artifact downloads stay owner-only).
+- No upstream call of any kind and no title generation.
+- An agent-mode fork gets a **fresh, empty workspace** — nothing is copied from
+  `sandbox/agent/<user>/<conv>`; the transcript is context, not files.
+
+
 ### `POST /api/conversations/{id}/messages` — chat (SSE)
 
 Body: `{"content":"<user text>"}` (non-empty, ≤100 KB).

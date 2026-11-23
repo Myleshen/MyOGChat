@@ -34,7 +34,10 @@ docs under [`docs/`](docs/).
 - Collapsible **thinking** blocks (duration + reasoning-token count) and a
   thinking badge on models that surface reasoning
 - Per-message **cost** and **tokens/sec**, plus a conversation running total
-- **Regenerate** and copy tools; auto-generated chat titles
+- **Regenerate** and copy tools; auto-generated chat titles; **continue from
+  here** — fork a chat at any message into a new conversation (shared attachment
+  and artifact bytes, fresh agent workspace)
+  ([`docs/5-export-edit.md`](docs/5-export-edit.md#c-continue-from-here-fork))
 - **Tools** — the model can call `web_search` (Tavily → Brave → Serper →
   DuckDuckGo fallback, keyless by default), `fetch_url`, Linkwarden, OpenStreetMap
   `maps_*`, and `run_bash` / `run_python` in a hardened Docker sandbox
